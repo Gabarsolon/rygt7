@@ -1,0 +1,174 @@
+From 69561de9ccc3da11e7a60152a182673650a48ea7 Mon Sep 17 00:00:00 2001
+From: mlgprorektm8 <67933lance@gmail.com>
+Date: Thu, 22 Oct 2026 03:52:37 -0500
+Subject: [PATCH 60/61] FIX-189: translation workers parse a copy of the fetch
+ shader
+
+Brand Central's showroom crashed in ParseFetchShader on a shadGT:ShaderTranslate
+thread (read of a released 0x10xxxxxxxx page): a vertex shader's fetch shader
+was read through the address in its user data when a worker got to it, and
+the showroom releases car models while their shaders wait in the queue. As
+FIX-160 copies the shader's code, QueueTranslation now copies the fetch shader
+(found from the s_swappc_b64 operand, read guarded, through its s_setpc_b64)
+and points the job's user data at the copy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/shader_recompiler/recompiler.cpp          | 31 ++++++++++++
+ src/shader_recompiler/recompiler.h            |  9 ++++
+ .../renderer_vulkan/vk_pipeline_cache.cpp     | 50 +++++++++++++++++++
+ .../renderer_vulkan/vk_pipeline_cache.h       |  1 +
+ 4 files changed, 91 insertions(+)
+
+diff --git a/src/shader_recompiler/recompiler.cpp b/src/shader_recompiler/recompiler.cpp
+index d5b9168e..c0684b5f 100644
+--- a/src/shader_recompiler/recompiler.cpp
++++ b/src/shader_recompiler/recompiler.cpp
+@@ -133,6 +133,37 @@ bool HasLaneReadsAndLoop(std::span<const u32> code) {
+     return lane_reads && loop;
+ }
+ 
++std::optional<u32> FetchShaderSgprBase(std::span<const u32> code) {
++    using namespace Gcn;
++    GcnCodeSlice slice(code.data(), code.data() + code.size());
++    GcnDecodeContext decoder;
++    while (!slice.atEnd()) {
++        const GcnInst inst = decoder.decodeInstruction(slice);
++        if (inst.opcode == Opcode::S_SWAPPC_B64) {
++            return inst.src[0].code;
++        }
++        if (inst.opcode == Opcode::S_ENDPGM) {
++            break;
++        }
++    }
++    return std::nullopt;
++}
++
++std::optional<size_t> FetchShaderLength(std::span<const u32> code) {
++    using namespace Gcn;
++    GcnCodeSlice slice(code.data(), code.data() + code.size());
++    GcnDecodeContext decoder;
++    size_t bytes = 0;
++    while (!slice.atEnd() && bytes < code.size_bytes()) {
++        const GcnInst inst = decoder.decodeInstruction(slice);
++        bytes += inst.length;
++        if (inst.opcode == Opcode::S_SETPC_B64) {
++            return bytes <= code.size_bytes() ? std::optional{bytes / sizeof(u32)} : std::nullopt;
++        }
++    }
++    return std::nullopt;
++}
++
+ bool HasMemoryWrites(std::span<const u32> code) {
+     using namespace Gcn;
+     Gcn::GcnCodeSlice slice(code.data(), code.data() + code.size());
+diff --git a/src/shader_recompiler/recompiler.h b/src/shader_recompiler/recompiler.h
+index cc36ca98..366b86ab 100644
+--- a/src/shader_recompiler/recompiler.h
++++ b/src/shader_recompiler/recompiler.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <optional>
+ #include <string>
+ 
+ #include "common/object_pool.h"
+@@ -45,6 +46,14 @@ struct Pools {
+ /// SHD-005: whether the program stores to memory (buffer, image or GDS writes and atomics).
+ [[nodiscard]] bool HasMemoryWrites(std::span<const u32> code);
+ 
++/// FIX-189: the user data register holding a vertex shader's fetch shader address (the operand
++/// of its s_swappc_b64), when it calls one.
++[[nodiscard]] std::optional<u32> FetchShaderSgprBase(std::span<const u32> code);
++
++/// FIX-189: a fetch shader's length in dwords, through its s_setpc_b64, when code holds all of
++/// it. code must be followed by two readable dwords (a literal may be read past its end).
++[[nodiscard]] std::optional<size_t> FetchShaderLength(std::span<const u32> code);
++
+ /// DIAG-031: a readable listing of GCN code (pc, opcode, operands, memory offsets).
+ [[nodiscard]] std::string ListGcnCode(std::span<const u32> code);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 0b1d220b..8729a63f 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -3831,6 +3831,51 @@ bool PipelineCache::AsyncTranslation() const {
+     return enabled && translate_workers != nullptr;
+ }
+ 
++// FIX-189: a vertex shader's fetch shader, copied for a translation worker as FIX-160 copies the
++// shader's code. The worker read it through the address in the user data, and the game can
++// release it first: Brand Central's showroom swaps car models while their shaders wait in the
++// queue, and the read crashed the worker (ParseFetchShader). The job's user data then points at
++// the copy. False when it is gone already.
++static bool CopyFetchShader(std::span<u32, Shader::ShaderParams::NumShaderUserData> user_data,
++                            std::span<const u32> code, std::vector<u32>& copy) {
++    const auto base = Shader::FetchShaderSgprBase(code);
++    if (!base || *base + 1 >= user_data.size()) {
++        return true;
++    }
++    u64 address;
++    std::memcpy(&address, &user_data[*base], sizeof(address));
++    if (address == 0) {
++        return true;
++    }
++    // The page holding its start, then more pages until its s_setpc_b64 is in the copy; two
++    // zero dwords after the copied words keep the decoder's literal reads inside the vector.
++    constexpr u64 PageSize = 4096;
++    constexpr size_t Padding = 2;
++    std::vector<u32> words;
++    u64 end = (address & ~(PageSize - 1)) + PageSize;
++    for (int pages = 0; pages < 4; ++pages, end += PageSize) {
++        const size_t count = (end - address) / sizeof(u32);
++        words.resize(count + Padding);
++#ifdef RYTY_GPU
++        if (!Core::RytyMemory::GuardedCopy(words.data(), reinterpret_cast<const void*>(address),
++                                           count * sizeof(u32))) {
++            return false;
++        }
++#else
++        std::memcpy(words.data(), reinterpret_cast<const void*>(address), count * sizeof(u32));
++#endif
++        std::fill(words.begin() + count, words.end(), 0u);
++        if (const auto length = Shader::FetchShaderLength({words.data(), count})) {
++            words.resize(*length + Padding);
++            copy = std::move(words);
++            const u64 pointer = reinterpret_cast<u64>(copy.data());
++            std::memcpy(&user_data[*base], &pointer, sizeof(pointer));
++            return true;
++        }
++    }
++    return false;
++}
++
+ bool PipelineCache::QueueTranslation(HwStage hw_stage, SwStage sw_stage,
+                                      const Shader::ShaderParams& params,
+                                      const Shader::RuntimeInfo& runtime_info,
+@@ -3860,6 +3905,11 @@ bool PipelineCache::QueueTranslation(HwStage hw_stage, SwStage sw_stage,
+     std::ranges::copy(params.code, job->code_copy.begin());
+ #endif
+     job->code = job->code_copy;
++    if ((hw_stage == HwStage::Vertex || hw_stage == HwStage::Export ||
++         hw_stage == HwStage::Local) &&
++        !CopyFetchShader(job->user_data, job->code, job->fetch_copy)) {
++        return false; // as above
++    }
+     job->start = start;
+     jobs.push_back(job);
+     ++translate_stats.queued;
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 9bd9edc9..48255dc8 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -469,6 +469,7 @@ private:
+         std::array<u32, Shader::ShaderParams::NumShaderUserData> user_data;
+         std::span<const u32> code; // FIX-160: over code_copy, not guest memory
+         std::vector<u32> code_copy;
++        std::vector<u32> fetch_copy; // FIX-189: the fetch shader user_data points at
+         Shader::RuntimeInfo runtime_info;
+         Shader::Backend::Bindings start;
+         std::unique_ptr<Shader::Info> info;
+-- 
+2.56.0.windows.1
+

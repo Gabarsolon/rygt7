@@ -89,3 +89,12 @@ with an empty shader store), and it also turned direct memory off and undid Sani
 every GPU. 0058 reverts it; 0059 (FIX-188) brings its Intel Arc changes back behind
 `Instance::IsIntel()` (vendor 0x8086), so every other GPU runs what it ran before 0042-intel-arc.
 `ryty-gpu` and `linux-proton` have every patch through 0059 (commit `1d13c88d`).
+
+Patch 0060 (FIX-189) fixes the crash on entering a car's showroom in Brand Central: a shader
+translation worker read the vertex shader's fetch shader from game memory the showroom had already
+released. As FIX-160 does for the shader code, the fetch shader is now copied when the translation is
+queued. Patch 0061 (PERF-104) removes the renderer's shader pre-building: the splash-screen build of
+stored shaders and pipelines with its progress bar and game hold, the background builds behind it, the
+`GPU.precompile_shaders` setting, and the shader pack's rebuild (PB-1 to PB-4). Shaders are compiled
+when the game first needs them and kept in the shaders folder (PERF-032) as before.
+`ryty-gpu` and `linux-proton` have every patch through 0061 (commit `087e2a70`).
