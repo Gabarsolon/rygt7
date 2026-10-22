@@ -164,7 +164,7 @@ static std::uint64_t GetMonotonicNanos() {
 
 #ifdef _WIN32
 // The shadGT renderer (libSceVideoOut.prx) holds the guest clocks while its GPU thread compiles
-// shaders or pipelines, which a PS4 never does (its shaders are precompiled). Its RytyGpuGuestTsc
+// shaders or pipelines, which a PS4 never does (it runs the game's shader code as it is). Its RytyGpuGuestTsc
 // export is the host TSC with those pauses taken out. Without it a compile stall looks like a frame
 // hundreds of milliseconds long to the game: GT Sport's car thumbnail script polls its shot after one
 // 0.1 s sleep, finds nothing, and asserts (file_size > 10 * 1024) when a new car is bought.

@@ -1208,10 +1208,9 @@ namespace RyGT
             // is the only renderer since 2026-10-16; the old renderer's stored shaders stand in
             // while its own are built (D10), so it has no option any more.
 
-            // Shaders: the stored ones are built while the splash screen shows; a new one pauses
-            // the game until it is compiled (instead of a stutter and missing objects).
+            // Shaders: a new one pauses the game until it is compiled (instead of a stutter and
+            // missing objects).
             var shaders = Section(left, "Shaders");
-            AddOption(shaders, "Precompile shaders on the splash screen", "GPU", "precompile_shaders", true);
             // What the game does while a new shader compiles during play (GPU.compile_mode).
             var modeRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
             var modeLabel = new Label { Text = "When new shaders compile", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
@@ -1319,7 +1318,7 @@ namespace RyGT
             side.Controls.Add(GroupLabel("Settings"));
             side.Controls.Add(Item("Display", "Screen, resolution, refresh rate", "D", Badges[3], delegate { ShowPage(1); }));
             side.Controls.Add(Item("Graphics", "FSR, DLSS, frame generation", "G", Badges[4], delegate { ShowPage(1); }));
-            side.Controls.Add(Item("Shaders", "Precompiling and compile pauses", "S", Badges[5], delegate { ShowPage(1); }));
+            side.Controls.Add(Item("Shaders", "Compile pauses", "S", Badges[5], delegate { ShowPage(1); }));
             side.Controls.Add(GroupLabel("Game"));
             side.Controls.Add(Item("Set up", "Convert the game from your dump", "U", Badges[6], delegate { if (setup.Enabled) StartSetup(); }));
             side.Controls.Add(Item("Open folder", "The RyGT folder in Explorer", "F", Badges[7], OpenFolder));
@@ -1522,7 +1521,7 @@ namespace RyGT
 
         /// A shadGT setting in a section of the GT Sport config (General: show_splash,
         /// show_fps_counter, discord_rpc_enabled; GPU: full_screen, particle_effects, fsr_enabled, fsr3_enabled, rcas_enabled, dlss_enabled,
-        /// framegen_enabled, precompile_shaders, compile_freeze).
+        /// framegen_enabled, compile_freeze).
         bool ReadSetting(string sectionName, string key, bool fallback)
         {
             try
@@ -1994,15 +1993,8 @@ namespace RyGT
             if (!BuildGameScripts(baseDir, updateDir))
                 Log("Note: the offline livery scripts could not be made; liveries will not apply offline.");
 
-            // 6. Shaders other players have met, prepared from this game's own files, into the
-            // shader folder every RyGT folder shares.
+            // 6. The shaders folder (shaders built while playing are kept there).
             UsePortableShaderCache();
-            if (File.Exists(ShaderPack))
-            {
-                SetStatus("Preparing shaders from your game files (a few minutes)...");
-                if (!PrepareShaders(baseDir, updateDir))
-                    Log("Note: the shaders could not be prepared; they will compile while you play.");
-            }
 
             Log("Set up finished.");
         }
@@ -2077,60 +2069,6 @@ namespace RyGT
                     try { File.WriteAllText(Path.Combine(output, "made-by.txt"), ToolHash(tool)); } catch { }
                 }
                 return ok;
-            }
-        }
-
-        // Shader pre-build: tools\adcpatch\shaders.pack holds the settings of the shaders and
-        // pipelines RyGT's players have met (no shader code). shaderprep writes them into the
-        // shader cache and copies each shader's program out of this PC's game files; the renderer
-        // translates them on the splash screen and builds the pipelines there, so they don't
-        // pause the game the first time a car or track shows up.
-        string ShaderPack { get { return Path.Combine(root, "tools", "adcpatch", "shaders.pack"); } }
-        string ShaderPackStamp { get { return Path.Combine(ShaderFolder, "shaders-pack.txt"); } }
-
-        bool ShadersOutdated()
-        {
-            if (!File.Exists(ShaderPack)) return false;
-            try { return !File.Exists(ShaderPackStamp) || File.ReadAllText(ShaderPackStamp).Trim() != ToolHash(ShaderPack); }
-            catch { return true; }
-        }
-
-        bool PrepareShaders(string baseDir, string updateDir)
-        {
-            string tool = Path.Combine(root, "tools", "adcpatch", "adcpatch.exe");
-            if (!File.Exists(tool) || !File.Exists(ShaderPack)) return false;
-            string cache = ShaderFolder;
-            Directory.CreateDirectory(cache);
-            Func<string, string> arg = d => "\"" + (d ?? "").TrimEnd('\\') + "\"";
-            string arguments = "shaderprep " + arg(baseDir) + " " + arg(updateDir) + " " + arg(ShaderPack) + " " + arg(cache);
-            Log("> adcpatch.exe " + arguments);
-            var info = new ProcessStartInfo(tool, arguments)
-            {
-                WorkingDirectory = Path.GetDirectoryName(tool), UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            var lines = new List<string>();
-            using (var process = new Process { StartInfo = info })
-            {
-                DataReceivedEventHandler collect = delegate (object sender, DataReceivedEventArgs e)
-                {
-                    if (e.Data == null) return;
-                    lock (lines) lines.Add(e.Data);
-                    if (e.Data.Contains(" programs copied")) Log(e.Data);
-                };
-                process.OutputDataReceived += collect;
-                process.ErrorDataReceived += collect;
-                process.Start();
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-                process.WaitForExit();
-                lock (lines)
-                {
-                    try { File.WriteAllLines(Path.Combine(Path.GetDirectoryName(tool), "shaderprep.log"), lines); } catch { }
-                }
-                if (process.ExitCode != 0) return false;
-                try { File.WriteAllText(ShaderPackStamp, ToolHash(ShaderPack)); } catch { }
-                return true;
             }
         }
 
@@ -2450,13 +2388,6 @@ namespace RyGT
                         SetStatus("Making the offline livery scripts from your game files...");
                         try { BuildGameScripts(gameDir, updateDir); }
                         catch (Exception e) { Log("Offline livery scripts: " + e.Message); }
-                    }
-                    // A newer shaders.pack (or a folder set up before it existed): prepared once now.
-                    if (ShadersOutdated() && Directory.Exists(gameDir))
-                    {
-                        SetStatus("Preparing shaders from your game files (a few minutes, once)...");
-                        try { PrepareShaders(gameDir, updateDir); }
-                        catch (Exception e) { Log("Shaders: " + e.Message); }
                     }
                 }
                 catch (Exception e) { Log("ERROR: " + e.Message); }
