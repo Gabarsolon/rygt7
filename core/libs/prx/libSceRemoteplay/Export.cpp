@@ -17,7 +17,9 @@ int APS5_VABI sceRemoteplayGetConnectionStatus(int user_id, int* status) {
 }
 
 int APS5_VABI sceRemoteplayInitialize(void* heap, size_t heap_size) {
- if (!heap || heap_size == 0) APS5_INVALID_ARG_EX;
+ // GT7 (a newer SDK) initializes without a heap; Remote Play is not provided either way.
+ (void)heap;
+ (void)heap_size;
  return 0;
 }
 

@@ -18,7 +18,8 @@ int APS5_VABI sceGameLiveStreamingLaunchLiveViewerA() {
 }
 
 int APS5_VABI sceGameLiveStreamingInitialize(size_t heap_size) {
-    if (heap_size == 0) APS5_INVALID_ARG_EX;
+    // Newer SDKs may pass no heap size; live streaming is not provided either way.
+    (void)heap_size;
     return 0;
 }
 
