@@ -389,11 +389,10 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
     constexpr int GuestMapFixed = 0x10;
     constexpr int GuestMapNoOverwrite = 0x80;
     constexpr int GuestMapNoCoalesce = 0x400000;
-#if defined(__linux__)
+    // MAP_NO_OVERWRITE (GT7 maps direct memory with MAP_FIXED | MAP_NO_OVERWRITE): DoMapDirect and
+    // DoMapAnon skip ReleaseFixedOverlap for it and call RequireAvailable before placing, so on
+    // Windows the range is known to be free here and a plain fixed placement is right.
     constexpr int SupportedFlags = GuestMapFixed | GuestMapNoOverwrite | GuestMapNoCoalesce;
-#else
-    constexpr int SupportedFlags = GuestMapFixed | GuestMapNoCoalesce;
-#endif
     if ((flags & ~SupportedFlags) != 0) {
         char message[64];
         std::snprintf(message, sizeof(message), "Unsupported memory mapping flags 0x%x", flags);
