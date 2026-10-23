@@ -252,11 +252,14 @@ int APS5_VABI scePadInit_nid_postfix(void) {
 
 int APS5_VABI scePadOpen_nid_postfix(int userId, int type, int index, const void* param) {
  (void)param;
+ static int calls = 0;
  if (!ValidPort(userId, type, index)) {
+  if (LogCall(calls, 8)) APS5_LOG_OUT("Pad: scePadOpen(user 0x%x, type %d, index %d) -> invalid port", userId, type, index);
   return PAD_ERROR_INVALID_ARG;
  }
  const int slot = SlotOfUser(userId);
  g_opened[slot] = true;
+ if (LogCall(calls, 8)) APS5_LOG_OUT("Pad: scePadOpen(user 0x%x, type %d, index %d) -> handle %d", userId, type, index, PAD_HANDLE + slot);
  return PAD_HANDLE + slot;
 }
 
@@ -264,7 +267,7 @@ int APS5_VABI scePadReadState(int handle, PadData* data);
 
 int APS5_VABI scePadRead_nid_postfix(int handle, PadData* data, int num) {
     // The title drains the queued states; one current state is reported per call.
-    if (data == nullptr || num <= 0) APS5_INVALID_ARG_EX;
+    if (data == nullptr || num <= 0) return PAD_ERROR_INVALID_ARG;
     const int result = scePadReadState(handle, data);
     if (result != 0) return result;
     return 1;
@@ -401,8 +404,13 @@ int APS5_VABI scePadSetFeatureReport(std::uint64_t a, std::uint64_t b, std::uint
 int APS5_VABI scePadReadState(int handle, PadData* data) {
  if (handle == PAD_WHEEL_HANDLE) return scePadReadStateExt(handle, data);
  const int slot = SlotOfHandle(handle);
- if (slot < 0) APS5_INVALID_ARG_EX;
- if (data == nullptr) APS5_INVALID_ARG_EX;
+ if (slot < 0) {
+  // GT7 reads handles it has not opened (yet); the PS4 answers with an error, not a crash.
+  static int calls = 0;
+  if (LogCall(calls, 4)) APS5_LOG_OUT("Pad: scePadReadState(handle %d): not an open handle", handle);
+  return PAD_ERROR_INVALID_HANDLE;
+ }
+ if (data == nullptr) return PAD_ERROR_INVALID_ARG;
 
  *data = Pad::ReadState(slot);
 
