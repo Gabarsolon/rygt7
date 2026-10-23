@@ -21,12 +21,37 @@ namespace {
 constexpr std::uintptr_t PreferredBase = 0x0000000200000000ull;
 constexpr std::uintptr_t SystemReservedStart = 0x00000007FFFFC000ull;
 constexpr std::uintptr_t SystemReservedEnd = 0x0000001000000000ull;
-constexpr std::uintptr_t InteropStart = 0x000000E000000000ull;
-constexpr std::uintptr_t InteropEnd = 0x000000F000000000ull;
 constexpr std::uintptr_t MapAreaEnd = 0x000000FC00000000ull;
+constexpr std::uintptr_t InteropSize = 0x0000001000000000ull;
 // Keep low virtual addresses available for NVIDIA interop. Leave a 64 GiB host window
 // below the high fixed guest mappings (GT Sport uses 0xf3ffe00000). Protect the rest
 // before loading drivers so unconstrained host reservations cannot steal guest pools.
+// RYTY_INTEROP_BASE (hex, 64 GiB aligned) moves the window: GT7 maps fixed guest memory from
+// 0xe3ffffc000 up, inside the default window, and uses nothing between 0x5000000000 and
+// 0xb000000000.
+std::uintptr_t InteropBase() {
+    static const std::uintptr_t base = [] {
+        constexpr std::uintptr_t Default = 0x000000E000000000ull;
+        const char* text = std::getenv("RYTY_INTEROP_BASE");
+        if (text == nullptr || *text == '\0') return Default;
+        char* end = nullptr;
+        const auto value = static_cast<std::uintptr_t>(std::strtoull(text, &end, 16));
+        if (end == text || (value & (InteropSize - 1)) != 0 || value < SystemReservedEnd ||
+            value > MapAreaEnd - InteropSize) {
+            std::fprintf(stderr, "[arena] RYTY_INTEROP_BASE=%s is not a 64 GiB aligned address "
+                                 "between 0x%llx and 0x%llx; using 0x%llx\n",
+                         text, static_cast<unsigned long long>(SystemReservedEnd),
+                         static_cast<unsigned long long>(MapAreaEnd - InteropSize),
+                         static_cast<unsigned long long>(Default));
+            return Default;
+        }
+        std::fprintf(stderr, "[arena] host interop window at 0x%llx+0x%llx\n",
+                     static_cast<unsigned long long>(value),
+                     static_cast<unsigned long long>(InteropSize));
+        return value;
+    }();
+    return base;
+}
 
 std::uintptr_t alignUp(std::uintptr_t value, std::size_t alignment) {
     return (value + alignment - 1) & ~(static_cast<std::uintptr_t>(alignment) - 1);
@@ -127,10 +152,12 @@ private:
         _end = MapAreaEnd;
         _writeWatched = WriteWatchRequested();
         _used.emplace(SystemReservedStart, SystemReservedEnd);
-        _used.emplace(InteropStart, InteropEnd);
+        const std::uintptr_t interopStart = InteropBase();
+        const std::uintptr_t interopEnd = interopStart + InteropSize;
+        _used.emplace(interopStart, interopEnd);
         auto& mappings = WindowsMappings::Get();
-        if (!mappings.ReserveAvailable(PreferredBase, InteropStart) ||
-            !mappings.ReserveAvailable(InteropEnd, MapAreaEnd))
+        if (!mappings.ReserveAvailable(PreferredBase, interopStart) ||
+            !mappings.ReserveAvailable(interopEnd, MapAreaEnd))
             throw std::runtime_error("cannot reserve guest mapping windows around host interop space");
 #endif
     }
