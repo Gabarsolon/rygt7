@@ -150,6 +150,11 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
         if (std::filesystem::is_directory(native, error)) fd = File::OpenDirectoryDescriptor(native);
     }
 #endif
+    // Opens that may write are few; reporting them shows how a title uses the files it creates.
+    static std::atomic<unsigned> writeOpens{0};
+    if ((flags & (SCE_KERNEL_O_ACCMODE | SCE_KERNEL_O_CREAT | SCE_KERNEL_O_TRUNC)) != 0 && writeOpens.fetch_add(1) < 200) {
+        std::fprintf(stderr, "[file] open %s flags 0x%x mode 0%o -> %d\n", path, flags, mode, fd < 0 ? -errno : fd);
+    }
     if (fd < 0) {
         return SceErrorFromErrno(errno);
     }
@@ -243,6 +248,9 @@ int APS5_VABI sceKernelUnlink(const char* path) {
         throw std::invalid_argument(std::string(__func__) + ": path is null");
     }
     auto native = ResolvePath_nid_no_patch(path);
+    if (IsReadOnlyGamePath(native, "unlink", path)) {
+        return SceErrorFromErrno(30); // EROFS
+    }
     if (NativeUnlink(native) != 0) {
         return SceErrorFromErrno(errno);
     }

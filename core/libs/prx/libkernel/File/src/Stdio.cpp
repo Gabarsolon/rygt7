@@ -12,6 +12,7 @@
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include <cerrno>
 #include <cstring>
+#include <atomic>
 #include <cstdarg>
 #include <filesystem>
 #include <stdexcept>
@@ -133,6 +134,7 @@ static constexpr int GUEST_EEXIST = 17;
 static constexpr int GUEST_EINVAL = 22;
 static constexpr int GUEST_ENAMETOOLONG = 63;
 static constexpr int GUEST_ENOTDIR = 20;
+static constexpr int GUEST_EROFS = 30;
 static constexpr int GUEST_ENOTEMPTY = 66;
 
 static int SceErrorFromErrno(int error) {
@@ -252,7 +254,24 @@ int64_t APS5_VABI pread_nid_postfix(int d, void* buf, size_t nbytes, int64_t off
     KernelDiagScope diag(KernelDiagZone::FileRead, __builtin_return_address(0));
     auto n = NativePread(d, buf, nbytes, offset);
     if (n < 0) {
+#ifdef _WIN32
+        // GT7 reads from a file it has just opened write-only (CacheInfo.json); the PS4 answers
+        // EBADF and the title carries on.
+        const DWORD nativeError = ::GetLastError();
+        const int guestError = nativeError == ERROR_ACCESS_DENIED || nativeError == ERROR_INVALID_HANDLE ? EBADF : GUEST_EIO;
+        static std::atomic<unsigned> logged{0};
+        if (logged.fetch_add(1) < 8) {
+            wchar_t name[MAX_PATH] = L"?";
+            const auto handle = reinterpret_cast<HANDLE>(::_get_osfhandle(d));
+            if (handle != INVALID_HANDLE_VALUE) ::GetFinalPathNameByHandleW(handle, name, MAX_PATH, 0);
+            std::fprintf(stderr, "[file] pread fd %d (%ls) offset 0x%llx, %zu bytes: error %lu, errno %d\n", d, name,
+                         static_cast<unsigned long long>(offset), nbytes, nativeError, guestError);
+        }
+        errno = guestError;
+        return -1;
+#else
         throw std::runtime_error(std::string(__func__) + ": pread failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));
+#endif
     }
     return n;
 }
@@ -395,7 +414,8 @@ int APS5_VABI sceKernelMkdir(const char* path, uint16_t mode) {
 #ifdef _WIN32
 
 int64_t APS5_VABI sceKernelPread(int d, void* buf, size_t nbytes, int64_t offset) {
- return pread_nid_postfix(d, buf, nbytes, offset);
+ const auto result = pread_nid_postfix(d, buf, nbytes, offset);
+ return result < 0 ? SceErrorFromErrno(errno) : result;
 }
 
 int64_t APS5_VABI sceKernelPwrite(int d, const void* buf, size_t nbytes, int64_t offset) {
@@ -423,9 +443,11 @@ int64_t APS5_VABI sceKernelPwrite(int d, const void* buf, size_t nbytes, int64_t
 int APS5_VABI sceKernelRename(const char* from, const char* to) {
     if (from == nullptr || to == nullptr) throw std::invalid_argument("sceKernelRename: path is null");
     const auto source = ResolvePath_nid_no_patch(from);
+    const auto destination = ResolvePath_nid_no_patch(to);
+    if (IsReadOnlyGamePath(source, "rename", from) || IsReadOnlyGamePath(destination, "rename to", to)) return SceErrorFromErrno(GUEST_EROFS);
     std::error_code error;
     if (!std::filesystem::exists(source, error)) return SceErrorFromErrno(GUEST_ENOENT);
-    std::filesystem::rename(source, ResolvePath_nid_no_patch(to), error);
+    std::filesystem::rename(source, destination, error);
     if (error) return SceErrorFromErrno(GUEST_EIO);
     return 0;
 }
@@ -433,6 +455,7 @@ int APS5_VABI sceKernelRename(const char* from, const char* to) {
 int APS5_VABI sceKernelRmdir(const char* path) {
     if (path == nullptr) throw std::invalid_argument("sceKernelRmdir: path is null");
     const auto native = ResolvePath_nid_no_patch(path);
+    if (IsReadOnlyGamePath(native, "rmdir", path)) return SceErrorFromErrno(GUEST_EROFS);
     std::error_code error;
     if (!std::filesystem::is_directory(native, error)) return SceErrorFromErrno(std::filesystem::exists(native, error) ? GUEST_ENOTDIR : GUEST_ENOENT);
     if (!std::filesystem::is_empty(native, error)) return SceErrorFromErrno(GUEST_ENOTEMPTY);

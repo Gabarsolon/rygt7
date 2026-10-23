@@ -32,6 +32,10 @@ extern "C" int APS5_VABI rename_nid_postfix(const char* from, const char* to) {
     try {
         const auto source = ResolvePath_nid_no_patch(from);
         const auto destination = ResolvePath_nid_no_patch(to);
+        if (IsReadOnlyGamePath(source, "rename", from) || IsReadOnlyGamePath(destination, "rename to", to)) {
+            errno = 30; // EROFS
+            return -1;
+        }
         std::error_code error;
         std::filesystem::rename(source, destination, error);
         if (error) { errno = FilesystemError(error); return -1; }
@@ -48,6 +52,10 @@ extern "C" int APS5_VABI remove_nid_postfix(const char* path) {
     if (!*path) { errno = 2; return -1; }
     try {
         const auto resolved = ResolvePath_nid_no_patch(path);
+        if (IsReadOnlyGamePath(resolved, "remove", path)) {
+            errno = 30; // EROFS
+            return -1;
+        }
         std::error_code error;
 #ifdef _WIN32
         const DWORD attributes = GetFileAttributesW(resolved.c_str());
