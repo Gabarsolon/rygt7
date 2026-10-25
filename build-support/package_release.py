@@ -116,6 +116,8 @@ def main():
     parser.add_argument("--converter", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--renderer-source", type=Path)
+    parser.add_argument("--renderer-deps-source", type=Path,
+                        help="externals folder with checked-out submodules (default: the renderer's)")
     parser.add_argument("--deps-source", type=Path, default=REPO / "3rdparty",
                         help="checked-out 3rdparty folder of this repository")
     parser.add_argument("--gcc-licenses", type=Path,
@@ -154,7 +156,7 @@ def main():
     if args.renderer_source:
         package.put(args.renderer_source / "LICENSE", "licenses\\shadGT7\\LICENSE")
         counts["shadGT7 deps"] = package.put_dependency_licenses(
-            args.renderer_source / "externals", "licenses\\shadGT7\\externals",
+            args.renderer_deps_source or args.renderer_source / "externals", "licenses\\shadGT7\\externals",
             "shadGT7 dependencies")
         sources["shadGT7"] = revision(args.renderer_source)
     for n in GCC_LICENSE_PACKAGES:
