@@ -50,3 +50,18 @@ __pycache__/
 *~
 .DS_Store
 Thumbs.db
+
+# Player data and release staging
+/app0/
+/convert/
+/GT7.exe
+/sys/
+/_sd/
+/user/
+/shaders/
+/logs/
+/patches/
+/dist/
+/deps/
+/RyGT*.ini
+!/build-support/
