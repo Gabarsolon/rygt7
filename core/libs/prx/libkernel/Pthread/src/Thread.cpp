@@ -210,9 +210,21 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
 #ifdef _WIN32
     SYSTEM_INFO system{};
     GetSystemInfo(&system);
-    const std::size_t nativeStack = (p->stackSize + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
+    // RyGT: the stack the title asks for, plus room for what runs on it besides its code: Windows'
+    // exception dispatch (every write fault of the renderer's page tracking), HLE functions, and
+    // callbacks into the title from them. Title code never probes its stack (no __chkstk), so a
+    // frame larger than the committed stack left skips the guard page and the process ends at once,
+    // with no handler run: GT7 died that way in a 67 KB frame (GT7.exe+0x28bdfb0, its menus).
+    constexpr std::size_t StackHeadroom = 512 * 1024;
+    const std::size_t nativeStack = (p->stackSize + StackHeadroom + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
     if (p->stackSize < 16384 || nativeStack > std::numeric_limits<unsigned>::max())
         throw std::runtime_error("scePthreadCreate: invalid Windows stack size");
+    {
+        static std::atomic<unsigned> logged{0};
+        if (logged.fetch_add(1) < 400 && std::getenv("APS5_TRACE_THREADS") != nullptr) {
+            std::fprintf(stderr, "[thread] '%s' stack 0x%zx (+0x%zx headroom)\n", name ? name : "", p->stackSize, StackHeadroom);
+        }
+    }
     auto native = std::make_unique<NativeThreadArgs>(NativeThreadArgs{std::move(args), start.get_future(), {}});
     auto initialized = native->initialized.get_future();
     const auto handle = _beginthreadex(nullptr, static_cast<unsigned>(nativeStack), StartNativeThread, native.get(), 0, nullptr);

@@ -7,7 +7,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <stdexcept>
 #include <string>
 #include <xmmintrin.h>
@@ -52,10 +54,62 @@ struct Fiber {
     void* savedStack;
     char name[FIBER_MAX_NAME_LENGTH + 1];
     bool contextSizeCheck;
+    // The stack the fiber runs on: the guest's context, or a larger host one (see HostStack).
+    std::uint8_t* stack;
+    std::uint64_t stackSize;
 };
 static_assert(sizeof(Fiber) <= FIBER_OBJECT_SIZE, "guest reserves 0x100 bytes for SceFiber");
 
 static constexpr std::uint64_t FIBER_MAGIC = 0x5245424946355041ull;
+
+// RyGT: a fiber runs on a host stack the size of its guest context plus headroom. The guest sized
+// the context for its own code; Windows' exception dispatch (every write fault of the renderer's
+// page tracking) and HLE functions run on it too, and title code never probes its stack (no
+// __chkstk), so a frame past the context's end left the process without a handler run: GT7 died
+// on the way to Deep Forest's events (its 'Updat' fibers have 256 KB contexts and call a function
+// with a 67 KB frame). Host stacks are kept per guest context address, so re-initializing a fiber
+// over the same context reuses its stack. RYGT_FIBER_HOST_STACKS=0: the guest's context, as before.
+static void UseHostStack(Fiber* fiber) {
+    fiber->stack = fiber->context;
+    fiber->stackSize = fiber->contextSize;
+#ifdef _WIN32
+    static const bool enabled = [] {
+        const char* env = std::getenv("RYGT_FIBER_HOST_STACKS");
+        return !(env && env[0] == '0');
+    }();
+    if (!enabled) return;
+    constexpr std::uint64_t Headroom = 512 * 1024;
+    constexpr std::uint64_t Granule = 64 * 1024;
+    const std::uint64_t size = (fiber->contextSize + Headroom + Granule - 1) / Granule * Granule;
+    struct HostStack {
+        std::uint8_t* base;
+        std::uint64_t size;
+    };
+    static std::mutex mutex;
+    static std::unordered_map<const std::uint8_t*, HostStack> stacks;
+    std::lock_guard lock(mutex);
+    auto& host = stacks[fiber->context];
+    if (host.size < size) {
+        if (host.base) VirtualFree(host.base, 0, MEM_RELEASE);
+        host.base = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        host.size = host.base ? size : 0;
+        static std::atomic<unsigned> logged{0};
+        if (logged.fetch_add(1) < 8) {
+            std::fprintf(stderr, "[fiber] '%s' runs on a host stack of 0x%llx bytes (context 0x%llx)\n", fiber->name,
+                         static_cast<unsigned long long>(host.size), static_cast<unsigned long long>(fiber->contextSize));
+        }
+    }
+    if (host.base) {
+        fiber->stack = host.base;
+        fiber->stackSize = host.size;
+    }
+#endif
+}
+
+// The part of the stack the context size check fills and measures: the top contextSize bytes.
+static std::uint64_t* CheckedWords(const Fiber* fiber) {
+    return reinterpret_cast<std::uint64_t*>(fiber->stack + fiber->stackSize - fiber->contextSize);
+}
 
 static std::atomic<bool> g_contextSizeCheck{false};
 
@@ -247,7 +301,7 @@ static void SetBounds(const StackBounds&) {}
 #endif
 
 static StackBounds FiberBounds(const Fiber* fiber) {
-    return {fiber->context + fiber->contextSize, fiber->context, fiber->context};
+    return {fiber->stack + fiber->stackSize, fiber->stack, fiber->stack};
 }
 
 static Fiber* AsFiber(FiberObject* object) {
@@ -262,7 +316,7 @@ extern "C" [[noreturn]] void Aps5FiberMain_nid_no_patch(Fiber* fiber) {
 }
 
 static void PrepareInitialStack(Fiber* fiber) {
-    const auto top = reinterpret_cast<std::uintptr_t>(fiber->context + fiber->contextSize) & ~static_cast<std::uintptr_t>(15);
+    const auto top = reinterpret_cast<std::uintptr_t>(fiber->stack + fiber->stackSize) & ~static_cast<std::uintptr_t>(15);
     auto* frame = reinterpret_cast<InitialFrame*>(top - 256);
     std::memset(frame, 0, sizeof(*frame));
     frame->mxcsr = _mm_getcsr();
@@ -325,9 +379,10 @@ int32_t APS5_VABI _sceFiberInitializeImpl_nid_postfix(FiberObject* object, const
     fiber->context = static_cast<std::uint8_t*>(addr_context);
     fiber->contextSize = size_context;
     std::strncpy(fiber->name, name, FIBER_MAX_NAME_LENGTH);
+    UseHostStack(fiber);
     fiber->contextSizeCheck = g_contextSizeCheck.load(std::memory_order_relaxed);
     if (fiber->contextSizeCheck) {
-        auto* words = static_cast<std::uint64_t*>(addr_context);
+        auto* words = CheckedWords(fiber);
         std::fill(words, words + size_context / sizeof(std::uint64_t), FIBER_CONTEXT_FILL);
     }
     if (TraceFibers()) std::fprintf(stderr, "[fiber] init %s object=%p context=%p+0x%llx entry=%p\n", fiber->name, static_cast<void*>(object), addr_context, static_cast<unsigned long long>(size_context), reinterpret_cast<void*>(entry));
@@ -414,7 +469,7 @@ int32_t APS5_VABI sceFiberGetInfo(FiberObject* object, FiberInfo* fiber_info) {
     std::memcpy(fiber_info->name, fiber->name, sizeof(fiber_info->name));
     fiber_info->size_context_margin = static_cast<uint64_t>(-1);
     if (fiber->contextSizeCheck) {
-        const auto* words = reinterpret_cast<const std::uint64_t*>(fiber->context);
+        const auto* words = CheckedWords(fiber);
         const auto* end = words + fiber->contextSize / sizeof(std::uint64_t);
         fiber_info->size_context_margin = static_cast<uint64_t>(std::find_if(words, end, [](std::uint64_t word) { return word != FIBER_CONTEXT_FILL; }) - words) * sizeof(std::uint64_t);
     }

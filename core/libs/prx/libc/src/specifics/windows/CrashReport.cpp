@@ -307,6 +307,26 @@ bool HandleBreak(EXCEPTION_POINTERS* info) {
         return true;
     }
     const int hit = g_breakCount.fetch_add(1);
+    // RyGT: APS5_BREAK_STACK=1 reports, for each hit, the thread and the stack left below rsp
+    // (a function with a large frame and no stack probes runs past a small stack's end).
+    if (std::getenv("APS5_BREAK_STACK") != nullptr) {
+        ULONG_PTR low = 0;
+        ULONG_PTR high = 0;
+        GetCurrentThreadStackLimits(&low, &high);
+        char threadName[128] = "";
+        PWSTR description = nullptr;
+        if (SUCCEEDED(GetThreadDescription(GetCurrentThread(), &description)) && description) {
+            WideCharToMultiByte(CP_UTF8, 0, description, -1, threadName, sizeof(threadName), nullptr, nullptr);
+            LocalFree(description);
+        }
+        Report("[break] hit %d on thread %lu '%s': rsp %llx, stack %llx-%llx, 0x%llx bytes below rsp\n", hit, GetCurrentThreadId(), threadName,
+            context->Rsp, static_cast<unsigned long long>(low), static_cast<unsigned long long>(high), static_cast<unsigned long long>(context->Rsp - low));
+        WriteCodeByte(g_breakAddress, g_breakOriginal);
+        context->Rip = g_breakAddress;
+        context->EFlags |= 0x100;
+        t_breakStepping = true;
+        return true;
+    }
     if (std::getenv("APS5_BREAK_QUIET") != nullptr) {
         Report("[break] hit %d rbx %llx rsi %llx label %.120s\n", hit, context->Rbx, context->Rsi, labelled ? reinterpret_cast<const char*>(label) : "?");
         WriteCodeByte(g_breakAddress, g_breakOriginal);

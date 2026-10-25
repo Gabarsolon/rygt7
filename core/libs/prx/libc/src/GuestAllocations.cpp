@@ -61,6 +61,46 @@ void recordChange(void* mutation, const void* pointer, std::size_t bytes) {
     if (mutation != nullptr && bytes != 0) static_cast<MutationState*>(mutation)->changed.emplace_back(reinterpret_cast<std::uintptr_t>(pointer), bytes);
 }
 
+// RyGT: GT7 died twice releasing a 64 KB direct memory range it unmapped, both times because the
+// range's control block (make_shared) had its vtable pointer overwritten while the rest of it -
+// counts, range - was intact. A range about to be released through such a block is reported with
+// the memory around it (the heap's header before it included) and kept instead.
+static_assert(sizeof(std::shared_ptr<const Range>) == 2 * sizeof(void*), "libstdc++ shared_ptr layout");
+
+const void* controlBlock(const std::shared_ptr<const Range>& range) {
+    return reinterpret_cast<const void* const*>(&range)[1];
+}
+
+const void* rangeBlockVtable() {
+    static const void* const vtable = [] {
+        const auto probe = std::make_shared<const Range>();
+        return *static_cast<const void* const*>(controlBlock(probe));
+    }();
+    return vtable;
+}
+
+void keepIfCorrupt(std::shared_ptr<const Range>& range) {
+    if (!range || range.use_count() != 1) return;
+    const auto* block = static_cast<const std::uint64_t*>(controlBlock(range));
+    if (block == nullptr || *reinterpret_cast<const void* const*>(block) == rangeBlockVtable()) return;
+    static std::atomic<unsigned> reported{0};
+    if (reported.fetch_add(1) < 16) {
+        std::fprintf(stderr, "[allocations] range 0x%llx+0x%llx: control block %p has vtable 0x%016llx, not %p; kept (heap corruption)\n",
+            static_cast<unsigned long long>(range->address), static_cast<unsigned long long>(range->bytes), static_cast<const void*>(block),
+            static_cast<unsigned long long>(block[0]), rangeBlockVtable());
+        for (int row = -4; row < 8; row += 2) {
+            std::fprintf(stderr, "  [%+04x] %016llx %016llx\n", row * 8, static_cast<unsigned long long>(block[row]), static_cast<unsigned long long>(block[row + 1]));
+        }
+        std::fflush(stderr);
+    }
+    new std::shared_ptr<const Range>(std::move(range)); // never released
+}
+
+template <typename Ranges>
+void keepCorrupt(Ranges& released) {
+    for (auto& entry : released) keepIfCorrupt(entry.second);
+}
+
 }
 
 void* GuestAllocationsBegin_nid_postfix() {
@@ -305,10 +345,15 @@ void GuestAllocationsRemove_nid_postfix(void* mutation, const void* pointer) {
     auto& ranges = registry().ranges;
     const auto exact = ranges.find(range.address);
     if (exact != ranges.end() && exact->second->allocationBytes == exact->second->bytes) {
+        keepIfCorrupt(exact->second);
         ranges.erase(exact);
         return;
     }
-    std::erase_if(ranges, [&](const auto& entry) { return entry.second->allocationAddress == range.address; });
+    std::erase_if(ranges, [&](auto& entry) {
+        if (entry.second->allocationAddress != range.address) return false;
+        keepIfCorrupt(entry.second);
+        return true;
+    });
 }
 
 namespace {
@@ -347,6 +392,7 @@ void GuestAllocationsProtect_nid_postfix(void* mutation, const void* pointer, st
     auto replacement = replaceRange(pointer, bytes, false, readable, writable);
     apply();
     registry().ranges.swap(replacement);
+    keepCorrupt(replacement);
 }
 
 void GuestAllocationsUnmap_nid_postfix(void* mutation, const void* pointer, std::size_t bytes, const std::function<void(const void*, std::size_t, const void*, bool)>& apply) {
@@ -377,6 +423,7 @@ void GuestAllocationsUnmap_nid_postfix(void* mutation, const void* pointer, std:
         }
         apply(reinterpret_cast<const void*>(cursor), pieceEnd - cursor, reinterpret_cast<const void*>(range.allocationAddress), last);
         registry().ranges.swap(replacement);
+        keepCorrupt(replacement);
         any = true;
         cursor = pieceEnd;
     }
