@@ -53,6 +53,10 @@ removed from its interface. DLSS's separate plugin and NVIDIA files are not bund
   [build-support/renderer.json](build-support/renderer.json).
 - [Build and packaging instructions](build-support/README.md).
 
+## Discord server
+
+Join our server for more updates: https://discord.gg/8dz4U9Nd8d
+
 ## Credits and license
 
 This repository preserves ryGT/Ryty's Git history and license notices. See [AUTHORS.md](AUTHORS.md)
