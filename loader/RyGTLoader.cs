@@ -1,4 +1,4 @@
-// RyGT loader: sets up Gran Turismo Sport from the player's own dump, firmware modules and fonts,
+// RyGT loader: sets up Gran Turismo 7 from the player's own dump, firmware modules and fonts,
 // then starts it. Built with build.cmd (C# for .NET Framework 4.x, which Windows includes).
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -141,7 +141,7 @@ namespace RyGT
             string script = Path.Combine(Path.GetTempPath(), name + ".sh");
             string done = Path.Combine(Path.GetTempPath(), name + ".done");
             var text = new StringBuilder();
-            text.Append("#!/bin/sh\n# Written by RyGT.exe: links the game's files under Wine.\n");
+            text.Append("#!/bin/sh\n# Written by RyGT7.exe: links the game's files under Wine.\n");
             text.Append("PATH=/usr/local/bin:/usr/bin:/bin\n");
             text.Append("link() { if [ -L \"$2\" ] || [ ! -e \"$2\" ]; then ln -sfn \"$1\" \"$2\"; fi; }\n");
             foreach (var pair in links)
@@ -527,7 +527,7 @@ namespace RyGT
         }
     }
 
-    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGT.exe),
+    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGT7.exe),
     /// darkened on the left and at the bottom, where the title and the Play button sit.
     class Hero : Panel
     {
@@ -779,7 +779,7 @@ namespace RyGT
         }
     }
 
-    /// Finishes the converted GTSport.exe: the launcher's icon (RyGT.exe's embedded copy of ryGT.ico),
+    /// Finishes the converted GT7.exe using the player's own game icon,
     /// so Explorer and shortcuts show the game's art instead of a blank program icon, and the Windows
     /// (GUI) subsystem, so a double-click opens only the game window, without a console.
     static class GameExe
@@ -810,11 +810,12 @@ namespace RyGT
             return (Wine.Detected || HasIcon(exe)) && ReadSubsystem(exe) == GuiSubsystem;
         }
 
-        public static void Prepare(string exe)
+        public static void Prepare(string exe, string iconPath = null)
         {
             // (Not the icon under Wine: it is only for Windows' Explorer, and this keeps Set up from
             // depending on Wine rewriting the resources of a 100 MB program.)
-            if (!Wine.Detected && !HasIcon(exe)) ApplyIcon(exe);
+            if (iconPath == null) iconPath = Path.Combine(Path.GetDirectoryName(exe), "app0", "sce_sys", "icon0.png");
+            if (!Wine.Detected && File.Exists(iconPath) && !HasIcon(exe)) ApplyIcon(exe, iconPath);
             if (ReadSubsystem(exe) != GuiSubsystem) WriteSubsystem(exe, GuiSubsystem);
         }
 
@@ -854,14 +855,30 @@ namespace RyGT
         }
 
         /// Adds every image of the .ico as RT_ICON 1..n and the icon group as RT_GROUP_ICON 1.
-        static void ApplyIcon(string exe)
+        static void ApplyIcon(string exe, string iconPath)
         {
             byte[] ico;
-            using (var stream = typeof(GameExe).Assembly.GetManifestResourceStream("ryGT.ico"))
+            using (var original = Image.FromFile(iconPath))
+            using (var output = new MemoryStream())
+            using (var writer = new BinaryWriter(output))
             {
-                if (stream == null) throw new Exception("RyGT.exe has no embedded icon.");
-                ico = new byte[stream.Length];
-                stream.Read(ico, 0, ico.Length);
+                int[] sizes = { 16, 24, 32, 48, 64, 128, 256 };
+                var images = new List<byte[]>();
+                foreach (int size in sizes)
+                    using (var bitmap = new Bitmap(original, size, size))
+                    using (var png = new MemoryStream())
+                    { bitmap.Save(png, System.Drawing.Imaging.ImageFormat.Png); images.Add(png.ToArray()); }
+                writer.Write((ushort)0); writer.Write((ushort)1); writer.Write((ushort)sizes.Length);
+                int offset = 6 + sizes.Length * 16;
+                for (int i = 0; i < sizes.Length; i++)
+                {
+                    writer.Write((byte)(sizes[i] == 256 ? 0 : sizes[i]));
+                    writer.Write((byte)(sizes[i] == 256 ? 0 : sizes[i]));
+                    writer.Write((ushort)0); writer.Write((ushort)1); writer.Write((ushort)32);
+                    writer.Write(images[i].Length); writer.Write(offset); offset += images[i].Length;
+                }
+                foreach (byte[] image in images) writer.Write(image);
+                ico = output.ToArray();
             }
             int count = BitConverter.ToUInt16(ico, 4);
             IntPtr update = BeginUpdateResource(exe, false);
@@ -922,6 +939,15 @@ namespace RyGT
         public void Save()
         {
             File.WriteAllLines(path, new[] { "game=" + Game, "update=" + Update, "modules=" + Modules, "fonts=" + Fonts, "stdout_level=" + StdoutLevel });
+            // Existing runtime libraries read their log threshold from this compatibility file.
+            string runtimeIni = Path.Combine(Path.GetDirectoryName(path), "RyGT.ini");
+            if (!string.Equals(runtimeIni, path, StringComparison.OrdinalIgnoreCase))
+            {
+                var lines = File.Exists(runtimeIni) ? File.ReadAllLines(runtimeIni).ToList() : new List<string>();
+                lines.RemoveAll(line => line.TrimStart().StartsWith("stdout_level=", StringComparison.OrdinalIgnoreCase));
+                lines.Add("stdout_level=" + StdoutLevel);
+                File.WriteAllLines(runtimeIni, lines);
+            }
         }
     }
 
@@ -930,15 +956,15 @@ namespace RyGT
         static readonly string[] FirmwareModules = { "libSceFont", "libSceFontFt", "libSceFreeTypeOt", "libSceJson2", "libSceNgs2" };
         // Used when present: the JPEG decoder (Scapes thumbnails and backgrounds) and PNG encoder (photos).
         // Both are plain software modules needing only libkernel and libSceLibcInternal.
-        // (The other firmware modules GT Sport imports stay RyGT's stubs in libs: converted from a full
+        // (The other firmware modules GT7 imports stay RyGT's stubs in libs: converted from a full
         // firmware folder, some of them need modules nothing provides, such as libSceOttvCapture,
-        // and GTSport.exe then stopped at start with "Failed to load module".)
+        // and GT7.exe then stopped at start with "Failed to load module".)
         static readonly string[] OptionalFirmwareModules = { "libSceJpegDec", "libScePngEnc" };
 
         readonly string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         readonly Settings settings;
         readonly TextBox game, update, modules, fonts, log;
-        readonly Button setup, play;
+        readonly Button setup, play, addDlss;
         readonly Label status;
         readonly Panel[] pages = new Panel[3];
         readonly Button[] tabs = new Button[3];
@@ -946,9 +972,17 @@ namespace RyGT
 
         public LoaderForm()
         {
-            settings = new Settings(Path.Combine(root, "RyGT.ini"));
-            Text = "ryGT - Gran Turismo Sport";
+            settings = new Settings(Path.Combine(root, "RyGT7.ini"));
+            EnsureGT7Defaults();
+            Text = "ryGT7 - Gran Turismo 7";
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            try
+            {
+                string iconPath = Path.Combine(root, "app0", "sce_sys", "icon0.png");
+                if (File.Exists(iconPath))
+                    using (var bitmap = new Bitmap(iconPath)) Icon = Icon.FromHandle(bitmap.GetHicon());
+            }
+            catch { }
             Font = new Font("Segoe UI", 9f);
             ClientSize = new Size(1280, 800);
             MinimumSize = new Size(1120, 720);
@@ -960,7 +994,7 @@ namespace RyGT
             var logo = new PictureBox { Size = new Size(30, 30), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 0, 8, 0) };
             try { logo.Image = new Icon(Icon, 32, 32).ToBitmap(); } catch { }
             top.Controls.Add(logo);
-            top.Controls.Add(new Label { Text = "ryGT", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
+            top.Controls.Add(new Label { Text = "ryGT7", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
             var tabNames = new[] { "Home", "Settings", "Controls" };
             for (int i = 0; i < tabs.Length; ++i)
             {
@@ -983,7 +1017,7 @@ namespace RyGT
             footer.Controls.Add(status, 0, 0);
             footer.Controls.Add(new Label
             {
-                Text = "ryGT for Windows " + (char)183 + " GT Sport 1.69", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
+                Text = "ryGT7 for Windows " + (char)183 + " GT7 · CUSA24769", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
                 Tag = "heading", Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(0)
             }, 1, 0);
 
@@ -1022,7 +1056,7 @@ namespace RyGT
             home.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             pages[0].Controls.Add(home);
 
-            // The background picture (launcher\background.png next to RyGT.exe) fills the banner.
+            // The background picture (launcher\background.png next to RyGT7.exe) fills the banner.
             var hero = new Hero(background) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 14) };
             home.Controls.Add(hero, 0, 0);
             var heroText = new FlowLayoutPanel
@@ -1033,18 +1067,18 @@ namespace RyGT
             hero.Controls.Add(heroText);
             heroText.Controls.Add(new Label
             {
-                Text = "CUSA03220  " + (char)183 + "  UPDATE 1.69", AutoSize = true, BackColor = Color.Transparent,
+                Text = "CUSA24769  " + (char)183 + "  PS4", AutoSize = true, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(3, 0, 0, 4)
             });
             heroText.Controls.Add(new Label
             {
-                Text = "Gran Turismo Sport", AutoSize = true, BackColor = Color.Transparent,
+                Text = "Gran Turismo 7", AutoSize = true, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI Semibold", 26f), Margin = new Padding(0, 0, 0, 4)
             });
             heroText.Controls.Add(new Label
             {
-                Text = "On Windows, from your own decrypted dump (CUSA03220), its 1.69 update and your PS4 firmware's " +
-                       "system modules and fonts. Set up converts the game once; Play starts it.",
+                Text = "From your own decrypted CUSA24769 base game and PS4 firmware's " +
+                       "modules and fonts. Updates can be merged into the base game or selected separately. Set up once, then Play.",
                 AutoSize = true, MaximumSize = new Size(520, 0), BackColor = Color.Transparent, ForeColor = Color.FromArgb(214, 214, 214),
                 Tag = "heading", Font = new Font("Segoe UI", 10f), Margin = new Padding(2, 0, 0, 18)
             });
@@ -1065,8 +1099,8 @@ namespace RyGT
             fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             files.Controls.Add(fileTable);
-            game = AddRow(fileTable, 0, "Game (CUSA03220)", settings.Game);
-            update = AddRow(fileTable, 1, "Update 1.69 (if separate)", settings.Update);
+            game = AddRow(fileTable, 0, "Base game (CUSA24769)", settings.Game);
+            update = AddRow(fileTable, 1, "Update (optional, if separate)", settings.Update);
             modules = AddRow(fileTable, 2, "System modules", settings.Modules);
             fonts = AddRow(fileTable, 3, "Fonts", settings.Fonts);
 
@@ -1099,17 +1133,13 @@ namespace RyGT
 
             var display = Section(left, "Display");
             AddScreenSettings(display);
-            AddShapeSetting(display);
             AddOption(display, "Show an FPS counter", "General", "show_fps_counter", false);
             AddOption(display, "Show the splash screen while the game starts", "General", "show_splash", false);
             AddOption(display, "Show the game on Discord (Rich Presence)", "General", "discord_rpc_enabled", true);
-            // The game's opening movie (when its own option plays it); off: skipped at once.
-            AddOption(display, "Play the opening movie", "General", "opening_movie", true);
             AddMemorySetting(display);
 
             // Graphics.
             var graphics = Section(right, "Graphics");
-            AddRendererSetting(graphics);
             // Sparks, tire smoke and other effects are always on; an older launcher could have
             // turned them off in the config.
             if (!ReadSetting("GPU", "particle_effects", true))
@@ -1117,7 +1147,7 @@ namespace RyGT
                 try { WriteSetting("GPU", "particle_effects", true); } catch { }
             }
             // AMD FSR scales the game's 1920x1080 picture to the window or screen size: FSR 3.1 through
-            // amd_fidelityfx_vk.dll (next to GTSport.exe, part of the release), or shadGT's FSR 1 pass.
+            // amd_fidelityfx_vk.dll (next to GT7.exe, part of the release), or shadGT's FSR 1 pass.
             // AMD: FSR upscaling (FSR 3.1 through amd_fidelityfx_vk.dll, or shadGT's FSR 1) and
             // FSR 3.1 frame generation (any GPU; independent of the upscaling choice).
             var fsr = AddOption(graphics, "Upscale with AMD FSR (above 1080p)", "GPU", "fsr_enabled", false);
@@ -1141,6 +1171,13 @@ namespace RyGT
             // button below (NVIDIA's DLSS SDK and Streamline SDK, or another game's copies).
             string dlssDir = Path.Combine(root, "dlss");
             var dlss = AddOption(graphics, "", "GPU", "dlss_enabled", false);
+            // DLSS's input is the game's own picture, at most 1920 x 1080 (#61).
+            graphics.Controls.Add(new Label
+            {
+                Text = "Internal resolution: up to 1920 x 1080.\nAt 4K output, DLSS corresponds to Performance mode.",
+                AutoSize = true, MaximumSize = new Size(330, 0), BackColor = Color.Transparent, ForeColor = Dark.DimText,
+                Tag = "heading", Margin = new Padding(22, 2, 0, 6)
+            });
             var dlssg = AddOption(graphics, "", "GPU", "dlssg_enabled", false);
             dlssg.Margin = new Padding(22, 2, 0, 2);
             Action refreshDlss = delegate
@@ -1157,9 +1194,18 @@ namespace RyGT
                 dlssg.Enabled = dlssgInstalled;
             };
             refreshDlss();
-            var dlssFiles = new Button { Text = "Add DLSS files...", AutoSize = true, Margin = new Padding(22, 2, 0, 4) };
-            dlssFiles.Click += delegate
+            addDlss = new Button { Text = "Add DLSS files...", AutoSize = true, Margin = new Padding(22, 2, 0, 4) };
+            addDlss.Click += delegate
             {
+                // The game keeps the DLSS files open while it runs (#61).
+                var games = Process.GetProcessesByName("GT7");
+                bool gameRunning = games.Length != 0;
+                foreach (var process in games) process.Dispose();
+                if (gameRunning)
+                {
+                    MessageBox.Show(this, "Close GT7 before adding or replacing the DLSS files.");
+                    return;
+                }
                 using (var dialog = new FolderBrowserDialog
                 {
                     Description = "Pick the folder with your NVIDIA DLSS files: nvngx_dlss.dll for upscaling; " +
@@ -1179,7 +1225,10 @@ namespace RyGT
                             // Found anywhere under the picked folder (the SDKs keep them in bin\x64).
                             var found = Directory.GetFiles(dialog.SelectedPath, name, SearchOption.AllDirectories);
                             if (found.Length == 0) continue;
-                            File.Copy(found[0], Path.Combine(dlssDir, name), true);
+                            // The upscaler is checked to be NVIDIA's 64-bit DLSS library, and the one
+                            // it replaces is kept as a .bak (#61).
+                            if (name == "nvngx_dlss.dll") InstallDlssLibrary(found[0], dlssDir);
+                            else File.Copy(found[0], Path.Combine(dlssDir, name), true);
                             ++copied;
                         }
                     }
@@ -1193,30 +1242,33 @@ namespace RyGT
                         : "Copied " + copied + " DLSS file(s) into the dlss folder.");
                 }
             };
-            graphics.Controls.Add(dlssFiles);
+            graphics.Controls.Add(addDlss);
+            // DLSS and FSR both upscale, so one at a time; DLSS runs in Performance mode (#61).
+            fsr.CheckedChanged += delegate { if (fsr.Checked && dlss.Checked) dlss.Checked = false; };
+            Action updateDlss = delegate
+            {
+                if (!dlss.Checked) return;
+                if (fsr.Checked) fsr.Checked = false;
+                try
+                {
+                    if (ReadStringSetting("GPU", "dlss_quality", "performance") != "performance")
+                        WriteSetting("GPU", "dlss_quality", "performance");
+                }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the DLSS setting: " + e.Message); }
+            };
+            dlss.CheckedChanged += delegate { updateDlss(); };
+            updateDlss();
             framegen.CheckedChanged += delegate { if (framegen.Checked && dlssg.Checked) dlssg.Checked = false; };
             dlssg.CheckedChanged += delegate { if (dlssg.Checked && framegen.Checked) framegen.Checked = false; };
-            // GTS-007: in the rain the game renders the scene a second time for the wet track's
-            // reflection (about a quarter of a rainy frame's draws). Off: about +30% fps in rain.
-            var wet = AddOption(graphics, "Wet-road reflections in the rain (off: much faster in rain)", "GPU",
-                                "wet_reflections", true);
-            // GTS-008: the rear-view mirror is redrawn every second frame (its picture is kept).
-            var mirror = AddOption(graphics, "Rear-view mirror at half rate (a little faster)", "GPU",
-                                   "mirror_half_rate", false);
-
-            // The direct renderer (shaders read game memory in place; Tokyo rain 42.7 fps vs 32.1)
-            // is the only renderer since 2026-10-16; the old renderer's stored shaders stand in
-            // while its own are built (D10), so it has no option any more.
-
-            // Shaders: a new one pauses the game until it is compiled (instead of a stutter and
-            // missing objects).
+            // Shaders: the stored ones are built while the splash screen shows; a new one pauses
+            // the game until it is compiled (instead of a stutter and missing objects).
             var shaders = Section(left, "Shaders");
             // What the game does while a new shader compiles during play (GPU.compile_mode).
             var modeRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
             var modeLabel = new Label { Text = "When new shaders compile", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
             var mode = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
             mode.Items.AddRange(new object[] { "Pause the game", "Slow motion", "Keep going (objects pop in)" });
-            mode.SelectedIndex = Math.Max(0, Math.Min(2, ReadIntSetting("GPU", "compile_mode", 1)));
+            mode.SelectedIndex = Math.Max(0, Math.Min(2, ReadIntSetting("GPU", "compile_mode", 2)));
             modeRow.Controls.Add(modeLabel);
             modeRow.Controls.Add(mode);
             shaders.Controls.Add(modeRow);
@@ -1270,7 +1322,7 @@ namespace RyGT
             var controlsPage = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoScroll = true, Margin = new Padding(0) };
             controlsPage.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             pages[2].Controls.Add(controlsPage);
-            controlsPage.Controls.Add(PageTitle("Controls", "2 players for Arcade's Split Screen: pick each player's name and controller, and what each " +
+            controlsPage.Controls.Add(PageTitle("Controls", "Pick your controller, player name, and what each " +
                                                             "button does. In game, F3 or holding Share + Options (View + Menu) changes controllers."));
             var controls = Section(controlsPage, "Controllers and wheels");
             controls.Controls.Add(Item("Controller ports...", "Which controller plays as each player, with a live preview", "P", Badges[0], OpenPorts));
@@ -1318,10 +1370,10 @@ namespace RyGT
             side.Controls.Add(GroupLabel("Settings"));
             side.Controls.Add(Item("Display", "Screen, resolution, refresh rate", "D", Badges[3], delegate { ShowPage(1); }));
             side.Controls.Add(Item("Graphics", "FSR, DLSS, frame generation", "G", Badges[4], delegate { ShowPage(1); }));
-            side.Controls.Add(Item("Shaders", "Compile pauses", "S", Badges[5], delegate { ShowPage(1); }));
+            side.Controls.Add(Item("Shaders", "Shader compilation", "S", Badges[5], delegate { ShowPage(1); }));
             side.Controls.Add(GroupLabel("Game"));
             side.Controls.Add(Item("Set up", "Convert the game from your dump", "U", Badges[6], delegate { if (setup.Enabled) StartSetup(); }));
-            side.Controls.Add(Item("Open folder", "The RyGT folder in Explorer", "F", Badges[7], OpenFolder));
+            side.Controls.Add(Item("Open folder", "The ryGT7 folder in Explorer", "F", Badges[7], OpenFolder));
 
             foreach (var column in new[] { settingsPage, controlsPage, side }) Stack(column);
             ShowPage(0);
@@ -1337,6 +1389,10 @@ namespace RyGT
             HandleCreated += delegate { Dark.TitleBar(this); };
             Shown += delegate { ActiveControl = play.Enabled ? (Control)play : setup; };
             RefreshState();
+            var stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            stateTimer.Tick += delegate { if (!busy) RefreshState(); };
+            stateTimer.Start();
+            FormClosed += delegate { stateTimer.Dispose(); };
         }
 
         // The side list's badge colors.
@@ -1431,7 +1487,8 @@ namespace RyGT
 
         Image LoadBackground()
         {
-            foreach (var path in new[] { Path.Combine(root, "launcher", "background.png"), Path.Combine(root, "launcher", "background.jpg") })
+            foreach (var path in new[] { Path.Combine(root, "launcher", "background.png"), Path.Combine(root, "launcher", "background.jpg"),
+                Path.Combine(root, "app0", "sce_sys", "pic1.png"), Path.Combine(settings.Game, "sce_sys", "pic1.png") })
             {
                 try { if (File.Exists(path)) return Image.FromStream(new MemoryStream(File.ReadAllBytes(path))); }
                 catch { }
@@ -1515,13 +1572,13 @@ namespace RyGT
             return box;
         }
 
-        string Exe { get { return Path.Combine(root, "GTSport.exe"); } }
+        string Exe { get { return Path.Combine(root, "GT7.exe"); } }
 
         string ConfigPath { get { return Path.Combine(root, "user", "custom_configs", "CUSA03220.json"); } }
 
-        /// A shadGT setting in a section of the GT Sport config (General: show_splash,
+        /// A shadGT setting in a section of the GT7 config (General: show_splash,
         /// show_fps_counter, discord_rpc_enabled; GPU: full_screen, particle_effects, fsr_enabled, fsr3_enabled, rcas_enabled, dlss_enabled,
-        /// framegen_enabled, compile_freeze).
+        /// framegen_enabled, precompile_shaders, compile_freeze).
         bool ReadSetting(string sectionName, string key, bool fallback)
         {
             try
@@ -1747,27 +1804,6 @@ namespace RyGT
         // whole, then copied again when saved) is off and fewer freed GPU images are kept for
         // reuse. Tokyo rain race, committed memory: 32 GB setting ~11 GB average / 13.5 GB peak,
         // 16 GB setting ~8.6 / 9.0 GB. Picked from the installed RAM the first time.
-        // Screen shape (GPU.aspect_ratio, GTS-009 in renderer patch 0051): GT Sport draws a 16:9
-        // picture. "Fill the screen" widens the race camera to the shape of the game's window or
-        // screen and stretches the picture over it (ultrawide without black bars; the HUD and menus
-        // are stretched too). Read when the game starts.
-        void AddShapeSetting(TableLayoutPanel panel)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 2, 0, 2), WrapContents = false };
-            var label = new Label { Text = "Screen shape", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
-            var shape = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
-            shape.Items.AddRange(new object[] { "16:9 (the game's own)", "Fill the screen (wide)" });
-            shape.SelectedIndex = ReadStringSetting("GPU", "aspect_ratio", "16:9") == "auto" ? 1 : 0;
-            shape.SelectedIndexChanged += delegate
-            {
-                try { WriteSetting("GPU", "aspect_ratio", shape.SelectedIndex == 1 ? "auto" : "16:9"); }
-                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
-            };
-            row.Controls.Add(label);
-            row.Controls.Add(shape);
-            panel.Controls.Add(row);
-        }
-
         void AddMemorySetting(TableLayoutPanel panel)
         {
             var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
@@ -1798,26 +1834,6 @@ namespace RyGT
             panel.Controls.Add(row);
         }
 
-        // Renderer (GPU.native_renderer): the old renderer (shadGT's, with the direct memory
-        // renderer; the default) or the native renderer (experimental: GT Sport's command buffers
-        // recorded straight into Vulkan, faster in races; RYGT_NATIVE=1 or =0 overrides the choice).
-        void AddRendererSetting(TableLayoutPanel panel)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 2, 0, 4), WrapContents = false };
-            var label = new Label { Text = "Renderer", AutoSize = false, Width = 110, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
-            var renderer = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230, FlatStyle = FlatStyle.Flat };
-            renderer.Items.AddRange(new object[] { "Old renderer (default)", "Native renderer (experimental)" });
-            renderer.SelectedIndex = ReadSetting("GPU", "native_renderer", false) ? 1 : 0;
-            renderer.SelectedIndexChanged += delegate
-            {
-                try { WriteSetting("GPU", "native_renderer", renderer.SelectedIndex == 1); }
-                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
-            };
-            row.Controls.Add(label);
-            row.Controls.Add(renderer);
-            panel.Controls.Add(row);
-        }
-
         CheckBox AddOption(TableLayoutPanel panel, string text, string sectionName, string key, bool fallback)
         {
             var box = new DarkCheckBox { Text = text, AutoSize = true, Checked = ReadSetting(sectionName, key, fallback), Margin = new Padding(0, 2, 0, 2) };
@@ -1837,12 +1853,64 @@ namespace RyGT
             return parsed as Dictionary<string, object> ?? new Dictionary<string, object>();
         }
 
+        internal static void InstallDlssLibrary(string source, string directory)
+        {
+            if (!string.Equals(Path.GetFileName(source), "nvngx_dlss.dll", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Select the NVIDIA Super Resolution file named nvngx_dlss.dll.");
+            using (var reader = new BinaryReader(File.OpenRead(source)))
+            {
+                if (reader.BaseStream.Length < 64 || reader.ReadUInt16() != 0x5a4d)
+                    throw new InvalidDataException("The selected file is not a Windows DLL.");
+                reader.BaseStream.Position = 0x3c;
+                int pe = reader.ReadInt32();
+                if (pe < 64 || pe > reader.BaseStream.Length - 26)
+                    throw new InvalidDataException("The selected DLL has an invalid PE header.");
+                reader.BaseStream.Position = pe;
+                if (reader.ReadUInt32() != 0x4550 || reader.ReadUInt16() != 0x8664)
+                    throw new InvalidDataException("DLSS requires a 64-bit Windows DLL.");
+                reader.BaseStream.Position = pe + 22;
+                if ((reader.ReadUInt16() & 0x2000) == 0 || reader.ReadUInt16() != 0x20b)
+                    throw new InvalidDataException("DLSS requires a 64-bit Windows DLL.");
+            }
+            var version = FileVersionInfo.GetVersionInfo(source);
+            if ((version.CompanyName ?? "").IndexOf("NVIDIA", StringComparison.OrdinalIgnoreCase) < 0 ||
+                (version.FileDescription ?? "").IndexOf("DLSS", StringComparison.OrdinalIgnoreCase) < 0)
+                throw new InvalidDataException("The selected file is not an NVIDIA DLSS library.");
+            string destination = Path.Combine(directory, "nvngx_dlss.dll");
+            if (string.Equals(Path.GetFullPath(source), Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase)) return;
+            Directory.CreateDirectory(directory);
+            string temporary = destination + ".install-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.Copy(source, temporary);
+                if (File.Exists(destination))
+                    File.Replace(temporary, destination, destination + "." + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff") + ".bak");
+                else
+                    File.Move(temporary, destination);
+            }
+            finally
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+            }
+        }
+
         void RefreshState()
         {
-            bool ready = File.Exists(Exe) && Directory.Exists(Path.Combine(root, "app0", "sce_module"));
-            play.Enabled = ready && !busy;
-            setup.Enabled = !busy;
+            bool ready = File.Exists(Exe) && File.Exists(Path.Combine(root, "app0", "contents", "gt.idx"));
+            bool running = IsGameRunning();
+            play.Enabled = ready && !busy && !running;
+            setup.Enabled = !busy && !running;
+            addDlss.Enabled = !busy && !running;
             if (!busy) status.Text = ready ? "Ready. Press Play." : "Not set up yet. Pick the folders and press Set up.";
+            if (running) status.Text = "GT7 is running. Close the game before running Set up.";
+        }
+
+        static bool IsGameRunning()
+        {
+            var games = Process.GetProcessesByName("GT7");
+            bool running = games.Length > 0;
+            foreach (var game in games) game.Dispose();
+            return running;
         }
 
         readonly object logLock = new object();
@@ -1881,7 +1949,7 @@ namespace RyGT
             status.Text = text;
         }
 
-        /// RyGT.exe --setup: the same set up without the window, from the folders in RyGT.ini.
+        /// RyGT7.exe --setup: the same set up without the window, from the folders in RyGT7.ini.
         public int SetupWithoutWindow()
         {
             try { setupLogPath = LogFiles.Prepare(root, "setup.log"); RunSetup(); return 0; }
@@ -1919,18 +1987,17 @@ namespace RyGT
 
         void RunSetup()
         {
+            if (IsGameRunning())
+                throw new Exception("Close GT7 before running Set up.");
             string baseDir = settings.Game, updateDir = settings.Update;
-            if (!Directory.Exists(baseDir)) throw new Exception("Pick the game folder (the one holding gt00.vol and eboot.bin).");
-            if (!File.Exists(Path.Combine(baseDir, "gt00.vol")))
-                throw new Exception("The game folder has no gt00.vol. Pick the base game folder of CUSA03220.");
-            if (updateDir.Length > 0 && !Directory.Exists(updateDir)) throw new Exception("The update folder does not exist.");
-            if (updateDir.Length == 0) updateDir = null;
-            string gameDir = updateDir ?? baseDir; // the newest executable, modules and data index
-
-            string version = ReadAppVersion(Path.Combine(gameDir, "sce_sys", "param.sfo"));
-            Log("Game version: " + (version ?? "unknown"));
-            if (version != null && version != "01.69")
-                throw new Exception("This build is for update 1.69, but the game is " + version + ". Pick the 1.69 update folder too.");
+            var layout = new GameLayout(baseDir, updateDir, root);
+            settings.Save();
+            Log("Gran Turismo 7 (CUSA24769), version " + layout.Version);
+            if (layout.Version != "01.00")
+                Log("This update is not yet verified. The converter will use its executable without version-specific offsets.");
+            foreach (string name in new[] { "libSceVideoOut.prx", "libSceMbus.prx", "libSceTextToSpeech.prx" })
+                if (!File.Exists(Path.Combine(root, "libs", name)))
+                    throw new Exception("The ryGT7 runtime is incomplete: libs\\" + name + " is missing. Extract the full release archive first.");
 
             string fontDir, font2Dir;
             FindFonts(settings.Fonts, out fontDir, out font2Dir);
@@ -1954,16 +2021,16 @@ namespace RyGT
             string workModules = Path.Combine(work, "sce_module");
             if (Directory.Exists(workModules)) Directory.Delete(workModules, true);
             Directory.CreateDirectory(workModules);
-            Unwrap(Path.Combine(gameDir, "eboot.bin"), Path.Combine(work, "eboot.elf"));
+            Unwrap(layout.Get("eboot.bin"), Path.Combine(work, "eboot.elf"));
             foreach (var name in new[] { "libc.prx", "libSceFios2.prx" })
             {
-                string source = FirstExisting(Path.Combine(gameDir, "sce_module", name), Path.Combine(baseDir, "sce_module", name));
+                string source = layout.Get("sce_module\\" + name);
                 if (source == null) throw new Exception("The game's sce_module\\" + name + " is missing.");
                 Unwrap(source, Path.Combine(workModules, name));
             }
             foreach (var name in new[] { "libSceSecure.prx", "logiWheel.prx" })
             {
-                string source = FirstExisting(Path.Combine(gameDir, name), Path.Combine(baseDir, name));
+                string source = layout.Get(name);
                 if (source != null) Unwrap(source, Path.Combine(workModules, name));
             }
             foreach (var pair in firmware) Unwrap(pair.Value, Path.Combine(workModules, pair.Key + ".prx"));
@@ -1972,124 +2039,33 @@ namespace RyGT
             SetStatus("Converting the game for Windows (this takes a while)...");
             string converter = Path.Combine(root, "converter", "ryty.exe");
             if (!File.Exists(converter)) throw new Exception("converter\\ryty.exe is missing from the RyGT folder.");
-            Directory.CreateDirectory(Path.Combine(root, "app0", "sce_module"));
+            string convertedRoot = Path.Combine(work, "runtime-" + Guid.NewGuid().ToString("N"));
+            string convertedExe = Path.Combine(convertedRoot, "GT7.exe");
+            string convertedModules = Path.Combine(convertedRoot, "app0", "sce_module");
+            Directory.CreateDirectory(convertedModules);
             int code = Run(converter, "--windows --ps4 --skip-syscall-check --registry --report \"" +
-                Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + Exe + "\"", work);
-            if (code != 0 || !File.Exists(Exe)) throw new Exception("The converter failed (exit code " + code + ").");
-            GameExe.Prepare(Exe);
-            Log(Wine.Detected ? "Made GTSport.exe a Windows program." : "Gave GTSport.exe the ryGT icon and made it a Windows program.");
+                Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + convertedExe + "\"", work);
+            if (code != 0 || !File.Exists(convertedExe)) throw new Exception("The converter failed (exit code " + code + "); the previous game executable was preserved. See convert\\convert.log.");
+            GameExe.Prepare(convertedExe, layout.Get("sce_sys\\icon0.png"));
+            Log("Prepared GT7.exe with the game's icon.");
 
             // 3. app0: the game's files, the update's over the base game's, linked rather than copied.
             SetStatus("Linking the game files...");
-            LinkGameFiles(baseDir, updateDir);
+            LinkGameFiles(layout, convertedModules);
+            File.Copy(convertedExe, Exe, true);
+            string registry = Path.ChangeExtension(convertedExe, ".registry.json");
+            if (File.Exists(registry)) File.Copy(registry, Path.ChangeExtension(Exe, ".registry.json"), true);
 
             // 4. Fonts.
             SetStatus("Copying the fonts...");
             CopyDirectory(fontDir, Path.Combine(root, "sys", "common", "font"));
             CopyDirectory(font2Dir, Path.Combine(root, "sys", "common", "font2"));
 
-            // 5. Offline livery and decal scripts, made from this game's own files.
-            SetStatus("Making the offline livery scripts from your game files...");
-            if (!BuildGameScripts(baseDir, updateDir))
-                Log("Note: the offline livery scripts could not be made; liveries will not apply offline.");
-
-            // 6. The shaders folder (shaders built while playing are kept there).
+            // GT7's runtime settings and directories; no GT Sport scripts or shader packs.
+            ConfigureGT7();
             UsePortableShaderCache();
 
             Log("Set up finished.");
-        }
-
-        // The game scripts GTS-005 serves from patches\scripts: offline livery apply (UI_KIT, LIVERY2,
-        // THUMBNAIL) and the decals folder (GALLERY, GRIM). They are made from Polyphony's scripts, so
-        // they are not shipped: tools\adcpatch\adcpatch.exe reads them from the player's own game
-        // volumes (GTToolsSharp) and patches them (GTAdhocToolchain), both by Nenkai, MIT licensed.
-        static readonly string[] GameScripts = { "UI_KIT.ADC", "LIVERY2.ADC", "THUMBNAIL.ADC", "GALLERY.ADC", "GRIM.ADC" };
-
-        bool GameScriptsMissing()
-        {
-            string dir = Path.Combine(root, "patches", "scripts");
-            return GameScripts.Any(name => !File.Exists(Path.Combine(dir, name)));
-        }
-
-        // Missing, or made by another toolsdcpatch (a newer build ships a newer one): the scripts
-        // folder keeps a hash of the adcpatch.exe that made it.
-        bool GameScriptsOutdated()
-        {
-            if (GameScriptsMissing()) return true;
-            string tool = Path.Combine(root, "tools", "adcpatch", "adcpatch.exe");
-            if (!File.Exists(tool)) return false;
-            string stamp = Path.Combine(root, "patches", "scripts", "made-by.txt");
-            try { return !File.Exists(stamp) || File.ReadAllText(stamp).Trim() != ToolHash(tool); }
-            catch { return true; }
-        }
-
-        static string ToolHash(string tool)
-        {
-            using (var sha = System.Security.Cryptography.SHA256.Create())
-            using (var stream = File.OpenRead(tool))
-                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
-        }
-
-        bool BuildGameScripts(string baseDir, string updateDir)
-        {
-            string tool = Path.Combine(root, "tools", "adcpatch", "adcpatch.exe");
-            if (!File.Exists(tool)) { Log("tools\\adcpatch\\adcpatch.exe is missing."); return false; }
-            string output = Path.Combine(root, "patches", "scripts");
-            Func<string, string> arg = d => "\"" + (d ?? "").TrimEnd('\\') + "\"";
-            string arguments = "all " + arg(baseDir) + " " + arg(updateDir) + " " + arg(output);
-            Log("> adcpatch.exe " + arguments);
-            var info = new ProcessStartInfo(tool, arguments)
-            {
-                WorkingDirectory = Path.GetDirectoryName(tool), UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            var lines = new List<string>();
-            using (var process = new Process { StartInfo = info })
-            {
-                DataReceivedEventHandler collect = delegate (object sender, DataReceivedEventArgs e)
-                {
-                    if (e.Data == null) return;
-                    lock (lines) lines.Add(e.Data);
-                    if (e.Data.StartsWith("[OK]") || e.Data.StartsWith("[X]") || e.Data.Contains(" scripts patched"))
-                        Log(e.Data);
-                };
-                process.OutputDataReceived += collect;
-                process.ErrorDataReceived += collect;
-                process.Start();
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-                process.WaitForExit();
-                lock (lines)
-                {
-                    try { File.WriteAllLines(Path.Combine(Path.GetDirectoryName(tool), "adcpatch.log"), lines); } catch { }
-                }
-                bool ok = process.ExitCode == 0 && !GameScriptsMissing();
-                if (ok)
-                {
-                    try { File.WriteAllText(Path.Combine(output, "made-by.txt"), ToolHash(tool)); } catch { }
-                }
-                return ok;
-            }
-        }
-
-        static string ReadAppVersion(string sfo)
-        {
-            if (!File.Exists(sfo)) return null;
-            var d = File.ReadAllBytes(sfo);
-            if (d.Length < 20 || BitConverter.ToUInt32(d, 0) != 0x46535000) return null;
-            int keys = (int)BitConverter.ToUInt32(d, 8), data = (int)BitConverter.ToUInt32(d, 12), count = (int)BitConverter.ToUInt32(d, 16);
-            for (int i = 0; i < count; i++)
-            {
-                int e = 20 + i * 16;
-                int keyOffset = BitConverter.ToUInt16(d, e);
-                int length = (int)BitConverter.ToUInt32(d, e + 4);
-                int dataOffset = (int)BitConverter.ToUInt32(d, e + 12);
-                int end = keys + keyOffset;
-                while (end < d.Length && d[end] != 0) end++;
-                string key = Encoding.ASCII.GetString(d, keys + keyOffset, end - keys - keyOffset);
-                if (key == "APP_VER") return Encoding.ASCII.GetString(d, data + dataOffset, length).TrimEnd('\0');
-            }
-            return null;
         }
 
         static void FindFonts(string selected, out string font, out string font2)
@@ -2131,7 +2107,10 @@ namespace RyGT
         void Unwrap(string source, string destination)
         {
             var bytes = File.ReadAllBytes(source);
-            File.WriteAllBytes(destination, Self.RelroToLoad(Self.ToElf(bytes, Path.GetFileName(source))));
+            var elf = Self.RelroToLoad(Self.ToElf(bytes, Path.GetFileName(source)));
+            if (Path.GetFileName(source).Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) && GameLayout.PatchKnownExecutable(elf))
+                Log("Applied the verified CUSA24769 1.00 conversion fix.");
+            File.WriteAllBytes(destination, elf);
             Log("Prepared " + Path.GetFileName(destination) + " from " + source);
         }
 
@@ -2164,73 +2143,72 @@ namespace RyGT
             }
         }
 
-        void LinkGameFiles(string baseDir, string updateDir)
+        void LinkGameFiles(GameLayout layout, string convertedModules)
         {
             string app0 = Path.Combine(root, "app0");
-            var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var dirs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var source in new[] { baseDir, updateDir })
+            string stage = Path.Combine(root, "app0.setup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            var unixLinks = new Dictionary<string, string>();
+            int linked = 0;
+            foreach (var pair in layout.Files)
             {
-                if (source == null) continue;
-                foreach (var file in Directory.GetFiles(source))
-                {
-                    string name = Path.GetFileName(file);
-                    if (!name.Equals("eboot.bin", StringComparison.OrdinalIgnoreCase)) files[name] = file;
-                }
-                foreach (var dir in Directory.GetDirectories(source))
-                {
-                    string name = Path.GetFileName(dir);
-                    if (!name.Equals("sce_module", StringComparison.OrdinalIgnoreCase)) dirs[name] = dir;
-                }
+                if (pair.Key.Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.StartsWith("sce_module\\", StringComparison.OrdinalIgnoreCase)) continue;
+                string target = Path.Combine(stage, pair.Key);
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                if (Wine.Detected) unixLinks[target] = pair.Value;
+                else if (!Native.CreateHardLink(target, pair.Value, IntPtr.Zero) &&
+                         !Native.CreateSymbolicLink(target, pair.Value, 2))
+                    throw new Exception("Could not link " + pair.Value + ". Keep ryGT7 on the game's drive or enable Windows Developer Mode.");
+                linked++;
             }
-            // GT Sport only uses its data archives when gt.idx is there; without it the game closes
-            // right after its splash screen.
-            if (!files.ContainsKey("gt.idx"))
-                throw new Exception("Neither game folder has gt.idx. Pick the GT Sport folder (CUSA03220) and its update, " +
-                                    "the folders with gt.idx and the gt*.vol files.");
-            int linked = 0, hard = 0, symbolic = 0;
-            var unixLinks = new Dictionary<string, string>(); // under Wine: link -> target
-            foreach (var pair in files)
+            if (Wine.Detected) Wine.Link(unixLinks);
+            foreach (var pair in layout.Files)
             {
-                string target = Path.Combine(app0, pair.Key);
-                if (File.Exists(target)) File.Delete(target);
-                if (Native.CreateHardLink(target, pair.Value, IntPtr.Zero)) { linked++; hard++; continue; }
-                if (Wine.Detected) { unixLinks[target] = pair.Value; continue; }
-                if (Native.CreateSymbolicLink(target, pair.Value, 2)) { linked++; symbolic++; continue; } // needs Developer Mode
-                throw new Exception("Could not link " + pair.Value + ". Put the RyGT folder on the same drive as the game, " +
-                                    "or turn on Developer Mode in Windows settings.");
+                if (pair.Key.Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.StartsWith("sce_module\\", StringComparison.OrdinalIgnoreCase)) continue;
+                string problem = ReadProblem(Path.Combine(stage, pair.Key), new FileInfo(pair.Value).Length);
+                if (problem != null) throw new Exception("Linked " + pair.Key + " " + problem + ".");
             }
-            if (Wine.Detected)
-            {
-                foreach (var pair in dirs) unixLinks[Path.Combine(app0, pair.Key)] = pair.Value;
-                Wine.Link(unixLinks);
-                foreach (var pair in unixLinks)
-                {
-                    if (dirs.ContainsKey(Path.GetFileName(pair.Key)) ? !Directory.Exists(pair.Key) : !File.Exists(pair.Key))
-                        throw new Exception("Could not link " + pair.Value + " into app0.");
-                    if (!dirs.ContainsKey(Path.GetFileName(pair.Key))) linked++;
-                }
-                Log("Linked " + linked + " game files and " + dirs.Count + " folders into app0.");
-                return;
-            }
-            foreach (var pair in dirs)
-            {
-                string target = Path.Combine(app0, pair.Key);
-                if (Directory.Exists(target)) Directory.Delete(target, false);
-                var info = new ProcessStartInfo("cmd.exe", "/c mklink /J \"" + target + "\" \"" + pair.Value + "\"")
-                { UseShellExecute = false, CreateNoWindow = true };
-                using (var process = Process.Start(info)) process.WaitForExit();
-                if (!Directory.Exists(target)) throw new Exception("Could not link the folder " + pair.Value + ".");
-            }
-            foreach (var pair in files)
-            {
-                string problem = ReadProblem(Path.Combine(app0, pair.Key), new FileInfo(pair.Value).Length);
-                if (problem != null)
-                    throw new Exception("app0\\" + pair.Key + " " + problem + " after linking it to " + pair.Value +
-                                        ". Put the RyGT folder on the same drive as the game and press Set up again.");
-            }
-            Log("Linked " + linked + " game files (" + hard + " hard links, " + symbolic + " symbolic links) and " +
-                dirs.Count + " folders into app0.");
+            // The converter writes its modules under app0. Copy those small converted files,
+            // never the source PRX files, into the new data tree before swapping directories.
+            CopyDirectory(convertedModules, Path.Combine(stage, "sce_module"));
+            string previous = app0 + ".previous-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff");
+            if (Directory.Exists(app0)) Directory.Move(app0, previous);
+            try { Directory.Move(stage, app0); }
+            catch { if (Directory.Exists(previous)) Directory.Move(previous, app0); throw; }
+            Log("Linked " + linked + " game files. Update files override matching base files; other base files are preserved.");
+        }
+
+        void ConfigureGT7()
+        {
+            WriteSetting("GPU", "native_renderer", true);
+            WriteSetting("GPU", "readbacks_mode", 2);
+            if (!LoadConfig().ContainsKey("General")) WriteSetting("General", "show_splash", true);
+            foreach (string folder in new[] { "_sd/local-data", "_sd/sce_sdmemory", "download0/APP_DATA", "temp", "temp0", "logs", "patches", "shaders" })
+                Directory.CreateDirectory(Path.Combine(root, folder));
+            for (int i = 1000; i < 1004; i++)
+                foreach (string folder in new[] { "savedata", "trophy", "inputs" })
+                    Directory.CreateDirectory(Path.Combine(root, "user", "home", i.ToString(), folder));
+        }
+
+        void EnsureGT7Defaults()
+        {
+            DefaultSetting("GPU", "native_renderer", true);
+            DefaultSetting("GPU", "readbacks_mode", 2);
+            DefaultSetting("GPU", "compile_mode", 2);
+            DefaultSetting("GPU", "precompile_shaders", false);
+            DefaultSetting("General", "show_splash", true);
+            DefaultSetting("General", "player_names", "Player 1,Player 2");
+            DefaultSetting("Input", "background_controller_input", true);
+        }
+
+        void DefaultSetting(string section, string key, object value)
+        {
+            var config = LoadConfig();
+            object stored;
+            var values = config.TryGetValue(section, out stored) ? stored as Dictionary<string, object> : null;
+            if (values == null || !values.ContainsKey(key)) WriteSetting(section, key, value);
         }
 
         /// Why a linked game file can't be used (missing, unreadable or a different size), or null.
@@ -2359,56 +2337,55 @@ namespace RyGT
 
         void Play()
         {
+            if (IsGameRunning()) { RefreshState(); return; }
             if (!File.Exists(Exe)) { MessageBox.Show(this, "Press Set up first."); return; }
-            // Without its data index GT Sport closes right after the splash screen.
-            string dataProblem = ReadProblem(Path.Combine(root, "app0", "gt.idx"), -1);
+            // Without its data index GT7 closes right after the splash screen.
+            string dataProblem = ReadProblem(Path.Combine(root, "app0", "contents", "gt.idx"), -1);
             if (dataProblem != null)
             {
-                MessageBox.Show(this, "GT Sport's data index app0\\gt.idx " + dataProblem + ", so the game can't start.\n\n" +
+                MessageBox.Show(this, "GT7's data index app0\\contents\\gt.idx " + dataProblem + ", so the game can't start.\n\n" +
                                 "Press Set up again. If the RyGT folder is on a different drive than the game, move it " +
                                 "to the game's drive first.");
                 return;
             }
             // The one-time steps below can take minutes (copying shaders, preparing them), so they run
             // beside the window, which keeps showing their progress.
-            string gameDir = settings.Game;
-            string updateDir = settings.Update.Length > 0 && Directory.Exists(settings.Update) ? settings.Update : null;
             busy = true;
             RefreshState();
             var thread = new Thread(delegate ()
             {
+                bool prepared = false;
                 try
                 {
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
-                    // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
-                    // (again) now (a few seconds).
-                    if (GameScriptsOutdated() && Directory.Exists(gameDir))
-                    {
-                        SetStatus("Making the offline livery scripts from your game files...");
-                        try { BuildGameScripts(gameDir, updateDir); }
-                        catch (Exception e) { Log("Offline livery scripts: " + e.Message); }
-                    }
+                    ConfigureGT7();
+                    settings.Save();
+                    prepared = true;
                 }
                 catch (Exception e) { Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
-                    StartGame(root);
-                    status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
+                    if (prepared)
+                    {
+                        StartGame(root);
+                        status.Text = "GT7 is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
+                    }
+                    else status.Text = "Could not prepare GT7. See the log.";
                 }));
             });
             thread.IsBackground = true;
             thread.Start();
         }
 
-        /// Starts GTSport.exe with session log rotation and waits for GPU recovery if Vulkan loses
+        /// Starts GT7.exe with session log rotation and waits for GPU recovery if Vulkan loses
         /// its device.
         static void StartGame(string root)
         {
-            string exe = Path.Combine(root, "GTSport.exe");
-            // Folders set up by an earlier RyGT.exe get the icon and the Windows subsystem now.
+            string exe = Path.Combine(root, "GT7.exe");
+            // Folders set up by an earlier RyGT7.exe get the icon and the Windows subsystem now.
             try { if (!GameExe.IsPrepared(exe)) GameExe.Prepare(exe); } catch { }
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -2432,11 +2409,14 @@ namespace RyGT
                         var start = new ProcessStartInfo(exe)
                         { WorkingDirectory = root, UseShellExecute = false };
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
+                        start.EnvironmentVariables["RYTY_INTEROP_BASE"] = "8000000000";
+                        start.EnvironmentVariables["RYGT_NATIVE_INPLACE_RANGES"] = "1020000000+1de000,1020235000+1dd000,1020407000+b000";
+                        start.EnvironmentVariables["SHADGT_FPS_LOCK"] = "30";
                         started = Process.Start(start);
                     }
                     catch (Exception e)
                     {
-                        AppendSetupLog(root, "Could not start GT Sport: " + e.Message);
+                        AppendSetupLog(root, "Could not start GT7: " + e.Message);
                         return;
                     }
                     if (started == null) return;
@@ -2444,13 +2424,13 @@ namespace RyGT
 
                     if (recoveredOnce || !RendererReportedDeviceLoss(logDirectory)) return;
                     recoveredOnce = true;
-                    AppendSetupLog(root, "Vulkan lost the GPU device. Waiting for Windows to restore the graphics device before restarting GT Sport.");
+                    AppendSetupLog(root, "Vulkan lost the GPU device. Waiting for Windows to restore the graphics device before restarting GT7.");
                     if (!WaitForGraphicsDevice(TimeSpan.FromMinutes(2)))
                     {
-                        AppendSetupLog(root, "The graphics device did not recover within 2 minutes; GT Sport was not restarted.");
+                        AppendSetupLog(root, "The graphics device did not recover within 2 minutes; GT7 was not restarted.");
                         return;
                     }
-                    AppendSetupLog(root, "The graphics device is responding again. Restarting GT Sport once; the interrupted session cannot be resumed.");
+                    AppendSetupLog(root, "The graphics device is responding again. Restarting GT7 once; the interrupted session cannot be resumed.");
                 }
             });
         }
@@ -2531,7 +2511,7 @@ namespace RyGT
             if (args.Contains("--setup")) return new LoaderForm().SetupWithoutWindow();
             if (args.Length == 2 && args[0] == "--prepare")
             {
-                // Gives an already converted GTSport.exe the ryGT icon and the Windows subsystem.
+                // Gives an already converted GT7.exe the ryGT icon and the Windows subsystem.
                 try { GameExe.Prepare(Path.GetFullPath(args[1])); return 0; }
                 catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
             }

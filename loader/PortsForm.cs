@@ -1,9 +1,9 @@
 // RyGT loader: the Controller ports window. Picks which connected controller is player 1 or 2
-// (GT Sport's splitscreen), each player's name (the PSN-style user name the game shows), and
+// (controller ports), each player's name (the PSN-style user name the game shows), and
 // shows a live preview of the chosen controller, like shadPS4.
 // Controllers are found and read through Windows' joystick API (winmm), and remembered by USB
 // vendor/product id and their place among connected controllers of that id
-// (Input.controller_ports in the GT Sport config, read by the renderer's input bridge).
+// (Input.controller_ports in the runtime config, read by the renderer's input bridge).
 // SPDX-License-Identifier: GPL-2.0-only
 
 using System;
@@ -420,7 +420,7 @@ namespace RyGT
 
     class PortsForm : Form
     {
-        // GT Sport's Split Screen is for 2 players.
+        // Two controller slots are exposed by this runtime.
         public const int Players = 2;
         // The game's user names are at most 16 bytes (UTF-8).
         public const int MaxNameBytes = 16;
@@ -464,8 +464,8 @@ namespace RyGT
             var intro = new Label
             {
                 AutoSize = true, MaximumSize = new Size(840, 0), Margin = new Padding(0, 0, 0, 12), ForeColor = Dark.DimText, Tag = "heading",
-                Text = "Pick each player's name and controller (GT Sport: Arcade, Split Screen for 2 players). " +
-                       "Names go into new saves (GT Sport keeps the name a save was made with). " +
+                Text = "Pick your player name and controller. " +
+                       "Names apply to new saves. " +
                        "In game, F3 or holding Share + Options (View + Menu) changes controllers. " +
                        "\"Next connected\" takes the controllers nobody picked, in the order Windows lists them. " +
                        "Press buttons to see them light up in the preview; click a player to preview their controller."

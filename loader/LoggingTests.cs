@@ -45,7 +45,7 @@ namespace RyGT
                     Check(Array.Exists(archives, path => File.ReadAllText(path) == "legacy"), "legacy contents retained");
                     Check(Array.Exists(archives, path => File.ReadAllText(path) == "old"), "prior contents retained");
                 }
-                var assembly = System.Reflection.Assembly.LoadFrom(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RyGT.exe"));
+                var assembly = System.Reflection.Assembly.LoadFrom(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RyGT7.exe"));
                 var settingsType = assembly.GetType("RyGT.Settings", true);
                 string ini = Path.Combine(root, "RyGT.ini");
                 var settings = Activator.CreateInstance(settingsType, new object[] { ini });
@@ -58,6 +58,13 @@ namespace RyGT
                 File.WriteAllText(ini, "stdout_level=invalid");
                 restored = Activator.CreateInstance(settingsType, new object[] { ini });
                 Check((string)levelField.GetValue(restored) == "Warning", "invalid launcher level falls back to Warning");
+                string brandedIni = Path.Combine(root, "RyGT7.ini");
+                File.WriteAllText(ini, "keep=this\nstdout_level=Warning\n");
+                settings = Activator.CreateInstance(settingsType, new object[] { brandedIni });
+                levelField.SetValue(settings, "Info");
+                settingsType.GetMethod("Save").Invoke(settings, null);
+                Check(File.ReadAllText(ini).Contains("keep=this"), "runtime compatibility values retained");
+                Check(File.ReadAllText(ini).Contains("stdout_level=Info"), "runtime log threshold mirrored");
                 string directory = Path.Combine(root, "logs");
                 File.WriteAllText(Path.Combine(directory, "stdout.log.same"), "keep");
                 Check(LogFiles.ArchiveName(directory, "stdout.log", "same").EndsWith(".same.1"), "timestamp collision suffix");

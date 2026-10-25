@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
@@ -41,6 +42,8 @@ namespace RyGT
             "grave", "minus", "equals", "lbracket", "rbracket", "backslash", "semicolon", "apostrophe", "comma", "period", "slash"
         };
         const string None = "(none)";
+
+        static readonly string[] MouseInputs = { "leftbutton", "middlebutton", "rightbutton", "mousewheelup", "mousewheeldown" };
 
         static readonly Row[] Rows =
         {
@@ -88,14 +91,63 @@ namespace RyGT
             { "axis_right_y_minus", new[] { "i" } }, { "axis_right_y_plus", new[] { "k" } },
         };
 
+        readonly string root;
         readonly string path;
         readonly NumericUpDown leftDeadzone, rightDeadzone;
         readonly ComboBox keyboardPlayer;
         readonly Action<int> saveKeyboardPlayer;
 
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr LoadLibraryEx(string file, IntPtr reserved, uint loadFlags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+        static extern IntPtr GetProcAddress(IntPtr module, string name);
+
+        [DllImport("kernel32.dll")]
+        static extern bool FreeLibrary(IntPtr module);
+
+        delegate int DefaultConfigFn(IntPtr buffer, int size);
+
+        /// The default config text from the deployed shadGT library, or null when the library
+        /// or its ryty_get_default_input_config export is unavailable (older builds), in which
+        /// case the hardcoded DefaultKeys apply.
+        static string GetDefaultConfigFromLibrary(string root)
+        {
+            var prx = Path.Combine(root, "libs", "libSceVideoOut.prx");
+            if (!File.Exists(prx)) return null;
+            IntPtr module = IntPtr.Zero;
+            try
+            {
+                module = LoadLibraryEx(prx, IntPtr.Zero, 0);
+                if (module == IntPtr.Zero) return null;
+                IntPtr proc = GetProcAddress(module, "ryty_get_default_input_config");
+                if (proc == IntPtr.Zero) return null;
+                var fn = (DefaultConfigFn)Marshal.GetDelegateForFunctionPointer(proc, typeof(DefaultConfigFn));
+                int required = -fn(IntPtr.Zero, 0);
+                if (required <= 1) return null;
+                IntPtr buffer = Marshal.AllocHGlobal(required);
+                try
+                {
+                    if (fn(buffer, required) != required) return null;
+                    var bytes = new byte[required - 1];
+                    Marshal.Copy(buffer, bytes, 0, required - 1);
+                    return Encoding.ASCII.GetString(bytes);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            finally
+            {
+                if (module != IntPtr.Zero) FreeLibrary(module);
+            }
+        }
+
         public ControlsForm(string root, int currentKeyboardPlayer, Action<int> saveKeyboardPlayer)
         {
             this.saveKeyboardPlayer = saveKeyboardPlayer;
+            this.root = root;
             path = Path.Combine(root, "user", "input_config", "default.ini");
             Text = "ryGT - Controls";
             Font = new Font("Segoe UI", 9f);
@@ -171,7 +223,11 @@ namespace RyGT
                 try { Save(); DialogResult = DialogResult.OK; Close(); }
                 catch (Exception e) { MessageBox.Show(this, "Could not save the controls: " + e.Message); }
             };
-            defaults.Click += delegate { LoadBindings(null); };
+            defaults.Click += delegate
+            {
+                var defaultsText = GetDefaultConfigFromLibrary(root);
+                LoadBindings(defaultsText != null ? defaultsText.Split('\n') : null);
+            };
             buttons.Controls.AddRange(new Control[] { save, defaults, cancel });
             outer.Controls.Add(buttons);
             CancelButton = cancel;
@@ -183,6 +239,7 @@ namespace RyGT
             outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
+            if (!File.Exists(path)) WriteDefaultConfig();
             LoadBindings(File.Exists(path) ? File.ReadAllLines(path) : null);
             Dark.Apply(this);
             HandleCreated += delegate { Dark.TitleBar(this); };
@@ -225,6 +282,22 @@ namespace RyGT
         static bool IsManaged(string output)
         {
             return Rows.Any(r => r.Output == output) || output == "analog_deadzone";
+        }
+
+        static bool IsMouseInput(string input)
+        {
+            int colon = input.IndexOf(':');
+            if (colon >= 0) input = input.Substring(0, colon);
+            return MouseInputs.Contains(input);
+        }
+
+        /// Creates the bindings file from shadGT's defaults when it doesn't exist yet.
+        void WriteDefaultConfig()
+        {
+            var text = GetDefaultConfigFromLibrary(root);
+            if (text == null) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, text, new UTF8Encoding(false));
         }
 
         void LoadBindings(string[] lines)
@@ -320,7 +393,7 @@ namespace RyGT
                 foreach (var line in File.ReadAllLines(path))
                 {
                     string output, input;
-                    if (Parse(line, out output, out input) && !IsManaged(output)) kept.Add(line.Trim());
+                    if (Parse(line, out output, out input) && (!IsManaged(output) || IsMouseInput(input))) kept.Add(line.Trim());
                 }
                 if (kept.Count > 0)
                 {
