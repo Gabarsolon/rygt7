@@ -2,13 +2,13 @@
 
 An experimental Windows porting runtime for **Gran Turismo 7 (PS4, CUSA24769)**, derived from
 [ryGT](https://github.com/mlgprorektm8/RyGT) and [Ryty](https://github.com/aarvsn/Ryty).
-Rendering uses [shadGT7](https://gitlab.com/67933lance/shadgt7), derived from shadGT/shadPS4.
+Rendering uses [shadGT7](https://gitlab.com/rygt-team/shadgt7), derived from shadGT/shadPS4.
 The converter prepares the player's executable locally; game code runs on the host CPU and graphics
 are translated to Vulkan.
 
 ## Download and set up
 
-Download the Windows archive from [Releases](https://gitlab.com/67933lance/rygt7/-/releases).
+Download the Windows archive from [Releases](https://gitlab.com/rygt-team/rygt7/-/releases).
 Extract the whole archive to a writable folder and run **RyGT7.exe**.
 
 You provide:
@@ -54,7 +54,7 @@ removed from its interface. DLSS's separate plugin and NVIDIA files are not bund
 - [Launcher and setup tests](loader): build with Windows' .NET Framework C# compiler.
 - [Runtime libraries and converter](core): build with CMake, Ninja, and MSYS2 UCRT64 GCC.
 - [GT7 compatibility stubs](runtime/gt7): source and definitions for the two supplemental libraries.
-- [Renderer](https://gitlab.com/67933lance/shadgt7): separate repository, pinned in
+- [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, pinned in
   [build-support/renderer.json](build-support/renderer.json).
 - [Build and packaging instructions](build-support/README.md).
 
