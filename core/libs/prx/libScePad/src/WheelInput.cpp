@@ -14,6 +14,7 @@ namespace {
 constexpr std::uint16_t VendorLogitech = 0x046D;
 constexpr std::uint16_t VendorFanatec = 0x0EB7;
 constexpr std::uint16_t VendorMoza = 0x346E;
+constexpr std::uint16_t VendorSimagic = 0x3670;  // Simagic EVO bases
 constexpr std::uint16_t VendorThrustmaster = 0x044F;
 
 // Logitech wheels in PlayStation mode (G29, G923 PS, G27, G25, Driving Force GT, G PRO PS).
@@ -96,7 +97,7 @@ bool WheelInput::IsWheel(int deviceIndex) {
     if (SDL_JoystickGetDeviceType(deviceIndex) == SDL_JOYSTICK_TYPE_WHEEL) return true;
     const std::uint16_t vendor = SDL_JoystickGetDeviceVendor(deviceIndex);
     const std::uint16_t product = SDL_JoystickGetDeviceProduct(deviceIndex);
-    return vendor == VendorMoza || vendor == VendorFanatec || isLogitechWheel(vendor, product) ||
+    return vendor == VendorMoza || vendor == VendorSimagic || vendor == VendorFanatec || isLogitechWheel(vendor, product) ||
            isThrustmasterWheel(vendor, SDL_JoystickGetDeviceType(deviceIndex));
 }
 
@@ -194,6 +195,11 @@ void WheelInput::close(SDL_JoystickID instanceId) {
 }
 
 WheelInput::Device* WheelInput::primary() const {
+    // A wheel maker's pedals and shifters share its USB vendor, so a wheel with force feedback
+    // (the base) comes first.
+    for (const auto& device : devices) {
+        if (device->wheel && device->haptic != nullptr) return device.get();
+    }
     for (const auto& device : devices) {
         if (device->wheel) return device.get();
     }
