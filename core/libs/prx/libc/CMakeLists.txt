@@ -45,6 +45,13 @@ if(BUILD_TESTING)
     target_include_directories(log_files_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../../../renderer)
     target_compile_features(log_files_tests PRIVATE cxx_std_20)
     add_test(NAME log_files COMMAND log_files_tests)
+    add_test_executable(guest_allocations_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/GuestAllocationsTests.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/GuestAllocations.cpp)
+    target_include_directories(guest_allocations_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_compile_definitions(guest_allocations_tests PRIVATE NOMINMAX)
+    target_compile_features(guest_allocations_tests PRIVATE cxx_std_20)
+    add_test(NAME guest_allocations COMMAND guest_allocations_tests)
 endif()
 if(BUILD_TESTING AND WIN32)
     add_test_executable(guest_arena_windows_tests
