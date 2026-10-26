@@ -67,6 +67,53 @@ RyGT7 prerelease with the modified libraries already in place.
 - Races hold 60 FPS in quiet sections and run at about 35–48 FPS when the field is busy. Turning on
   **frame generation** in the launcher roughly doubles what you see on screen.
 
+### DLSS frame generation (NVIDIA RTX 40 / 50)
+The renderer can show generated frames between the game's own frames through NVIDIA DLSS Frame
+Generation: 2× on RTX 40 cards, up to 4× on RTX 50 cards. NVIDIA's files can't be shipped in this
+GPL release, so you add them yourself:
+
+1. Download `streamline-sdk-v2.14.16.zip` from
+   [NVIDIA's Streamline releases](https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.16).
+   It must be this version or newer: older Streamline DLLs refuse to start.
+2. Next to `GT7.exe`, make a folder named `dlss` and copy these files into it from the zip's
+   `bin\x64` folder (not `bin\x64\development`):
+
+   ```
+   sl.interposer.dll  sl.common.dll  sl.dlss_g.dll  sl.reflex.dll  sl.pcl.dll
+   nvngx_dlssg.dll  NvLowLatencyVk.dll
+   ```
+
+3. In `user\custom_configs\CUSA03220.json`, inside `"GPU"`, set:
+
+   ```json
+   "dlssg_enabled": true,
+   "framegen_enabled": false
+   ```
+
+   `framegen_enabled` is AMD's frame generation; DLSS replaces it.
+4. Choose how many frames to generate with the Windows environment variable `RYGT_DLSSG_FRAMES`
+   (then close and reopen the launcher):
+
+   | Value | Multiplier | Needs |
+   |---|---|---|
+   | `1` (default) | 2× | RTX 40 or 50 |
+   | `2` | 3× | RTX 50 |
+   | `3` | 4× | RTX 50 |
+
+   For example, in a command prompt: `setx RYGT_DLSSG_FRAMES 1`
+
+Tips:
+- **Use 2× with the 60 FPS launcher.** Frame generation smooths what you see, not how the car
+  responds: at a 30 FPS game rate, 4× shows 120 but still feels like 30. Real 40–60 FPS doubled
+  to 80–120 feels much better.
+- **Turn off OptiScaler** if you installed it in the game folder (`dxgi.dll`, `fakenvapi.dll`,
+  `dlssg_to_fsr3_amd_is_better.dll`): it hooks into Streamline and spoils the frame pacing.
+- A G-Sync / variable refresh display hides the remaining frame-rate swings.
+- The renderer gives DLSS no motion vectors or depth (it only has the finished picture), so
+  generated frames can wobble on fast motion and the HUD.
+- To check it's running, look in `logs\stdout.log` for `ryGT DLSS-G: frame generation on` (the
+  log level must be Info).
+
 ## Known limits
 - Busy race sections stay below 60 FPS. Profiling shows the game and the renderer take turns rather
   than overlap; fixing that needs changes deep in the renderer.
@@ -80,7 +127,7 @@ Both projects are GPL-2.0; the licence notices are in `LICENSE` and `licenses/` 
 | Branch | Contents | Based on |
 |---|---|---|
 | [`gt7-wheel-ultrawide`](../../tree/gt7-wheel-ultrawide) | runtime libraries: wheel bridge, ultrawide camera, P-core pinning | rygt-team/rygt7 |
-| [`gt7-renderer`](../../tree/gt7-renderer) | renderer (`libSceVideoOut.prx`): 16:9 HUD split and F7 editor, single-pass HUD, GT7 job-thread hooks (off by default) | rygt-team/shadgt7 |
+| [`gt7-renderer`](../../tree/gt7-renderer) | renderer (`libSceVideoOut.prx`): 16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame generation setting, GT7 job-thread hooks (off by default) | rygt-team/shadgt7 |
 
 ## Credits
 RyGT7 and shadGT7 by the [rygt-team](https://gitlab.com/rygt-team), built on Ryty, shadGT and
