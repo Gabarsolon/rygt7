@@ -2411,6 +2411,10 @@ namespace RyGT
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
                         start.EnvironmentVariables["RYTY_INTEROP_BASE"] = "8000000000";
                         start.EnvironmentVariables["RYGT_NATIVE_INPLACE_RANGES"] = "1020000000+1de000,1020235000+1dd000,1020407000+b000";
+                        // FIX-213: GT7 reads back what the GPU writes into its CPU pools from 0xe000000000
+                        // up (GT Sport's are above 0xf000000000, the renderer's default); kept in a
+                        // renderer region, the CPU saw stale data and culled the whole rear-view mirror.
+                        start.EnvironmentVariables["RYGT_NATIVE_INPLACE_FROM"] = "e000000000";
                         start.EnvironmentVariables["SHADGT_FPS_LOCK"] = "30";
                         started = Process.Start(start);
                     }
