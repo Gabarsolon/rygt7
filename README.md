@@ -1,73 +1,88 @@
-# ryGT7
+# RyGT7 – wheel + ultrawide edition
 
-An experimental Windows porting runtime for **Gran Turismo 7 (PS4, CUSA24769)**, derived from
-[ryGT](https://github.com/mlgprorektm8/RyGT) and [Ryty](https://github.com/aarvsn/Ryty).
-Rendering uses [shadGT7](https://gitlab.com/rygt-team/shadgt7), derived from shadGT/shadPS4.
-The converter prepares the player's executable locally; game code runs on the host CPU and graphics
-are translated to Vulkan.
+A modified build of the [RyGT7](https://gitlab.com/rygt-team/rygt7) 2026-10-26b prerelease, which runs
+Gran Turismo 7 (CUSA24769, version 1.00) as a native Windows program. This edition adds racing wheel
+support, a proper ultrawide view with a movable HUD, and some race performance work.
 
-## Download and set up
+> **No game files are included.** As with the official release, you need your own decrypted GT7 dump,
+> PS4 firmware modules and fonts.
 
-Download the Windows archive from [Releases](https://gitlab.com/rygt-team/rygt7/-/releases).
-Extract the whole archive to a writable folder and run **RyGT7.exe**.
+## Download
 
-You provide:
+Get `RyGT7-2026-10-26b-wheel-ultrawide.zip` from the [Releases](../../releases) page. It is the complete
+RyGT7 prerelease with the modified libraries already in place.
 
-- Your decrypted **CUSA24769 base game**, with `eboot.bin`, `sce_sys`, `sce_module`, and `contents`.
-- An extracted update, either already merged into the base game or in a separate folder.
-- Your PS4 firmware's system modules and the fonts folder containing `font` and `font2`.
+## Setup
 
-Select those folders, press **Set up**, wait for conversion, then press **Play**. Leave Update empty
-when your game folder is already merged. Separate updates override matching files individually,
-preserving base files the update does not replace. Keep the source folders after setup because
-game data is linked rather than copied. Use the same drive, or Windows Developer Mode for cross-drive links.
+1. Extract the zip somewhere writable on the **same drive** as your GT7 dump.
+2. Run `RyGT7.exe` and choose:
+   - **Base game**: your decrypted CUSA24769 folder (`eboot.bin`, `sce_sys`, `sce_module`, `contents`)
+   - **Update**: your update folder, or leave it empty
+   - **System modules**: your PS4 firmware's decrypted modules (`libSceFont`, `libSceFontFt`,
+     `libSceFreeTypeOt`, `libSceJson2`, `libSceNgs2`, …)
+   - **Fonts**: your firmware's `font` and `font2` folders
+3. Press **Set up**, wait for the conversion to finish (a minute or two), then **Play**.
 
-The archive contains no game dump, converted game executable, firmware, fonts, saves, or shader cache.
-Python is not required for player setup. Windows x64, a Vulkan-capable GPU, and current graphics
-drivers are required. Read [the launcher guide](loader/README.md) for the exact folder layout.
+`README.txt` in the zip has the full RyGT7 instructions.
 
-## Alpha status
+## What's new
 
-Verified locally: clean-folder conversion and launch to the GT7 main menu, and racing at Deep Forest.
-The tested dump reports `APP_VER=01.00` in its metadata. Other updates and hardware are unverified;
-folder-selection support does not guarantee that every update converts or plays correctly.
-Crashes, rendering errors, and shader compilation stutter remain possible. Online functionality is
-not established by these tests.
+### Racing wheels
+- Your wheel appears to GT7 as a Fanatec direct-drive wheel, so steering, pedals, handbrake, shifter,
+  clutch and force feedback work in races.
+- Tested with a **Moza R3**. Logitech, Thrustmaster and Simagic wheels are also detected; wheels with
+  force feedback are picked first.
+- Force feedback is tuned in `ryty-wheel.ini`:
 
-This first prerelease fixes crowd instances flickering black or jumping because GPU output ranges
-overlapped, and black streamed textures on Deep Forest's pit building. Validation included 512
-shader-lowering checks, GPU captures with no remaining overlapping crowd writes, and 60-frame
-crowd recordings without the large black flashes.
+  | Setting | What it does |
+  |---|---|
+  | `FfbGain` | overall strength (lower it if the wheel feels too heavy) |
+  | `FfbDamping` | steadiness on straights |
+  | `FfbDetail` | kerbs and road texture |
 
-The second prerelease adds a fix for flickering night shadows at Yas Marina: cached render targets
-are no longer reused after the game remaps their memory, which left an empty shadow map on
-alternate frames. Packed-float render targets are also cleared and filled correctly. This fix is
-not yet confirmed in game.
+- `tools\ryty-wheel-probe.exe` lists the wheels and buttons Windows can see, if yours isn't picked up.
 
-The launcher retains display, FSR, optional DLSS, input bindings, controller ports, wheel, shader
-compilation, and logging controls. GT Sport-specific script preparation and graphics patches are
-removed from its interface. DLSS's separate plugin and NVIDIA files are not bundled; see
-[the optional plugin instructions](plugins/dlss/README.md). AMD FSR is available in the supplied renderer.
+### Ultrawide
+- The camera widens to your screen's shape instead of stretching a 16:9 picture.
+- The HUD stays at 16:9 in the centre, so nothing is stretched or cut off.
+- **Press F7 in a race** to open the HUD editor:
+  - drag any piece (lap, lap time, track map, position, race time, dashboard, course map) anywhere on screen;
+  - drag a corner to resize it;
+  - **Save** keeps your layout; **Reset all** restores the default.
 
-## Source and builds
+  Menus are left alone.
+- To turn it on, open `user\custom_configs\CUSA03220.json` after the first Set up and set, inside `"GPU"`:
 
-- [Launcher and setup tests](loader): build with Windows' .NET Framework C# compiler.
-- [Runtime libraries and converter](core): build with CMake, Ninja, and MSYS2 UCRT64 GCC.
-- [GT7 compatibility stubs](runtime/gt7): source and definitions for the two supplemental libraries.
-- [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, pinned in
-  [build-support/renderer.json](build-support/renderer.json).
-- [Build and packaging instructions](build-support/README.md).
+  ```json
+  "aspect_ratio": "auto"
+  ```
 
-## Discord server
+  `"21:9"` and `"32:9"` also work. With 16:9 or no setting, the game looks exactly as before.
 
-Join our server for more updates: https://discord.gg/8dz4U9Nd8d
+### Performance
+- On Intel 12th–14th gen and Core Ultra CPUs, the game's busiest threads are kept on the fast P-cores
+  with Windows power throttling off. Set the environment variable `RYGT_PCORES=0` to disable this.
+- The 16:9 HUD now records each frame's HUD in one pass instead of switching pictures on every draw,
+  which uses roughly a sixth of the render passes.
+- Races hold 60 FPS in quiet sections and run at about 35–48 FPS when the field is busy. Turning on
+  **frame generation** in the launcher roughly doubles what you see on screen.
 
-## Credits and license
+## Known limits
+- Busy race sections stay below 60 FPS. Profiling shows the game and the renderer take turns rather
+  than overlap; fixing that needs changes deep in the renderer.
+- Everything in the official prerelease's known-problems list still applies (occasional crashes,
+  NVIDIA device loss, replay shot glitches, no online features).
 
-This repository preserves ryGT/Ryty's Git history and license notices. See [AUTHORS.md](AUTHORS.md)
-for upstream credits. RyGT7 changes build on the work of the ryGT, Ryty, shadGT, shadPS4, and third-party
-dependency contributors. GPL version 2 applies to this project; individual files and dependencies
-retain their stated licenses. [LICENSE](LICENSE) and the release's `licenses` folder contain notices.
+## Source
 
-Gran Turismo is a trademark of Sony Interactive Entertainment. This project is independent of Sony
-and Polyphony Digital.
+Both projects are GPL-2.0; the licence notices are in `LICENSE` and `licenses/` inside the zip.
+
+| Branch | Contents | Based on |
+|---|---|---|
+| [`gt7-wheel-ultrawide`](../../tree/gt7-wheel-ultrawide) | runtime libraries: wheel bridge, ultrawide camera, P-core pinning | rygt-team/rygt7 |
+| [`gt7-renderer`](../../tree/gt7-renderer) | renderer (`libSceVideoOut.prx`): 16:9 HUD split and F7 editor, single-pass HUD, GT7 job-thread hooks (off by default) | rygt-team/shadgt7 |
+
+## Credits
+RyGT7 and shadGT7 by the [rygt-team](https://gitlab.com/rygt-team), built on Ryty, shadGT and
+[shadPS4](https://github.com/shadps4-emu/shadPS4). Wheel, ultrawide and performance changes in this
+edition by dessierror.
