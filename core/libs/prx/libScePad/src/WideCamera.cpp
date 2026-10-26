@@ -35,6 +35,9 @@ constexpr AspectStore AspectStores[] = {
     {0x1e890eb, {0xc7, 0x83, 0x94, 0xe8, 0x09, 0x00, 0x39, 0x8e, 0xe3, 0x3f}, 10, 6},
     // The view's setup every frame (0x20a78f0), which sets it again: mov dword [rdi+0x34], 1.7777778f
     {0x20a7938, {0xc7, 0x47, 0x34, 0x39, 0x8e, 0xe3, 0x3f}, 7, 3},
+    // The 16:9 constant the scene's projection takes its aspect from (0x1eee849, the camera
+    // code at 0x1efa937-0x1efb7e4, the aspect getter at 0x1b4c3f0, 0x2086de2, 0x2148905).
+    {0x3f4f510, {0x39, 0x8e, 0xe3, 0x3f}, 4, 0},
 };
 
 // A value of the runtime's settings (user\custom_configs\CUSA03220.json) as written, or "".
