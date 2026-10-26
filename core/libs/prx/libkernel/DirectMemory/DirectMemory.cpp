@@ -529,15 +529,23 @@ void NotifyRenderer(const char* name, const void* addr, size_t len) {
 // MAP_FIXED without MAP_NO_OVERWRITE replaces whatever is mapped there (PS4 titles rely on it,
 // e.g. GT Sport remaps a larger block over an existing one). A range wholly inside one registered
 // allocation is remapped in place by RemapFixedIntoRegistered; any other overlap is unmapped first.
+// The renderer is told first, so it drops its copies of the replaced memory. Free address space
+// has none to drop: what was mapped there went through DoMunmap, which told the renderer. Each of
+// these reports waits for the renderer's GPU thread, behind the work it already recorded, and GT7
+// maps thousands of 64 KB pages of direct memory into free space when a race starts.
 void ReleaseFixedOverlap(void* addr, size_t len, int flags) {
     constexpr int GuestMapNoOverwrite = 0x80;
-    if (addr == nullptr || (flags & GuestMapFixedFlag) == 0 || (flags & GuestMapNoOverwrite) != 0) return;
+    if (addr == nullptr || (flags & GuestMapFixedFlag) == 0) return;
+    bool registered = false;
     bool overlaps = false;
     {
         GuestAllocations::Mutation mutation;
-        overlaps = !mutation.Covers(addr, len) && mutation.Overlaps(addr, len);
+        registered = mutation.Overlaps(addr, len);
+        overlaps = registered && !mutation.Covers(addr, len);
     }
-    if (overlaps) {
+    if (!registered) return;
+    NotifyRenderer("RytyGpuUnmapMemory", addr, len);
+    if (overlaps && (flags & GuestMapNoOverwrite) == 0) {
         Trace("fixed mapping %p+0x%zx replaces existing mappings", addr, len);
         DoMunmap(addr, len);
     }
@@ -549,7 +557,6 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
     if (physStart < 0 || (static_cast<std::uint64_t>(physStart) & (PS5_PAGE_SIZE - 1)) != 0 || static_cast<std::uint64_t>(physStart) >= DIRECT_MEMORY_SIZE || len > DIRECT_MEMORY_SIZE - static_cast<std::uint64_t>(physStart)) {
         return SCE_KERNEL_ERROR_EINVAL;
     }
-    if (*addr != nullptr && (flags & GuestMapFixedFlag) != 0) NotifyRenderer("RytyGpuUnmapMemory", *addr, len);
     ReleaseFixedOverlap(*addr, len, flags);
     GuestAllocations::Mutation mutation;
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags, physStart)) {
@@ -579,7 +586,6 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
 int DoMapAnon(void** addr, size_t len, int prot, int flags) {
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
-    if (*addr != nullptr && (flags & GuestMapFixedFlag) != 0) NotifyRenderer("RytyGpuUnmapMemory", *addr, len);
     ReleaseFixedOverlap(*addr, len, flags);
     GuestAllocations::Mutation mutation;
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags)) {
