@@ -96,6 +96,16 @@ void keepIfCorrupt(std::shared_ptr<const Range>& range) {
     new std::shared_ptr<const Range>(std::move(range)); // never released
 }
 
+// The first range ending after address. Ranges are sorted and never overlap, so every earlier one ends
+// at or before it: lookups start there rather than walking the registry from its lowest range, which
+// the game's fixed mappings (several lookups each) made cost a full registry walk every time.
+auto firstEndingAfter(std::uint64_t address) {
+    const auto& ranges = registry().ranges;
+    auto it = ranges.upper_bound(address);
+    if (it != ranges.begin() && std::prev(it)->first + std::prev(it)->second->bytes > address) --it;
+    return it;
+}
+
 }
 
 void* GuestAllocationsBegin_nid_postfix() {
@@ -281,23 +291,18 @@ void GuestAllocationsRequireUnpinned_nid_postfix(void* mutation, const void* poi
 
 bool GuestAllocationsOverlaps_nid_postfix(void*, const void* pointer, std::size_t bytes) {
     const auto address = reinterpret_cast<std::uintptr_t>(pointer);
-    for (const auto& [base, range] : registry().ranges) {
-        if (base >= address + bytes) break;
-        if (base + range->bytes > address) return true;
-    }
-    return false;
+    const auto it = firstEndingAfter(address);
+    return it != registry().ranges.end() && it->first < address + bytes;
 }
 
 void GuestAllocationsRequireAvailable_nid_postfix(void*, const void* pointer, std::size_t bytes) {
     const auto address = reinterpret_cast<std::uintptr_t>(pointer);
     require(address != 0 && bytes != 0 && bytes <= std::numeric_limits<std::uint64_t>::max() - address, "invalid fixed guest mapping");
-    for (const auto& [base, range] : registry().ranges) {
-        if (base >= address + bytes) break;
-        if (base + range->bytes > address) {
-            char message[160];
-            std::snprintf(message, sizeof(message), "fixed mapping 0x%llx+0x%llx overlaps a registered guest allocation 0x%llx+0x%llx", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(base), static_cast<unsigned long long>(range->bytes));
-            throw std::runtime_error(message);
-        }
+    const auto it = firstEndingAfter(address);
+    if (it != registry().ranges.end() && it->first < address + bytes) {
+        char message[160];
+        std::snprintf(message, sizeof(message), "fixed mapping 0x%llx+0x%llx overlaps a registered guest allocation 0x%llx+0x%llx", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(it->first), static_cast<unsigned long long>(it->second->bytes));
+        throw std::runtime_error(message);
     }
 }
 
@@ -306,7 +311,8 @@ bool GuestAllocationsCovers_nid_postfix(void*, const void* pointer, std::size_t 
     require(address != 0 && bytes != 0 && bytes <= std::numeric_limits<std::uint64_t>::max() - address, "invalid guest allocation range");
     const auto end = address + bytes;
     auto cursor = address;
-    for (const auto& [base, range] : registry().ranges) {
+    for (auto it = firstEndingAfter(address); it != registry().ranges.end(); ++it) {
+        const auto& [base, range] = *it;
         const auto finish = base + range->bytes;
         if (finish <= cursor) continue;
         if (base > cursor || !range->releasable) return false;
@@ -324,7 +330,9 @@ Range GuestAllocationsFind_nid_postfix(void*, const void* pointer) {
         require(range.releasable, "guest image memory is not a releasable allocation");
         return {address, range.allocationBytes, range.readable, range.writable, address, range.allocationBytes, range.releasable};
     }
-    for (const auto& [base, range] : registry().ranges) {
+    // An allocation's ranges all start at or after its address.
+    for (auto it = registry().ranges.lower_bound(address); it != registry().ranges.end(); ++it) {
+        const auto& range = it->second;
         if (range->allocationAddress == address) {
             require(range->releasable, "guest image memory is not a releasable allocation");
             return {address, range->allocationBytes, range->readable, range->writable, address, range->allocationBytes, range->releasable};
@@ -344,11 +352,15 @@ void GuestAllocationsRemove_nid_postfix(void* mutation, const void* pointer) {
         ranges.erase(exact);
         return;
     }
-    std::erase_if(ranges, [&](auto& entry) {
-        if (entry.second->allocationAddress != range.address) return false;
-        keepIfCorrupt(entry.second);
-        return true;
-    });
+    const auto last = ranges.lower_bound(range.address + range.bytes);
+    for (auto it = ranges.lower_bound(range.address); it != last;) {
+        if (it->second->allocationAddress != range.address) {
+            ++it;
+            continue;
+        }
+        keepIfCorrupt(it->second);
+        it = ranges.erase(it);
+    }
 }
 
 namespace {
