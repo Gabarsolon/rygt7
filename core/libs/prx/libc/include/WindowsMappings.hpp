@@ -118,7 +118,11 @@ public:
     void Map(void* address, std::size_t bytes, HANDLE section, std::uint64_t offset, DWORD protection) {
         Lock lock(*this);
         auto cursor = reinterpret_cast<std::uintptr_t>(address);
-        reset(cursor, bytes);
+        // RyGT7: GT7 maps thousands of 64 KB pages of direct memory at the start of a race, each into
+        // free placeholder space. Then one query, at most two placeholder splits, the map and the
+        // protection suffice; reset() and split() would query the same placeholder about ten times.
+        const bool placeholder = carvePlaceholder(cursor, bytes);
+        if (!placeholder) reset(cursor, bytes);
         HANDLE duplicate = nullptr;
         if (!DuplicateHandle(GetCurrentProcess(), section, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) fail("keep shared guest section");
         const auto owned = std::make_shared<Section>(duplicate);
@@ -128,7 +132,7 @@ public:
         // view again when only part of it is released or remapped later.
         bool whole = false;
         if (bytes > pageBytes) {
-            split(cursor, bytes);
+            if (!placeholder) split(cursor, bytes);
             whole = map(section, GetCurrentProcess(), address, offset, bytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0) != nullptr;
             DWORD previous;
             if (whole && !VirtualProtect(address, bytes, protection, &previous)) fail("protect shared guest pages");
@@ -446,6 +450,22 @@ private:
         MEMORY_BASIC_INFORMATION memory{};
         if (VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) != sizeof(memory)) fail("query guest memory");
         return memory;
+    }
+
+    // When [address, address + bytes) lies inside one placeholder, splits that placeholder so the
+    // range is exactly one and returns true. Otherwise (mapped or private memory there, or several
+    // placeholders) changes nothing and returns false.
+    bool carvePlaceholder(std::uintptr_t address, std::size_t bytes) {
+        requireOwned(address, bytes);
+        const auto end = address + bytes;
+        const auto memory = query(address);
+        const auto placeholderEnd = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+        if (memory.State != MEM_RESERVE || placeholderEnd < end) return false;
+        const auto placeholderBase = reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
+        if (placeholderBase != address && !VirtualFree(reinterpret_cast<void*>(placeholderBase), address - placeholderBase, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder prefix");
+        if (placeholderEnd != end && !VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder suffix");
+        forgetClean(address, end);
+        return true;
     }
 
     static void split(std::uintptr_t address, std::size_t bytes) {
