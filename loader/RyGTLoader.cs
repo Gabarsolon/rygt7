@@ -2015,13 +2015,22 @@ namespace RyGT
                 else Log("Note: " + name + " is not in the system modules folder; some related game features may be unavailable.");
             }
 
+            // The player's community Offline mode patch, if any (only that group of the file is used).
+            string offlinePath = Path.Combine(root, "patches", GameLayout.TitleId + ".xml");
+            OfflinePatch offline = null;
+            if (File.Exists(offlinePath))
+            {
+                offline = OfflinePatch.Load(offlinePath);
+                Log("Found the " + OfflinePatch.GroupName + " patch " + offline.Version + " (" + offline.Writes.Count + " lines) in patches\\" + GameLayout.TitleId + ".xml.");
+            }
+
             // 1. The executable and modules to convert, unwrapped to plain ELF.
             SetStatus("Preparing the game files...");
             string work = Path.Combine(root, "convert");
             string workModules = Path.Combine(work, "sce_module");
             if (Directory.Exists(workModules)) Directory.Delete(workModules, true);
             Directory.CreateDirectory(workModules);
-            Unwrap(layout.Get("eboot.bin"), Path.Combine(work, "eboot.elf"));
+            Unwrap(layout.Get("eboot.bin"), Path.Combine(work, "eboot.elf"), offline);
             foreach (var name in new[] { "libc.prx", "libSceFios2.prx" })
             {
                 string source = layout.Get("sce_module\\" + name);
@@ -2046,6 +2055,13 @@ namespace RyGT
             int code = Run(converter, "--windows --ps4 --skip-syscall-check --registry --report \"" +
                 Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + convertedExe + "\"", work);
             if (code != 0 || !File.Exists(convertedExe)) throw new Exception("The converter failed (exit code " + code + "); the previous game executable was preserved. See convert\\convert.log.");
+            if (offline != null)
+            {
+                int removed = offline.Apply(convertedExe, File.ReadAllBytes(Path.Combine(work, "eboot.elf")));
+                // The patch writes its dealership catalog to /data/gt7offline.
+                Directory.CreateDirectory(Path.Combine(root, "data", "gt7offline"));
+                Log("Applied the " + OfflinePatch.GroupName + " patch to GT7.exe" + (removed > 0 ? " (" + removed + " overlapping relocations disabled)." : "."));
+            }
             GameExe.Prepare(convertedExe, layout.Get("sce_sys\\icon0.png"));
             Log("Prepared GT7.exe with the game's icon.");
 
@@ -2104,12 +2120,17 @@ namespace RyGT
             return paths.FirstOrDefault(File.Exists);
         }
 
-        void Unwrap(string source, string destination)
+        void Unwrap(string source, string destination, OfflinePatch offline = null)
         {
             var bytes = File.ReadAllBytes(source);
             var elf = Self.RelroToLoad(Self.ToElf(bytes, Path.GetFileName(source)));
             if (Path.GetFileName(source).Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) && GameLayout.PatchKnownExecutable(elf))
                 Log("Applied the verified CUSA24769 1.00 conversion fix.");
+            if (offline != null)
+            {
+                elf = offline.ExtendLayout(elf);
+                Log("Extended the executable's segments for the " + OfflinePatch.GroupName + " patch.");
+            }
             File.WriteAllBytes(destination, elf);
             Log("Prepared " + Path.GetFileName(destination) + " from " + source);
         }
