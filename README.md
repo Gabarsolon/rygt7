@@ -2,13 +2,13 @@
 
 An experimental Windows porting runtime for **Gran Turismo 7 (PS4, CUSA24769)**, derived from
 [ryGT](https://github.com/mlgprorektm8/RyGT) and [Ryty](https://github.com/aarvsn/Ryty).
-Rendering uses [shadGT7](https://github.com/mlgprorektm8/shadGT7), derived from shadGT/shadPS4.
+Rendering uses [shadGT7](https://gitlab.com/67933lance/shadgt7), derived from shadGT/shadPS4.
 The converter prepares the player's executable locally; game code runs on the host CPU and graphics
 are translated to Vulkan.
 
 ## Download and set up
 
-Download the Windows archive from [Releases](https://github.com/mlgprorektm8/RyGT7/releases).
+Download the Windows archive from [Releases](https://gitlab.com/67933lance/rygt7/-/releases).
 Extract the whole archive to a writable folder and run **RyGT7.exe**.
 
 You provide:
@@ -39,6 +39,11 @@ overlapped, and black streamed textures on Deep Forest's pit building. Validatio
 shader-lowering checks, GPU captures with no remaining overlapping crowd writes, and 60-frame
 crowd recordings without the large black flashes.
 
+The second prerelease adds a fix for flickering night shadows at Yas Marina: cached render targets
+are no longer reused after the game remaps their memory, which left an empty shadow map on
+alternate frames. Packed-float render targets are also cleared and filled correctly. This fix is
+not yet confirmed in game.
+
 The launcher retains display, FSR, optional DLSS, input bindings, controller ports, wheel, shader
 compilation, and logging controls. GT Sport-specific script preparation and graphics patches are
 removed from its interface. DLSS's separate plugin and NVIDIA files are not bundled; see
@@ -49,7 +54,7 @@ removed from its interface. DLSS's separate plugin and NVIDIA files are not bund
 - [Launcher and setup tests](loader): build with Windows' .NET Framework C# compiler.
 - [Runtime libraries and converter](core): build with CMake, Ninja, and MSYS2 UCRT64 GCC.
 - [GT7 compatibility stubs](runtime/gt7): source and definitions for the two supplemental libraries.
-- [Renderer](https://github.com/mlgprorektm8/shadGT7): separate repository, pinned in
+- [Renderer](https://gitlab.com/67933lance/shadgt7): separate repository, pinned in
   [build-support/renderer.json](build-support/renderer.json).
 - [Build and packaging instructions](build-support/README.md).
 

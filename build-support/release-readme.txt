@@ -1,8 +1,8 @@
 ryGT7: Gran Turismo 7 (CUSA24769) as a native Windows program
-{name} - github.com/mlgprorektm8/RyGT7
+{name} - gitlab.com/67933lance/rygt7
 
 ryGT7 is experimental software derived from ryGT (Gran Turismo Sport) and Ryty, with the
-shadGT7 renderer (derived from shadGT and shadPS4). This is a first prerelease: crashes,
+shadGT7 renderer (derived from shadGT and shadPS4). This is a prerelease: crashes,
 rendering errors and shader compilation stutter happen. Nothing in this archive comes from
 the game or a PS4: you provide your own decrypted dump, firmware modules and fonts.
 
@@ -58,7 +58,7 @@ Files and licenses
   applies to ryGT7 and shadGT7: LICENSE and the licenses folder hold the notices of
   everything shipped, including the statically linked open-source dependencies.
   manifest.json lists every file with its SHA-256 and the source commits this build came from.
-  Source: github.com/mlgprorektm8/RyGT7 and github.com/mlgprorektm8/shadGT7.
+  Source: gitlab.com/67933lance/rygt7 and gitlab.com/67933lance/shadgt7.
 
   Gran Turismo is a trademark of Sony Interactive Entertainment. This project is independent
   of Sony and Polyphony Digital. No game data, firmware, fonts, saves or shader caches are

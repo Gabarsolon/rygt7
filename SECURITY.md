@@ -7,9 +7,8 @@ fixes.
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for security reports. Use GitHub's private
-vulnerability reporting on this repository (Security tab -> Report a
-vulnerability), or contact a maintainer directly.
+Please do not open a public issue for security reports. Open a confidential
+issue on this GitLab project, or contact a maintainer directly.
 
 Include:
 
