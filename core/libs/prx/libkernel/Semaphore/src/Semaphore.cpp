@@ -1,7 +1,6 @@
 #include "prx/libkernel/Semaphore/include/Semaphore.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include <chrono>
-#include <cstdlib>
 
 #include <stdexcept>
 #include <string>
@@ -9,12 +8,6 @@
 
 KernelSemaPrivate::KernelSemaPrivate(std::int32_t initCount, std::int32_t maxCount, std::string name, bool isFifo)
  : name(std::move(name)), tokenCount(initCount), maxCount(maxCount), isFifo(isFifo), initCount(initCount) {
-}
-
-// APS5_SEMA_WAKE_ALL=1: every waiter is woken on each signal, as before.
-static bool SemaWakeAll() {
- static const bool all = std::getenv("APS5_SEMA_WAKE_ALL") != nullptr;
- return all;
 }
 
 extern "C" {
@@ -52,13 +45,7 @@ int APS5_VABI sceKernelSignalSema(KernelSema sem, int count) {
   return SCE_KERNEL_ERROR_EINVAL;
  }
  sem->tokenCount += count;
- // A waiter per token (GT7's job workers wait for one each): waking every waiter for one token
- // had the whole pool contend for it. A waiter for several tokens gets everyone woken.
- if (SemaWakeAll() || sem->bulkWaiters > 0) {
-  sem->condition.NotifyAll();
- } else {
-  for (int i = 0; i < count && i < sem->waiterCount; ++i) sem->condition.NotifyOne();
- }
+ sem->condition.NotifyAll();
  return KERNEL_SEMA_OK;
 }
 
@@ -69,22 +56,13 @@ int APS5_VABI sceKernelWaitSema(KernelSema sem, int need, KernelUseconds* time) 
 
  std::unique_lock<std::mutex> lock(sem->mutex);
  ++sem->waiterCount;
- if (need > 1) ++sem->bulkWaiters;
  struct WaiterGuard {
   KernelSemaPrivate* sem;
-  int need;
   ~WaiterGuard() {
    --sem->waiterCount;
-   if (need > 1) --sem->bulkWaiters;
-   if (SemaWakeAll() || sem->deleted) {
-    sem->condition.NotifyAll(); // DeleteSema waits for the last waiter
-   } else if (sem->tokenCount > 0 && sem->waiterCount > 0) {
-    // Tokens a woken waiter left (it timed out, or another thread took its token first and more
-    // came) go to the next one.
-    sem->condition.NotifyOne();
-   }
+   sem->condition.NotifyAll();
   }
- } waiterGuard{sem, need};
+ } waiterGuard{sem};
  const auto generation = sem->cancelGeneration;
 
  const auto waitStart = std::chrono::steady_clock::now();

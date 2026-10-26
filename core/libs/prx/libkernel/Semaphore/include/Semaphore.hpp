@@ -24,7 +24,6 @@ struct KernelSemaPrivate {
     bool isFifo;
     bool deleted = false;
     std::int32_t waiterCount = 0;
-    std::int32_t bulkWaiters = 0; ///< waiting for more than one token
     std::int32_t initCount = 0;
     std::uint64_t cancelGeneration = 0;
 };
