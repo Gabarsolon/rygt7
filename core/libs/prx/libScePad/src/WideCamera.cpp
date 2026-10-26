@@ -23,9 +23,19 @@
 
 namespace {
 
-constexpr std::uint64_t CameraAspectStore = 0x1e890eb;
-// c7 83 94 e8 09 00 39 8e e3 3f: mov dword [rbx+0x9e894], 1.7777778f
-constexpr std::uint8_t CameraAspectCode[] = {0xc7, 0x83, 0x94, 0xe8, 0x09, 0x00, 0x39, 0x8e, 0xe3, 0x3f};
+// Where GT7 1.00 stores the 16:9 aspect: the instruction's bytes, and where its float is in them.
+struct AspectStore {
+    std::uint64_t address;
+    std::uint8_t code[10];
+    std::size_t size;
+    std::size_t immediate;
+};
+constexpr AspectStore AspectStores[] = {
+    // The race camera's setup: mov dword [rbx+0x9e894], 1.7777778f
+    {0x1e890eb, {0xc7, 0x83, 0x94, 0xe8, 0x09, 0x00, 0x39, 0x8e, 0xe3, 0x3f}, 10, 6},
+    // The view's setup every frame (0x20a78f0), which sets it again: mov dword [rdi+0x34], 1.7777778f
+    {0x20a7938, {0xc7, 0x47, 0x34, 0x39, 0x8e, 0xe3, 0x3f}, 7, 3},
+};
 
 // A value of the runtime's settings (user\custom_configs\CUSA03220.json) as written, or "".
 std::string ConfigValue(const char* key) {
@@ -92,21 +102,23 @@ void InstallWideCamera() {
     if (aspect <= 0.0f) return;
     auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleA(nullptr));
     if (base == nullptr) return;
-    std::uint8_t* code = base + 0x10000 + CameraAspectStore;
-    MEMORY_BASIC_INFORMATION info;
-    if (VirtualQuery(code, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT ||
-        std::memcmp(code, CameraAspectCode, sizeof(CameraAspectCode)) != 0) {
-        // Not GT7 1.00 (GT Sport's camera is the renderer's GTS-009).
-        std::fprintf(stderr, "[patch] GT7 ultrawide: camera code not found, the picture is only stretched\n");
-        std::fflush(stderr);
-        return;
+    int patched = 0;
+    for (const AspectStore& store : AspectStores) {
+        std::uint8_t* code = base + 0x10000 + store.address;
+        MEMORY_BASIC_INFORMATION info;
+        if (VirtualQuery(code, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT ||
+            std::memcmp(code, store.code, store.size) != 0) {
+            continue;  // not GT7 1.00 (GT Sport's camera is the renderer's GTS-009)
+        }
+        DWORD old = 0;
+        if (!VirtualProtect(code + store.immediate, 4, PAGE_EXECUTE_READWRITE, &old)) continue;
+        std::memcpy(code + store.immediate, &aspect, 4);
+        VirtualProtect(code + store.immediate, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), code, store.size);
+        ++patched;
     }
-    DWORD old = 0;
-    if (!VirtualProtect(code + 6, 4, PAGE_EXECUTE_READWRITE, &old)) return;
-    std::memcpy(code + 6, &aspect, 4);
-    VirtualProtect(code + 6, 4, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), code, sizeof(CameraAspectCode));
-    std::fprintf(stderr, "[patch] GT7 ultrawide: race camera aspect %.3f\n", aspect);
+    std::fprintf(stderr, "[patch] GT7 ultrawide: aspect %.3f at %d of %d places\n", aspect, patched,
+        static_cast<int>(sizeof(AspectStores) / sizeof(AspectStores[0])));
     std::fflush(stderr);
 }
 
