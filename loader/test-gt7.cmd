@@ -9,10 +9,10 @@ set TMP=%TEMP%
 if not exist "%TEMP%" mkdir "%TEMP%"
 set CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 "%CSC%" /nologo /target:exe /main:RyGT.GT7SetupTests /out:"%OUT%\GT7SetupTests.exe" ^
- /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll ^
+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll /r:System.Xml.dll ^
  "%~dp0RyGTLoader.cs" "%~dp0GT7Setup.cs" "%~dp0GT7SetupTests.cs" "%~dp0ControlsForm.cs" "%~dp0PortsForm.cs" "%~dp0Logging.cs" "%~dp0WheelForm.cs"
 if errorlevel 1 exit /b 1
-"%OUT%\GT7SetupTests.exe" %2 %3
+"%OUT%\GT7SetupTests.exe" %2 %3 %4 %5 %6 %7
 if errorlevel 1 exit /b 1
 call "%~dp0build.cmd" "%OUT%"
 if errorlevel 1 exit /b 1

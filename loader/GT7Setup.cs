@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml;
 
 namespace RyGT
 {
@@ -112,9 +113,7 @@ namespace RyGT
         internal static bool PatchKnownExecutable(byte[] elf)
         {
             // Only the tested CUSA24769 1.00 ELF. Other updates must never receive these offsets.
-            string hash;
-            using (var sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(elf)).Replace("-", "");
-            if (hash != "938D2C720D2036E451D66AC474ECF21386D4E5AE5A50E60FF4F3647BC326BDFA") return false;
+            if (Sha256(elf) != "938D2C720D2036E451D66AC474ECF21386D4E5AE5A50E60FF4F3647BC326BDFA") return false;
             // Two FDEs include four bytes of the following instruction; the converter needs the
             // actual instruction boundary. These are file offsets in this exact ELF fingerprint.
             int ph = checked((int)BitConverter.ToUInt64(elf, 0x20));
@@ -135,6 +134,223 @@ namespace RyGT
                 if (!done) throw new InvalidDataException("Could not locate the known GT7 conversion fix.");
             }
             return true;
+        }
+
+        internal static string Sha256(byte[] data)
+        {
+            using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "");
+        }
+    }
+
+    // The community "Offline mode" patch (ps-patch-system XML, Proper Offline Patch v1.0), which gives
+    // the dealerships a local catalog. The player puts the XML in patches\CUSA24769.xml; only its
+    // Offline mode group is read, never the file's other groups (DLC unlocks, debug settings). Its
+    // addresses are the console's, with the executable at 0x400000, and it is only applied to the
+    // verified executable. Its injected code lies past the end of the first and last loadable segments,
+    // so those mappings are extended before conversion and the bytes written into the converted program
+    // afterwards: the converter never decodes the new code with the game's original function metadata.
+    internal sealed class OfflinePatch
+    {
+        public const string GroupName = "Offline mode";
+        // The ELF after unwrapping and the 1.00 conversion fix, the one tested with this patch.
+        const string VerifiedElf = "E84B7AB142D2CB71ED11F5FD1F6D2CB8625F5AF7D0B1120C5E897837E429CE09";
+        const long ConsoleBase = 0x400000;
+        // The converter keeps every loadable segment in a .elfN section at its guest address + 0x10000.
+        const long GuestRva = 0x10000;
+
+        public readonly List<KeyValuePair<long, byte[]>> Writes = new List<KeyValuePair<long, byte[]>>();
+        public readonly string Version;
+
+        OfflinePatch(string version) { Version = version; }
+
+        public static OfflinePatch Load(string path)
+        {
+            var document = new XmlDocument { XmlResolver = null };
+            using (var reader = XmlReader.Create(path, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit }))
+                document.Load(reader);
+            var id = document.SelectSingleNode("/Patch/TitleID/ID");
+            if (id == null || id.InnerText.Trim() != GameLayout.TitleId)
+                throw new InvalidDataException(path + " is not a patch for " + GameLayout.TitleId + ".");
+            var groups = document.SelectNodes("/Patch/Metadata[@Name='" + GroupName + "']");
+            if (groups.Count != 1) throw new InvalidDataException(path + " needs exactly one \"" + GroupName + "\" patch group.");
+            var group = (XmlElement)groups[0];
+            if (!group.GetAttribute("AppElf").Equals("eboot.bin", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The " + GroupName + " patch does not target eboot.bin.");
+            var patch = new OfflinePatch(group.GetAttribute("PatchVer"));
+            var written = new Dictionary<long, byte>();
+            foreach (XmlElement line in group.SelectNodes("PatchList/Line"))
+            {
+                if (line.GetAttribute("Type") != "bytes")
+                    throw new InvalidDataException("Unsupported " + GroupName + " patch line type \"" + line.GetAttribute("Type") + "\".");
+                string text = line.GetAttribute("Address"), hex = line.GetAttribute("Value");
+                if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text.Substring(2);
+                long address = text.Length > 0 && text.Length <= 15 && text.All(c => Uri.IsHexDigit(c)) ? Convert.ToInt64(text, 16) - ConsoleBase : -1;
+                if (address < 0 || hex.Length == 0 || hex.Length % 2 != 0 || !hex.All(c => Uri.IsHexDigit(c)))
+                    throw new InvalidDataException("Invalid patch line at \"" + line.GetAttribute("Address") + "\".");
+                var value = new byte[hex.Length / 2];
+                for (int i = 0; i < value.Length; i++) value[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+                for (int i = 0; i < value.Length; i++)
+                {
+                    byte previous;
+                    if (written.TryGetValue(address + i, out previous) && previous != value[i])
+                        throw new InvalidDataException("Conflicting patch lines at " + line.GetAttribute("Address") + ".");
+                    written[address + i] = value[i];
+                }
+                patch.Writes.Add(new KeyValuePair<long, byte[]>(address, value));
+            }
+            if (patch.Writes.Count == 0) throw new InvalidDataException("The " + GroupName + " patch group is empty.");
+            return patch;
+        }
+
+        public byte[] ExtendLayout(byte[] elf)
+        {
+            if (GameLayout.Sha256(elf) != VerifiedElf)
+                throw new InvalidDataException("The " + GroupName + " patch is only applied to the verified CUSA24769 executable. Remove patches\\" + GameLayout.TitleId + ".xml to set up this one.");
+            return Extend(elf, Writes);
+        }
+
+        public int Apply(string exe, byte[] layout)
+        {
+            byte[] image = File.ReadAllBytes(exe);
+            int removed = Overlay(image, layout, Writes);
+            File.WriteAllBytes(exe, image);
+            return removed;
+        }
+
+        // Every loadable segment grows to hold the writes between its address and the next segment's.
+        // A segment without uninitialized data grows in place over the file's padding when that reaches
+        // the next segment's data; otherwise it moves to the end of the file, its uninitialized part
+        // written as zeros, along with the headers inside it (TLS, process parameters).
+        internal static byte[] Extend(byte[] elf, List<KeyValuePair<long, byte[]>> writes)
+        {
+            if (elf.Length < 64 || BitConverter.ToUInt32(elf, 0) != 0x464c457f || elf[4] != 2 || elf[5] != 1 || BitConverter.ToUInt16(elf, 0x36) != 56)
+                throw new InvalidDataException("Unsupported executable for the " + GroupName + " patch.");
+            int ph = checked((int)BitConverter.ToUInt64(elf, 0x20));
+            int count = BitConverter.ToUInt16(elf, 0x38);
+            // Program header fields: type at 0, offset 8, address 16, file size 32, memory size 40, alignment 48.
+            Func<byte[], int, long> field = (data, at) => checked((long)BitConverter.ToUInt64(data, at));
+            var headers = Enumerable.Range(0, count).Select(i => ph + i * 56).ToList();
+            var loads = headers.Where(at => BitConverter.ToUInt32(elf, at) == 1).OrderBy(at => field(elf, at + 16)).ToList();
+            if (loads.Count == 0 || writes.Any(w => w.Key < field(elf, loads[0] + 16)))
+                throw new InvalidDataException("A " + GroupName + " patch line lies outside the executable.");
+            byte[] result = (byte[])elf.Clone();
+            for (int index = 0; index < loads.Count; index++)
+            {
+                int at = loads[index];
+                long address = field(result, at + 16), offset = field(result, at + 8), fileSize = field(result, at + 32), memorySize = field(result, at + 40);
+                long limit = index + 1 < loads.Count ? field(result, loads[index + 1] + 16) : long.MaxValue;
+                long end = address + fileSize;
+                foreach (var write in writes.Where(w => w.Key >= address && w.Key < limit))
+                {
+                    if (write.Key + write.Value.Length > limit) throw new InvalidDataException("A " + GroupName + " patch line crosses into the next segment.");
+                    end = Math.Max(end, write.Key + write.Value.Length);
+                }
+                if (end <= address + fileSize) continue;
+                long size = Math.Max(end, address + memorySize) - address;
+                long nextData = headers.Where(other => field(result, other + 32) > 0).Select(other => field(result, other + 8))
+                    .Where(o => o >= offset + fileSize).DefaultIfEmpty((long)result.Length).Min();
+                if (memorySize == fileSize && offset + size <= nextData)
+                {
+                    BitConverter.GetBytes(size).CopyTo(result, at + 32);
+                    BitConverter.GetBytes(size).CopyTo(result, at + 40);
+                    continue;
+                }
+                long alignment = Math.Max(1, field(result, at + 48));
+                if ((alignment & (alignment - 1)) != 0) throw new InvalidDataException("Unsupported segment alignment.");
+                long moved = ((result.Length + alignment - 1) & ~(alignment - 1)) + (address & (alignment - 1));
+                if (moved < result.Length) moved += alignment;
+                var grown = new byte[checked(moved + size)];
+                Buffer.BlockCopy(result, 0, grown, 0, result.Length);
+                Buffer.BlockCopy(result, checked((int)offset), grown, checked((int)moved), checked((int)fileSize));
+                foreach (int other in headers)
+                {
+                    long otherOffset = field(grown, other + 8);
+                    if (other != at && otherOffset >= offset && otherOffset < offset + fileSize)
+                        BitConverter.GetBytes(otherOffset + moved - offset).CopyTo(grown, other + 8);
+                }
+                BitConverter.GetBytes(moved).CopyTo(grown, at + 8);
+                BitConverter.GetBytes(size).CopyTo(grown, at + 32);
+                BitConverter.GetBytes(size).CopyTo(grown, at + 40);
+                result = grown;
+            }
+            return result;
+        }
+
+        // Writes the patch into the converted program after checking that each target still holds the
+        // layout ELF's bytes there. Base relocations inside the new bytes would rebase the injected code
+        // when Windows loads the program elsewhere, so they are turned into padding entries.
+        internal static int Overlay(byte[] image, byte[] layout, List<KeyValuePair<long, byte[]>> writes)
+        {
+            int pe = image.Length >= 0x40 ? BitConverter.ToInt32(image, 0x3c) : -1;
+            if (pe < 0 || pe > image.Length - 24 || BitConverter.ToUInt32(image, pe) != 0x4550 || BitConverter.ToUInt16(image, pe + 24) != 0x20b)
+                throw new InvalidDataException("The converted GT7.exe is not a 64-bit Windows program.");
+            int sectionCount = BitConverter.ToUInt16(image, pe + 6), optional = pe + 24;
+            int table = optional + BitConverter.ToUInt16(image, pe + 20);
+            // Section header fields: name at 0, virtual address 12, raw size 16, raw offset 20.
+            Func<long, int, bool, int> fileOffset = (rva, length, guest) =>
+            {
+                for (int i = 0; i < sectionCount; i++)
+                {
+                    int at = table + i * 40;
+                    long start = BitConverter.ToUInt32(image, at + 12), raw = BitConverter.ToUInt32(image, at + 16);
+                    if (guest && Encoding.ASCII.GetString(image, at, 4) != ".elf") continue;
+                    if (rva >= start && rva + length <= start + raw) return checked((int)(BitConverter.ToUInt32(image, at + 20) + rva - start));
+                }
+                throw new InvalidDataException("The converted GT7.exe has no section at 0x" + rva.ToString("x") + " for the " + GroupName + " patch.");
+            };
+            var targets = writes.Select(w => fileOffset(w.Key + GuestRva, w.Value.Length, true)).ToList();
+            int ph = checked((int)BitConverter.ToUInt64(layout, 0x20));
+            var loads = Enumerable.Range(0, BitConverter.ToUInt16(layout, 0x38)).Select(i => ph + i * 56).Where(at => BitConverter.ToUInt32(layout, at) == 1).ToList();
+            for (int i = 0; i < writes.Count; i++)
+            {
+                long address = writes[i].Key;
+                int length = writes[i].Value.Length;
+                int segment = loads.FirstOrDefault(at => address >= (long)BitConverter.ToUInt64(layout, at + 16) &&
+                    address + length <= (long)BitConverter.ToUInt64(layout, at + 16) + (long)BitConverter.ToUInt64(layout, at + 32));
+                if (segment == 0) throw new InvalidDataException("The executable's layout was not extended for the " + GroupName + " patch.");
+                long source = (long)BitConverter.ToUInt64(layout, segment + 8) + address - (long)BitConverter.ToUInt64(layout, segment + 16);
+                for (int b = 0; b < length; b++)
+                    if (image[targets[i] + b] != layout[source + b])
+                        throw new InvalidDataException("The converted GT7.exe does not hold the game code where the " + GroupName + " patch expects it.");
+            }
+
+            // The patched guest ranges, merged, for the relocation check.
+            var ranges = new List<long[]>();
+            foreach (var range in writes.Select(w => new[] { w.Key + GuestRva, w.Key + GuestRva + w.Value.Length }).OrderBy(r => r[0]))
+            {
+                if (ranges.Count > 0 && range[0] <= ranges[ranges.Count - 1][1]) ranges[ranges.Count - 1][1] = Math.Max(ranges[ranges.Count - 1][1], range[1]);
+                else ranges.Add(range);
+            }
+            var starts = ranges.Select(r => r[0]).ToArray();
+            int removed = 0;
+            if (BitConverter.ToUInt32(image, optional + 108) > 5)
+            {
+                long relocations = BitConverter.ToUInt32(image, optional + 112 + 5 * 8);
+                int remaining = checked((int)BitConverter.ToUInt32(image, optional + 112 + 5 * 8 + 4));
+                int block = remaining > 0 ? fileOffset(relocations, remaining, false) : 0;
+                while (remaining >= 8)
+                {
+                    long page = BitConverter.ToUInt32(image, block);
+                    int blockSize = checked((int)BitConverter.ToUInt32(image, block + 4));
+                    if (blockSize < 8 || blockSize > remaining) throw new InvalidDataException("Invalid base relocations in the converted GT7.exe.");
+                    for (int entry = block + 8; entry + 2 <= block + blockSize; entry += 2)
+                    {
+                        int value = BitConverter.ToUInt16(image, entry);
+                        if (value >> 12 == 0) continue;
+                        // A relocated field is at most 8 bytes: any overlap with the patched bytes counts.
+                        long rva = page + (value & 0xfff);
+                        int found = Array.BinarySearch(starts, rva + 8);
+                        int before = (found >= 0 ? found : ~found) - 1;
+                        if (before < 0 || ranges[before][1] <= rva) continue;
+                        BitConverter.GetBytes((ushort)(value & 0xfff)).CopyTo(image, entry);
+                        removed++;
+                    }
+                    block += blockSize;
+                    remaining -= blockSize;
+                }
+            }
+            for (int i = 0; i < writes.Count; i++) Buffer.BlockCopy(writes[i].Value, 0, image, targets[i], writes[i].Value.Length);
+            return removed;
         }
     }
 }

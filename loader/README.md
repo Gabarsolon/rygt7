@@ -34,6 +34,23 @@ No game, firmware, saves, GT Sport scripts, or game shader packs belong in a rel
 The generic project icon is original artwork; GT7's own window icon and background are read from
 the player's game files after setup.
 
+## Offline mode patch
+
+GT7's dealerships ("Failed to get sales list") work with the community **Offline mode** patch, the
+ps-patch-system XML of Proper Offline Patch v1.0 for CUSA24769. The player places that file as
+`patches\CUSA24769.xml`; it is not part of the release. Set up reads only its `Offline mode` group
+(589 `bytes` lines), never the file's other groups such as DLC unlocks or debug settings.
+
+The patch's addresses are the console's (executable at 0x400000) and its injected code lies past the
+end of the code segment and the last data segment. Set up therefore extends those segments in the ELF
+before conversion (the code segment over the file's padding, the data segment moved to the end of the
+file with its uninitialized memory as zeros), converts, and only then writes the patch into `GT7.exe`,
+where each `.elfN` section holds its guest addresses at RVA + 0x10000. The converter never decodes the
+injected code with the game's original function metadata. Before writing, every target must still hold
+the extended ELF's bytes; base relocations overlapping the new bytes are disabled. The patch is gated by
+the SHA-256 of the executable after the 1.00 conversion fix, and Set up fails rather than patch another
+one. The game writes its dealership catalog to `data\gt7offline`.
+
 ## Settings
 
 Display, FSR/DLSS, shader compilation, logging, controller bindings, ports, and wheel settings are
@@ -54,7 +71,9 @@ C# compiler included with .NET Framework; it does not copy runtime libraries or 
 
 Run `test-gt7.cmd <temporary-output-folder>` for synthetic setup regression checks. Optionally
 provide an unpatched verified ELF and the expected patched ELF as the second and third arguments
-to verify the conversion fix byte for byte. The tests retain their temporary fixtures for inspection.
+to verify the conversion fix byte for byte. Or verify the Offline mode patch byte for byte with
+`--offline <patch XML> <ELF after the conversion fix> <expected extended ELF> <GT7.exe converted from it> <expected patched GT7.exe>`.
+The tests retain their temporary fixtures for inspection.
 
 `RyGT7.exe --snapshot <output.png> home` renders the Home page; `settings` and `controls` select
 the other pages. `RyGT7.exe --setup` performs setup using the paths in `RyGT7.ini`.
