@@ -123,6 +123,46 @@ static void directedTests() {
     check(calls == 2 && snapshot().size() == 1 && std::get<0>(snapshot()[0]) == 0x11000,
           "multi-piece failure semantics");
     clear();
+
+    // A new allocation in the hole of a partly unmapped one: finding and removing the older
+    // allocation must skip the newer one's range between its own.
+    add(0x10000, 0x4000);
+    { Mutation m; m.Unmap(ptr(0x11000), 0x1000, [](auto...){ }); }
+    add(0x11000, 0x1000);
+    { Mutation m; check(m.Find(ptr(0x10000)).bytes == 0x4000 && m.Find(ptr(0x11000)).bytes == 0x1000, "find around a reused hole"); }
+    { Mutation m; m.Remove(ptr(0x10000)); }
+    check(snapshot().size() == 1 && std::get<0>(snapshot()[0]) == 0x11000, "remove around a reused hole");
+    expectFailure([&]{ Mutation m; m.Find(ptr(0x10000)); });
+    clear();
+}
+
+// Overlaps, Covers and RequireAvailable against a walk over every range from the lowest one.
+static void checkLookups(std::mt19937& rng) {
+    const auto rows = snapshot();
+    for (int query = 0; query != 8; ++query) {
+        const bool aligned = (rng() & 1) != 0;
+        const std::uint64_t address = aligned ? 0xf0000 + (rng() % 1700) * 0x1000ull : 0xf0000 + rng() % 0x6a0000;
+        const std::size_t bytes = aligned ? (1 + rng() % 48) * 0x1000 : 1 + rng() % 0x30000;
+        bool overlaps = false, covers = false;
+        for (const auto& r : rows) {
+            if (std::get<0>(r) >= address + bytes) break;
+            if (std::get<0>(r) + std::get<1>(r) > address) { overlaps = true; break; }
+        }
+        auto cursor = address;
+        for (const auto& r : rows) {
+            const auto finish = std::get<0>(r) + std::get<1>(r);
+            if (finish <= cursor) continue;
+            if (std::get<0>(r) > cursor || !std::get<6>(r)) break;
+            cursor = finish;
+            if (cursor >= address + bytes) { covers = true; break; }
+        }
+        Mutation m;
+        check(m.Overlaps(ptr(address), bytes) == overlaps, "overlap lookup");
+        check(m.Covers(ptr(address), bytes) == covers, "cover lookup");
+        bool available = true;
+        try { m.RequireAvailable(ptr(address), bytes); } catch (const std::exception&) { available = false; }
+        check(available == !overlaps, "availability lookup");
+    }
 }
 
 static void randomTests() {
@@ -164,6 +204,13 @@ static void randomTests() {
             }
         }
         check(actual == model, "randomized page model mismatch");
+        checkLookups(rng);
+        { Mutation m;
+          bool present = false;
+          for (unsigned j = 0; j != pages; ++j) present = present || model[a][j];
+          if (present) check(m.Find(ptr(base)).bytes == pages * pageSize, "find partly unmapped allocation");
+          else expectFailure([&]{ m.Find(ptr(base)); });
+        }
         ++operations;
     }
     clear();
@@ -181,9 +228,28 @@ static void bench(unsigned count) {
     check(snapshot().size() == count-removed, "benchmark contents"); clear();
 }
 
+// A fixed mapping's checks near the top of a large registry: Covers twice, Overlaps, RequireAvailable.
+static void benchLookups(unsigned count) {
+    constexpr unsigned queries = 2000;
+    for (unsigned i = 0; i != count; ++i) add(0x10000000ull + i*0x2000ull, 0x1000);
+    const auto start = std::chrono::steady_clock::now();
+    unsigned covered = 0;
+    for (unsigned q = 0; q != queries; ++q) {
+        const auto address = 0x10000000ull + (count - 1 - q % 64) * 0x2000ull;
+        Mutation m;
+        covered += m.Covers(ptr(address), 0x1000) && m.Covers(ptr(address), 0x1000);
+        if (!m.Overlaps(ptr(address + 0x1000), 0x1000)) m.RequireAvailable(ptr(address + 0x1000), 0x1000);
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-start).count();
+    std::printf("ranges=%u fixed_mapping_checks=%u elapsed_ms=%.3f\n", count, queries, ms);
+    check(covered == queries, "lookup benchmark"); clear();
+}
+
 int main(int argc, char** argv) {
     try {
-        if (argc > 1 && std::string(argv[1]) == "--bench") { bench(4000); bench(20000); return 0; }
+        if (argc > 1 && std::string(argv[1]) == "--bench") {
+            bench(4000); bench(20000); benchLookups(4000); benchLookups(20000); return 0;
+        }
         directedTests(); randomTests();
         std::printf("directed_and_random_tests=PASS\n");
         return 0;
