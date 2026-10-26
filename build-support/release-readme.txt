@@ -37,11 +37,12 @@ State of this build ({date})
     default (they run about 30-40 FPS unlocked). Audio works.
   - Fixed in this build: crowds flickering black or jumping (a shader compiler error made
     the crowd's GPU writes overlap), the black pit building and other missing streamed
-    textures at Deep Forest, the title screen flicker, black cockpit interiors and the
-    colour glare around the player's car.
+    textures at Deep Forest, the title screen flicker, black cockpit interiors, the
+    colour glare around the player's car, the green night sky at Yas Marina, the
+    flickering dark shadow band at Alsace and the empty cockpit rear-view mirror.
   - Known problems: occasional crashes, intermittent GPU device loss (NVIDIA driver reset),
-    black wedges in some replay and flyover shots, missing object shadows at Alsace, a seam
-    in the sky. Online features are not available.
+    black wedges in some replay and flyover shots, a seam in the sky, cars black for a
+    moment at the start of a race. Online features are not available.
 
 Options (RyGT7.exe)
   Display mode and resolution, AMD FSR upscaling and frame generation, optional NVIDIA DLSS
