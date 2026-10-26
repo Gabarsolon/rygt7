@@ -1180,6 +1180,22 @@ namespace RyGT
             });
             var dlssg = AddOption(graphics, "", "GPU", "dlssg_enabled", false);
             dlssg.Margin = new Padding(22, 2, 0, 2);
+            // DLSS frame multiplier (GPU.dlssg_frames: generated frames a game frame, 1-5; the
+            // game gets it as RYGT_DLSSG_FRAMES): x1 is off, x2 any RTX 40/50, x3-x6 RTX 50.
+            var multRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(22, 2, 0, 2), WrapContents = false };
+            var mult = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
+            mult.Items.AddRange(new object[] { "x1 (off)", "x2", "x3 (RTX 50)", "x4 (RTX 50)", "x5 (RTX 50)", "x6 (RTX 50)" });
+            multRow.Controls.Add(new Label { Text = "Frame multiplier", AutoSize = false, Width = 174, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+            multRow.Controls.Add(mult);
+            graphics.Controls.Add(multRow);
+            bool multLoading = true;
+            Action showMult = delegate
+            {
+                multLoading = true;
+                int generated = Math.Max(1, Math.Min(5, ReadIntSetting("GPU", "dlssg_frames", 1)));
+                mult.SelectedIndex = dlssg.Checked ? generated : 0;
+                multLoading = false;
+            };
             Action refreshDlss = delegate
             {
                 bool dlssInstalled = File.Exists(Path.Combine(dlssDir, "ryGT_dlss.dll")) &&
@@ -1189,9 +1205,10 @@ namespace RyGT
                 dlss.Text = dlssInstalled ? "Upscale with NVIDIA DLSS (RTX cards; instead of FSR)"
                                           : "Upscale with NVIDIA DLSS (add the DLSS files first)";
                 dlss.Enabled = dlssInstalled;
-                dlssg.Text = dlssgInstalled ? "DLSS frame generation: about 2x the frames (RTX 40+)"
+                dlssg.Text = dlssgInstalled ? "DLSS frame generation (RTX 40+)"
                                             : "DLSS frame generation (add the DLSS files first)";
                 dlssg.Enabled = dlssgInstalled;
+                mult.Enabled = dlssgInstalled;
             };
             refreshDlss();
             addDlss = new Button { Text = "Add DLSS files...", AutoSize = true, Margin = new Padding(22, 2, 0, 4) };
@@ -1260,6 +1277,20 @@ namespace RyGT
             updateDlss();
             framegen.CheckedChanged += delegate { if (framegen.Checked && dlssg.Checked) dlssg.Checked = false; };
             dlssg.CheckedChanged += delegate { if (dlssg.Checked && framegen.Checked) framegen.Checked = false; };
+            // The multiplier and the DLSS frame generation box follow each other.
+            showMult();
+            dlssg.CheckedChanged += delegate { showMult(); };
+            mult.SelectedIndexChanged += delegate
+            {
+                if (multLoading) return;
+                try
+                {
+                    if (mult.SelectedIndex > 0) WriteSetting("GPU", "dlssg_frames", mult.SelectedIndex);
+                    bool on = mult.SelectedIndex > 0;
+                    if (dlssg.Checked != on) dlssg.Checked = on; // saves dlssg_enabled
+                }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
             // Shaders: the stored ones are built while the splash screen shows; a new one pauses
             // the game until it is compiled (instead of a stutter and missing objects).
             var shaders = Section(left, "Shaders");
@@ -1894,6 +1925,23 @@ namespace RyGT
             return parsed as Dictionary<string, object> ?? new Dictionary<string, object>();
         }
 
+        /// GPU.dlssg_frames from the game's settings: DLSS generated frames a game frame (1-5).
+        static int DlssgFrames(string root)
+        {
+            try
+            {
+                string path = Path.Combine(root, "user", "custom_configs", "CUSA03220.json");
+                var config = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                object found, value;
+                var gpu = config != null && config.TryGetValue("GPU", out found) ? found as Dictionary<string, object> : null;
+                if (gpu != null && gpu.TryGetValue("dlssg_frames", out value) && value is int)
+                    return Math.Max(1, Math.Min(5, (int)value));
+            }
+            catch { }
+            return 1;
+        }
+
         internal static void InstallDlssLibrary(string source, string directory)
         {
             if (!string.Equals(Path.GetFileName(source), "nvngx_dlss.dll", StringComparison.OrdinalIgnoreCase))
@@ -2453,6 +2501,8 @@ namespace RyGT
                         start.EnvironmentVariables["RYTY_INTEROP_BASE"] = "8000000000";
                         start.EnvironmentVariables["RYGT_NATIVE_INPLACE_RANGES"] = "1020000000+1de000,1020235000+1dd000,1020407000+b000";
                         start.EnvironmentVariables["SHADGT_FPS_LOCK"] = "60"; // wheel + ultrawide edition: races up to 60 (release: 30)
+                        // DLSS frame multiplier from the Graphics page (generated frames, 1-5).
+                        start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
                         started = Process.Start(start);
                     }
                     catch (Exception e)
