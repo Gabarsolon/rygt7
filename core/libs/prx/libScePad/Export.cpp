@@ -248,6 +248,7 @@ int APS5_VABI scePadSetParticularMode(bool mode) {
 int APS5_VABI scePadInit_nid_postfix(void) {
  Pad::Initialize();
  Pad::InstallWideCamera();
+ Pad::InstallCoreBoost();
  return PAD_OK;
 }
 

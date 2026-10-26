@@ -59,6 +59,8 @@ namespace Pad {
 void Initialize();
 // GT7 ultrawide: widens the race camera to GPU.aspect_ratio (WideCamera.cpp).
 void InstallWideCamera();
+// Hybrid CPUs: pins the busy threads to the P-cores, without power throttling (CoreBoost.cpp).
+void InstallCoreBoost();
 PadData ReadState(int slot);
 bool Connected(int slot);
 void SetVibration(int slot, std::uint8_t large, std::uint8_t small);
