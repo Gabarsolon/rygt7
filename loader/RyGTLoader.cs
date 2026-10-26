@@ -1783,6 +1783,47 @@ namespace RyGT
                 resolution.Enabled = screen.SelectedIndex != 1;
                 refresh.Enabled = screen.SelectedIndex == 2;
             };
+            // Ultrawide (GPU.aspect_ratio): the camera widens to this shape and the HUD stays at
+            // 16:9 in the middle. A preset also picks its resolution (added to the list when the
+            // monitor does not report it, e.g. for a borderless window on another PC's screen).
+            var wideRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 2, 0, 2), WrapContents = false };
+            var wide = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
+            var wideAspects = new List<string> { "16:9", "auto", "2560:1080", "3440:1440", "3840:1600", "5120:1440" };
+            var wideSizes = new List<long> { 0, 0, (2560L << 32) | 1080, (3440L << 32) | 1440, (3840L << 32) | 1600, (5120L << 32) | 1440 };
+            wide.Items.AddRange(new object[] { "Off (16:9)", "Auto (screen shape)", "21:9 - 2560 x 1080", "21:9 - 3440 x 1440", "24:10 - 3840 x 1600", "32:9 - 5120 x 1440" });
+            string storedAspect = ReadStringSetting("GPU", "aspect_ratio", "16:9");
+            int wideIndex = wideAspects.IndexOf(storedAspect);
+            if (wideIndex < 0)
+            {
+                wideAspects.Add(storedAspect);
+                wideSizes.Add(0);
+                wide.Items.Add("Custom (" + storedAspect + ")");
+                wideIndex = wideAspects.Count - 1;
+            }
+            wide.SelectedIndex = wideIndex;
+            wideRow.Controls.Add(new Label { Text = "Ultrawide", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+            wideRow.Controls.Add(wide);
+            panel.Controls.Add(wideRow);
+            wide.SelectedIndexChanged += delegate
+            {
+                if (loading) return;
+                try
+                {
+                    WriteSetting("GPU", "aspect_ratio", wideAspects[wide.SelectedIndex]);
+                    long size = wideSizes[wide.SelectedIndex];
+                    if (size != 0)
+                    {
+                        if (!keys.Contains(size))
+                        {
+                            keys.Add(size);
+                            resolution.Items.Add(ModeText(size));
+                        }
+                        resolution.SelectedIndex = keys.IndexOf(size); // saves the resolution too
+                    }
+                }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+
             fillRates(ReadIntSetting("GPU", "fullscreen_refresh_rate", 0));
             enable();
             screen.SelectedIndexChanged += delegate { enable(); save(); };
@@ -2411,7 +2452,7 @@ namespace RyGT
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
                         start.EnvironmentVariables["RYTY_INTEROP_BASE"] = "8000000000";
                         start.EnvironmentVariables["RYGT_NATIVE_INPLACE_RANGES"] = "1020000000+1de000,1020235000+1dd000,1020407000+b000";
-                        start.EnvironmentVariables["SHADGT_FPS_LOCK"] = "30";
+                        start.EnvironmentVariables["SHADGT_FPS_LOCK"] = "60"; // wheel + ultrawide edition: races up to 60 (release: 30)
                         started = Process.Start(start);
                     }
                     catch (Exception e)
