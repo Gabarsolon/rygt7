@@ -2136,7 +2136,7 @@ namespace RyGT
             }
 
             // The bundled community Offline mode patch (only that group of the file is used).
-            string offlinePath = Path.Combine(root, "patches", GameLayout.TitleId + ".xml");
+            string offlinePath = OfflinePatchPath;
             OfflinePatch offline = null;
             if (File.Exists(offlinePath))
             {
@@ -2200,8 +2200,31 @@ namespace RyGT
             // GT7's runtime settings and directories; no GT Sport scripts or shader packs.
             ConfigureGT7();
             UsePortableShaderCache();
+            // Which Offline mode patch file GT7.exe was built with, so that Play notices a file added,
+            // changed or removed later (adding it alone changes nothing until GT7.exe is rebuilt).
+            File.WriteAllText(OfflineStampPath, OfflinePatchState());
 
             Log("Set up finished.");
+        }
+
+        string OfflinePatchPath { get { return Path.Combine(root, "patches", GameLayout.TitleId + ".xml"); } }
+        string OfflineStampPath { get { return Path.Combine(root, "convert", "offline-patch.txt"); } }
+
+        // The SHA-256 of patches\CUSA24769.xml, or "none" without one.
+        string OfflinePatchState()
+        {
+            return File.Exists(OfflinePatchPath) ? GameLayout.Sha256(File.ReadAllBytes(OfflinePatchPath)) : "none";
+        }
+
+        // Set up must run again when the Offline mode patch file differs from the one GT7.exe was built
+        // with. A folder set up before this check has no record: it was built without the file unless
+        // the dealership catalog folder exists.
+        bool OfflinePatchChanged()
+        {
+            string state = OfflinePatchState();
+            if (File.Exists(OfflineStampPath)) return File.ReadAllText(OfflineStampPath).Trim() != state;
+            bool applied = Directory.Exists(Path.Combine(root, "data", "gt7offline"));
+            return (state != "none") != applied;
         }
 
         static void FindFonts(string selected, out string font, out string font2)
@@ -2498,6 +2521,15 @@ namespace RyGT
                 bool prepared = false;
                 try
                 {
+                    if (OfflinePatchChanged())
+                    {
+                        // patches\CUSA24769.xml was added, changed or removed after Set up: GT7.exe is
+                        // rebuilt with it first (the dealerships said "Failed to get sales list" otherwise).
+                        SetStatus("The Offline mode patch file changed since Set up; running Set up again...");
+                        Log("patches\\" + GameLayout.TitleId + ".xml changed since Set up; running Set up again.");
+                        setupLogPath = LogFiles.Prepare(root, "setup.log");
+                        RunSetup();
+                    }
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
                     ConfigureGT7();

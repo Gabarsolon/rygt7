@@ -41,6 +41,9 @@ ps-patch-system XML of Proper Offline Patch v1.0 for CUSA24769. Releases include
 `patches\CUSA24769.xml`, so Set up applies it automatically without a separate download or copy.
 Its source and retained credits are in `patches\README.md`. Set up reads only its `Offline mode` group
 (589 `bytes` lines), never the file's other groups such as DLC unlocks or debug settings.
+Set up records the SHA-256 of the file it built `GT7.exe` with in `convert\offline-patch.txt`; when
+the file is added, changed or removed afterwards, Play runs Set up again before starting the game
+(adding the file alone changed nothing, and the dealerships kept saying "Failed to get sales list").
 
 The patch's addresses are the console's (executable at 0x400000) and its injected code lies past the
 end of the code segment and the last data segment. Set up therefore extends those segments in the ELF
