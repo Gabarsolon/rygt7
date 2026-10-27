@@ -1164,10 +1164,6 @@ namespace RyGT
             rcas.Enabled = fsr.Checked;
             framegen.Enabled = fsr3Installed;
             fsr.CheckedChanged += delegate { fsr3.Enabled = fsr.Checked && fsr3Installed; rcas.Enabled = fsr.Checked; };
-            // AMD GPUs: fragment inputs interpolated through KHR barycentrics on one-sample draws
-            // (GPU.amd_single_sample_barycentric, the game gets it as RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC).
-            // The renderer only uses it on AMD GPUs; other GPUs render as before either way.
-            AddOption(graphics, "AMD GPUs: single-sample interpolation fix", "GPU", "amd_single_sample_barycentric", true);
             // NVIDIA (the dlss folder): DLSS upscaling through ryGT_dlss.dll and nvngx_dlss.dll, and
             // DLSS frame generation through Streamline (sl.*.dll and nvngx_dlssg.dll; RTX 40 and
             // newer, Windows' hardware-accelerated GPU scheduling on). One frame generation at a time.
@@ -1960,23 +1956,6 @@ namespace RyGT
             return 30;
         }
 
-        /// GPU.amd_single_sample_barycentric from the game's settings: on unless turned off.
-        static bool AmdSingleSampleBarycentric(string root)
-        {
-            try
-            {
-                string path = Path.Combine(root, "user", "custom_configs", "CUSA03220.json");
-                var config = new System.Web.Script.Serialization.JavaScriptSerializer()
-                    .DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
-                object found, value;
-                var gpu = config != null && config.TryGetValue("GPU", out found) ? found as Dictionary<string, object> : null;
-                if (gpu != null && gpu.TryGetValue("amd_single_sample_barycentric", out value) && value is bool)
-                    return (bool)value;
-            }
-            catch { }
-            return true;
-        }
-
         /// GPU.dlssg_frames from the game's settings: DLSS generated frames a game frame (1-5).
         static int DlssgFrames(string root)
         {
@@ -2615,9 +2594,6 @@ namespace RyGT
                         start.EnvironmentVariables["SHADGT_FPS_LOCK"] = RaceFpsLock(root).ToString();
                         // DLSS frame multiplier from the Graphics page (generated frames, 1-5).
                         start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
-                        // shadgt7 01e852df (from shadGT 217d4011): AMD's interpolation through KHR
-                        // barycentrics on one-sample draws fixes AMD rendering; ignored on other GPUs.
-                        start.EnvironmentVariables["RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC"] = AmdSingleSampleBarycentric(root) ? "1" : "0";
                         started = Process.Start(start);
                     }
                     catch (Exception e)
