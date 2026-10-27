@@ -127,8 +127,10 @@ Both projects are GPL-2.0; the licence notices are in `LICENSE` and `licenses/` 
 
 | Branch | Contents | Based on |
 |---|---|---|
-| [`gt7-wheel-ultrawide`](../../tree/gt7-wheel-ultrawide) | runtime libraries: wheel bridge, ultrawide camera, P-core pinning; launcher: Ultrawide presets, DLSS frame multiplier, 60 FPS races | rygt-team/rygt7 |
-| [`gt7-renderer`](../../tree/gt7-renderer) | renderer (`libSceVideoOut.prx`): 16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame generation (up to 6×), fast flips, GT7 job-thread hooks (off by default) | rygt-team/shadgt7 |
+| [`main`](https://gitlab.com/dessierror/rygt-7-online-build/-/tree/main) | runtime libraries: wheel bridge, ultrawide camera, P-core pinning; launcher: Ultrawide presets, DLSS frame multiplier, 60 FPS races | rygt-team/rygt7 |
+| [`renderer`](https://gitlab.com/dessierror/rygt-7-online-build/-/tree/renderer) | renderer (`libSceVideoOut.prx`): 16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame generation (up to 6×), fast flips, GT7 job-thread hooks (off by default) | rygt-team/shadgt7 |
+
+`build-support/renderer.json` on `main` names the `renderer` commit the release is built from.
 
 ## Credits
 RyGT7 and shadGT7 by the [rygt-team](https://gitlab.com/rygt-team), built on Ryty, shadGT and
