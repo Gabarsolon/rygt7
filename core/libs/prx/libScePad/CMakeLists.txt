@@ -3,6 +3,8 @@ add_library(libScePad SHARED EXCLUDE_FROM_ALL
     ${CMAKE_CURRENT_SOURCE_DIR}/src/PadState.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WheelBridge.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WheelInput.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/WideCamera.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/CoreBoost.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../libSceVideoOut/src/InputMapping.cpp
 )
 target_include_directories(libScePad PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/SDL2/include)

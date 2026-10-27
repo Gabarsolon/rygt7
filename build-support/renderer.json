@@ -1,5 +1,5 @@
 {
- "repository": "https://gitlab.com/rygt-team/shadgt7",
- "branch": "main",
- "commit": "38335a9f8104ad1dc3eaee99eaa30b8d7fb8aafc"
+ "repository": "https://gitlab.com/dessierror/rygt-7-online-build",
+ "branch": "renderer",
+ "commit": "d4b03cd162f9d5d6ec72037fcc848e3c03c52ea7"
 }
