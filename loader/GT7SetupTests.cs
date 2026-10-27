@@ -40,6 +40,88 @@ namespace RyGT
             foreach (string name in new[] { "eboot.bin", "contents\\gt.idx", "contents\\gt01.vol", "sce_module\\libc.prx", "sce_module\\libSceFios2.prx", "contents\\base-only.dat", "nested\\base.txt" })
                 Put(folder, name, "base:" + name);
         }
+        static string PatchXml(string title, string group, string lines)
+        {
+            return "<?xml version=\"1.0\"?><Patch><TitleID><ID>" + title + "</ID></TitleID>" +
+                "<Metadata Name=\"" + group + "\" PatchVer=\"1.0\" AppElf=\"eboot.bin\"><PatchList>" + lines + "</PatchList></Metadata>" +
+                "<Metadata Name=\"Unlock Vehicle DLCs\" AppElf=\"eboot.bin\"><PatchList><Line Type=\"bytes\" Address=\"0x400010\" Value=\"ee\"/></PatchList></Metadata></Patch>";
+        }
+        static void Header(byte[] elf, int index, uint type, long offset, long address, long fileSize, long memorySize, long alignment)
+        {
+            int at = 64 + index * 56;
+            BitConverter.GetBytes(type).CopyTo(elf, at);
+            foreach (var field in new[] { new[] { 8, offset }, new[] { 16, address }, new[] { 32, fileSize }, new[] { 40, memorySize }, new[] { 48, alignment } })
+                BitConverter.GetBytes(field[1]).CopyTo(elf, at + (int)field[0]);
+        }
+        static long Field(byte[] elf, int index, int field) { return BitConverter.ToInt64(elf, 64 + index * 56 + field); }
+        static void OfflineChecks(string root)
+        {
+            string xml = Path.Combine(root, "offline.xml");
+            Put(root, "offline.xml", PatchXml(GameLayout.TitleId, OfflinePatch.GroupName,
+                "<Line Type=\"bytes\" Address=\"0x400180\" Value=\"c3c3c3c3\"/><Line Type=\"bytes\" Address=\"0x00410300\" Value=\"0102\"/>"));
+            var patch = OfflinePatch.Load(xml);
+            Check(patch.Writes.Count == 2 && patch.Writes[0].Key == 0x180 && patch.Writes[1].Key == 0x10300, "Offline mode lines (and only them) read");
+            Put(root, "offline.xml", PatchXml("CUSA03220", OfflinePatch.GroupName, "<Line Type=\"bytes\" Address=\"0x400180\" Value=\"c3\"/>"));
+            Reject(() => OfflinePatch.Load(xml), "Patch for another game accepted");
+            Put(root, "offline.xml", PatchXml(GameLayout.TitleId, "Debug Settings", "<Line Type=\"bytes\" Address=\"0x400180\" Value=\"c3\"/>"));
+            Reject(() => OfflinePatch.Load(xml), "File without an Offline mode group accepted");
+            Put(root, "offline.xml", PatchXml(GameLayout.TitleId, OfflinePatch.GroupName, "<Line Type=\"utf8\" Address=\"0x400180\" Value=\"c3\"/>"));
+            Reject(() => OfflinePatch.Load(xml), "Unsupported line type accepted");
+            Put(root, "offline.xml", PatchXml(GameLayout.TitleId, OfflinePatch.GroupName,
+                "<Line Type=\"bytes\" Address=\"0x400180\" Value=\"c3c3\"/><Line Type=\"bytes\" Address=\"0x400181\" Value=\"90\"/>"));
+            Reject(() => OfflinePatch.Load(xml), "Conflicting lines accepted");
+            Reject(() => patch.ExtendLayout(new byte[64]), "Unverified executable extended");
+
+            // Code with padding up to the next segment grows in place; data with uninitialized memory
+            // moves to the end of the file with its TLS header.
+            var elf = new byte[0x2080];
+            new byte[] { 0x7f, (byte)'E', (byte)'L', (byte)'F', 2, 1 }.CopyTo(elf, 0);
+            BitConverter.GetBytes(64L).CopyTo(elf, 0x20);
+            BitConverter.GetBytes((ushort)56).CopyTo(elf, 0x36);
+            BitConverter.GetBytes((ushort)3).CopyTo(elf, 0x38);
+            Header(elf, 0, 1, 0x1000, 0, 0x100, 0x100, 0x1000);
+            Header(elf, 1, 1, 0x2000, 0x10000, 0x80, 0x200, 0x1000);
+            Header(elf, 2, 7, 0x2040, 0x10040, 0x10, 0x20, 0x10);
+            for (int i = 0; i < 0x80; i++) elf[0x2000 + i] = (byte)(i + 1);
+            var layout = OfflinePatch.Extend(elf, patch.Writes);
+            Check(Field(layout, 0, 8) == 0x1000 && Field(layout, 0, 32) == 0x184 && Field(layout, 0, 40) == 0x184, "Code segment extended in place");
+            Check(Field(layout, 1, 8) == 0x3000 && Field(layout, 1, 32) == 0x302 && Field(layout, 1, 40) == 0x302 && layout.Length == 0x3302, "Data segment moved and extended");
+            Check(Field(layout, 2, 8) == 0x3040 && layout[0x3000] == 1 && layout[0x307f] == 0x80 && layout[0x3080] == 0, "Data and TLS header moved");
+            Check(elf.SequenceEqual(OfflinePatch.Extend(elf, new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<long, byte[]>>())), "Layout changed without patch lines");
+
+            // A converted program: .elf0 holds guest address 0 at RVA 0x10000, .reloc a 64-bit
+            // relocation overlapping the patch line and one that does not.
+            var image = new byte[0x800];
+            BitConverter.GetBytes(0x80).CopyTo(image, 0x3c);
+            BitConverter.GetBytes(0x4550).CopyTo(image, 0x80);
+            BitConverter.GetBytes((ushort)2).CopyTo(image, 0x86);
+            BitConverter.GetBytes((ushort)240).CopyTo(image, 0x94);
+            BitConverter.GetBytes((ushort)0x20b).CopyTo(image, 0x98);
+            BitConverter.GetBytes(16).CopyTo(image, 0x98 + 108);
+            BitConverter.GetBytes(0x20000).CopyTo(image, 0x98 + 112 + 40);
+            BitConverter.GetBytes(12).CopyTo(image, 0x98 + 112 + 44);
+            int table = 0x98 + 240;
+            foreach (var section in new[] { new object[] { ".elf0", 0x10000, 0x200, 0x400 }, new object[] { ".reloc", 0x20000, 0x200, 0x600 } })
+            {
+                Encoding.ASCII.GetBytes((string)section[0]).CopyTo(image, table);
+                BitConverter.GetBytes((int)section[1]).CopyTo(image, table + 12);
+                BitConverter.GetBytes((int)section[2]).CopyTo(image, table + 16);
+                BitConverter.GetBytes((int)section[3]).CopyTo(image, table + 20);
+                table += 40;
+            }
+            Buffer.BlockCopy(layout, 0x1000, image, 0x400, 0x184);
+            BitConverter.GetBytes(0x10000).CopyTo(image, 0x600);
+            BitConverter.GetBytes(12).CopyTo(image, 0x604);
+            BitConverter.GetBytes((ushort)(0xa000 | 0x17c)).CopyTo(image, 0x608);
+            BitConverter.GetBytes((ushort)(0xa000 | 0x170)).CopyTo(image, 0x60a);
+            var write = new[] { patch.Writes[0] }.ToList();
+            var mismatch = (byte[])image.Clone();
+            mismatch[0x400 + 0x181] ^= 0xff;
+            Reject(() => OfflinePatch.Overlay(mismatch, layout, write), "Patch applied over unexpected code");
+            Check(OfflinePatch.Overlay(image, layout, write) == 1, "Overlapping relocation disabled");
+            Check(BitConverter.ToUInt16(image, 0x608) == 0x17c && BitConverter.ToUInt16(image, 0x60a) == (0xa000 | 0x170), "Only the overlapping relocation disabled");
+            Check(image.Skip(0x400 + 0x180).Take(4).All(b => b == 0xc3), "Patch bytes written");
+        }
         [STAThread]
         static int Main(string[] args)
         {
@@ -90,11 +172,23 @@ namespace RyGT
                 File.Delete(Path.Combine(baseDir, "contents", "gt01.vol"));
                 Reject(() => new GameLayout(baseDir, null, runtime), "Missing base volumes accepted");
                 Check(!GameLayout.PatchKnownExecutable(new byte[64]), "Unknown executable patched");
+                OfflineChecks(root);
                 if (args.Length == 2)
                 {
                     byte[] elf = File.ReadAllBytes(args[0]);
                     Check(GameLayout.PatchKnownExecutable(elf), "Known GT7 ELF not recognized");
                     Check(elf.SequenceEqual(File.ReadAllBytes(args[1])), "Conversion fix differs from verified ELF");
+                }
+                // --offline <patch XML> <ELF after the conversion fix> <expected extended ELF>
+                //           <GT7.exe converted from it> <expected patched GT7.exe>
+                if (args.Length == 6 && args[0] == "--offline")
+                {
+                    var patch = OfflinePatch.Load(args[1]);
+                    byte[] layout = patch.ExtendLayout(File.ReadAllBytes(args[2]));
+                    Check(layout.SequenceEqual(File.ReadAllBytes(args[3])), "Extended layout differs from the verified ELF");
+                    byte[] image = File.ReadAllBytes(args[4]);
+                    OfflinePatch.Overlay(image, layout, patch.Writes);
+                    Check(image.SequenceEqual(File.ReadAllBytes(args[5])), "Offline mode patch differs from the verified GT7.exe");
                 }
                 Console.WriteLine("PASS: " + checks + " GT7 setup checks");
                 return 0;
