@@ -108,9 +108,9 @@ built from an older renderer pin lacks the ultrawide HUD, DLSS frame multiplier 
   with Windows power throttling off. Set the environment variable `RYGT_PCORES=0` to disable this.
 - The 16:9 HUD records each frame's HUD in one pass instead of switching pictures on every draw,
   which uses roughly a sixth of the render passes.
-- Races run up to 60 FPS (the first two prereleases locked them to 30). They hold 60 in quiet
-  sections and run at about 35–48 FPS when the field is busy. Frame generation in the launcher
-  multiplies what you see on screen.
+- Races are locked to an even 30 FPS by default. The launcher's Graphics page offers 60 FPS
+  (Race frame rate): races then hold 60 in quiet sections and run at about 35–48 FPS when the
+  field is busy. Frame generation in the launcher multiplies what you see on screen.
 - **Fast flips** (optional): set the Windows environment variable `RYGT_FAST_FLIPS=1` and each
   frame goes on screen as soon as it is ready instead of waiting for the next 60 Hz tick (about
   0.6 ms instead of up to 17 ms), which evens out frame times below 60 FPS. In a command prompt:
