@@ -1188,6 +1188,20 @@ namespace RyGT
             multRow.Controls.Add(new Label { Text = "Frame multiplier", AutoSize = false, Width = 174, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
             multRow.Controls.Add(mult);
             graphics.Controls.Add(multRow);
+            // Race frame rate (GPU.race_fps_lock, the game gets it as SHADGT_FPS_LOCK): an even 30
+            // by default; 60 when the PC keeps up.
+            var fpsRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
+            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
+            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps" });
+            fpsRow.Controls.Add(new Label { Text = "Race frame rate", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+            fpsRow.Controls.Add(fpsLock);
+            graphics.Controls.Add(fpsRow);
+            fpsLock.SelectedIndex = ReadIntSetting("GPU", "race_fps_lock", 30) == 60 ? 1 : 0;
+            fpsLock.SelectedIndexChanged += delegate
+            {
+                try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
             bool multLoading = true;
             Action showMult = delegate
             {
@@ -1925,6 +1939,23 @@ namespace RyGT
             return parsed as Dictionary<string, object> ?? new Dictionary<string, object>();
         }
 
+        /// GPU.race_fps_lock from the game's settings: the race frame rate, 30 unless 60 was chosen.
+        static int RaceFpsLock(string root)
+        {
+            try
+            {
+                string path = Path.Combine(root, "user", "custom_configs", "CUSA03220.json");
+                var config = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                object found, value;
+                var gpu = config != null && config.TryGetValue("GPU", out found) ? found as Dictionary<string, object> : null;
+                if (gpu != null && gpu.TryGetValue("race_fps_lock", out value) && value is int && (int)value == 60)
+                    return 60;
+            }
+            catch { }
+            return 30;
+        }
+
         /// GPU.dlssg_frames from the game's settings: DLSS generated frames a game frame (1-5).
         static int DlssgFrames(string root)
         {
@@ -2528,7 +2559,7 @@ namespace RyGT
                         // up (GT Sport's are above 0xf000000000, the renderer's default); kept in a
                         // renderer region, the CPU saw stale data and culled the whole rear-view mirror.
                         start.EnvironmentVariables["RYGT_NATIVE_INPLACE_FROM"] = "e000000000";
-                        start.EnvironmentVariables["SHADGT_FPS_LOCK"] = "60"; // wheel + ultrawide edition: races up to 60 (release: 30)
+                        start.EnvironmentVariables["SHADGT_FPS_LOCK"] = RaceFpsLock(root).ToString();
                         // DLSS frame multiplier from the Graphics page (generated frames, 1-5).
                         start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
                         started = Process.Start(start);
