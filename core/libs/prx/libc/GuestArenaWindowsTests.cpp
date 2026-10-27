@@ -105,9 +105,47 @@ int main() {
         GuestArenaReset_nid_postfix(fixed, 2 * Page);
         GuestArenaRelease_nid_postfix(fixed, 2 * Page);
         CloseHandle(section);
+
+        // GT7 streams direct memory as 64 KB maps at ascending addresses of descending backing
+        // offsets into free placeholder space, out of order here: one exact view each, carved from
+        // the placeholder without disturbing the neighbors or the backing.
+        constexpr std::size_t Piece = 0x10000;
+        constexpr int Pieces = 16;
+        auto* stream = reinterpret_cast<std::uint8_t*>(0xf3ff000000ull);
+        GuestArenaMarkUsed_nid_postfix(stream, Pieces * Piece + Page);
+        HANDLE pool = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, Pieces * Piece, nullptr);
+        Require(pool != nullptr, "could not create streaming backing");
+        auto* backing = static_cast<std::uint8_t*>(MapViewOfFile(pool, FILE_MAP_ALL_ACCESS, 0, 0, Pieces * Piece));
+        Require(backing != nullptr, "could not view streaming backing");
+        for (int i : {3, 0, 15, 7, 1, 2, 14, 4, 5, 6, 8, 9, 13, 10, 11, 12}) {
+            GuestArenaMap_nid_postfix(stream + i * Piece, Piece, pool, (Pieces - 1 - i) * Piece, PAGE_READWRITE);
+            stream[i * Piece] = static_cast<std::uint8_t>(100 + i);
+        }
+        for (int i = 0; i < Pieces; ++i) {
+            const auto view = Query(stream + i * Piece);
+            Require(view.Type == MEM_MAPPED && view.AllocationBase == stream + i * Piece && view.RegionSize == Piece, "streamed piece is not one exact view");
+            Require(backing[(Pieces - 1 - i) * Piece] == 100 + i, "streamed piece maps the wrong backing offset");
+        }
+        Require(Query(stream + Pieces * Piece).State == MEM_RESERVE, "placeholder after the streamed pieces was lost");
+        GuestArenaMap_nid_postfix(stream + Pieces * Piece, Page, pool, 0, PAGE_READONLY);
+        Require(stream[Pieces * Piece] == 115 && Query(stream + Pieces * Piece).Protect == PAGE_READONLY, "single page streamed map");
+        GuestArenaReset_nid_postfix(stream + 7 * Piece, Piece);
+        Require(Query(stream + 7 * Piece).State == MEM_RESERVE && Query(stream + 7 * Piece).RegionSize == Piece, "released piece is not its own placeholder");
+        Require(stream[6 * Piece] == 106 && stream[8 * Piece] == 108, "releasing a piece damaged its neighbors");
+        GuestArenaMap_nid_postfix(stream + 7 * Piece, Piece, pool, (Pieces - 1) * Piece, PAGE_READWRITE);
+        stream[7 * Piece] = 42;
+        Require(stream[0] == 42, "remapped piece does not alias its backing");
+        // Mapping over pieces that are already mapped takes the general path.
+        GuestArenaMap_nid_postfix(stream + 10 * Piece, 2 * Piece, pool, 0, PAGE_READWRITE);
+        Require(stream[10 * Piece] == 115 && Query(stream + 10 * Piece).RegionSize == 2 * Piece, "map over mapped pieces");
+        Require(stream[9 * Piece] == 109 && stream[12 * Piece] == 112, "map over mapped pieces damaged its neighbors");
+        GuestArenaReset_nid_postfix(stream, Pieces * Piece + Page);
+        Require(Query(stream).State == MEM_RESERVE && Query(stream + Pieces * Piece).State == MEM_RESERVE, "streamed pieces were not released");
+        UnmapViewOfFile(backing);
+        CloseHandle(pool);
         VirtualFree(driverBase, 0, MEM_RELEASE);
         VirtualFree(largeHost, 0, MEM_RELEASE);
-        std::puts("PASS: partitioned arena, host collisions, reuse, fixed mappings, partial unmap, shared aliases");
+        std::puts("PASS: partitioned arena, host collisions, reuse, fixed mappings, partial unmap, shared aliases, streamed pieces");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s (Windows error %lu)\n", error.what(), GetLastError());
