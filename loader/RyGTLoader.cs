@@ -2135,7 +2135,7 @@ namespace RyGT
                 else Log("Note: " + name + " is not in the system modules folder; some related game features may be unavailable.");
             }
 
-            // The player's community Offline mode patch, if any (only that group of the file is used).
+            // The bundled community Offline mode patch (only that group of the file is used).
             string offlinePath = Path.Combine(root, "patches", GameLayout.TitleId + ".xml");
             OfflinePatch offline = null;
             if (File.Exists(offlinePath))
