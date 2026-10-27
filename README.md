@@ -167,12 +167,10 @@ Tips:
 - [Runtime libraries and converter](core): build with CMake, Ninja, and MSYS2 UCRT64 GCC.
 - [GT7 compatibility stubs](runtime/gt7): source and definitions for the two supplemental libraries.
 - [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, pinned in
-  [build-support/renderer.json](build-support/renderer.json). The pin currently names the wheel +
-  ultrawide edition's `renderer` branch in
-  [dessierror/rygt-7-online-build](https://gitlab.com/dessierror/rygt-7-online-build/-/tree/renderer),
-  which is shadGT7 plus the 16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame
-  generation, fast flips and GT7 job-thread hooks (off by default), until those commits land in
-  rygt-team/shadgt7.
+  [build-support/renderer.json](build-support/renderer.json). Since 2026-10-27 the pin names
+  rygt-team/shadgt7 `main` again: it now carries the wheel + ultrawide edition's renderer work (the
+  16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame generation, fast flips and GT7
+  job-thread hooks, off by default).
 - [Build and packaging instructions](build-support/README.md).
 
 ## Discord server
