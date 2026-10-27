@@ -2520,7 +2520,10 @@ namespace RyGT
                         { WorkingDirectory = root, UseShellExecute = false };
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
                         start.EnvironmentVariables["RYTY_INTEROP_BASE"] = "8000000000";
-                        start.EnvironmentVariables["RYGT_NATIVE_INPLACE_RANGES"] = "1020000000+1de000,1020235000+1dd000,1020407000+b000";
+                        // PERF-161: GT7's per-frame memory (0x200000000-0x208000000), which the CPU rewrites
+                        // every frame and a few compute passes write too, stays in guest memory: kept in a
+                        // renderer region, each CPU write faulted (about 60,000 a second) and was copied in.
+                        start.EnvironmentVariables["RYGT_NATIVE_INPLACE_RANGES"] = "1020000000+1de000,1020235000+1dd000,1020407000+b000,200000000+8000000";
                         // FIX-213: GT7 reads back what the GPU writes into its CPU pools from 0xe000000000
                         // up (GT Sport's are above 0xf000000000, the renderer's default); kept in a
                         // renderer region, the CPU saw stale data and culled the whole rear-view mirror.
