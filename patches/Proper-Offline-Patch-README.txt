@@ -24,7 +24,7 @@ All the additional fixes that this patch provides aim to offer a complete offlin
 1. Use High-Speed007's 1.710 dumped files or your own.
 2. Place an original or backported eboot.bin file (with apr emu if required) in the game folder alongside any other files it might require (replacing the patched ones provided by High-Speed007 and PSVIETHOA) or wait for a reupload by backporters which will provide a compatible version to use with the xml patches below.
 3. Download and inject ps-patch-system's patch-bundle-loader-prospero.elf if on PS5 or patch-bundle-loader-orbis.elf if on PS4  (https://github.com/illusionyy/ps-patch-system/releases)
-4. 
+4.
   A. For PS5: Place PPSA01317.xml or PPSA01316.xml (depending on your game region) in /data/user/patches/xml_prospero
   B. For PS4: Place CUSA24769.xml or CUSA24767.xml  /data/user/patches/xml_orbis (depending on your game region)
 5. Go to ps-patch-system configuration page (either through the XMB shortcut or by visiting CONSOLE_IP:23900), then go to the PS5/PS4 tab and select your version of Gran Turismo 7
