@@ -54,13 +54,14 @@ Options (RyGT7.exe)
   and are gone. Paths are kept in RyGT7.ini next to the launcher; the runtime's settings in
   user\custom_configs\CUSA03220.json (the renderer's fixed configuration name).
 
-Offline mode patch (optional)
+Offline mode patch (included)
   The Used Cars and Legendary Cars dealerships need the community "Offline mode" patch
-  (Proper Offline Patch v1.0, ps-patch-system XML for CUSA24769). Put that XML in
-  patches\CUSA24769.xml and press Set up: it applies the file's Offline mode group, and no
+  (Proper Offline Patch v1.0, ps-patch-system XML for CUSA24769). This release includes
+  patches\CUSA24769.xml: Set up automatically applies the file's Offline mode group, and no
   other group, to the converted GT7.exe. The dealerships' catalog is then written to
   data\gt7offline. Set up only applies it to the verified dump's executable and stops
-  otherwise. Car thumbnails in the dealerships stay grey.
+  otherwise. No separate patch download or copy is needed. Source and credits are in
+  patches\README.md. Car thumbnails in the dealerships stay grey.
 
 Files and licenses
   RyGT7.exe is the launcher, converter\ryty.exe the converter, libs\ the runtime libraries

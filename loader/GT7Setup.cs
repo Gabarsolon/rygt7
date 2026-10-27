@@ -143,7 +143,7 @@ namespace RyGT
     }
 
     // The community "Offline mode" patch (ps-patch-system XML, Proper Offline Patch v1.0), which gives
-    // the dealerships a local catalog. The player puts the XML in patches\CUSA24769.xml; only its
+    // the dealerships a local catalog. Releases bundle patches\CUSA24769.xml; only its
     // Offline mode group is read, never the file's other groups (DLC unlocks, debug settings). Its
     // addresses are the console's, with the executable at 0x400000, and it is only applied to the
     // verified executable. Its injected code lies past the end of the first and last loadable segments,

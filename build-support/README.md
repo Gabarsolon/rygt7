@@ -38,9 +38,15 @@ is not promised to be byte-identical to the release.
 
 `package_release.py` copies only the file names in `runtime-files.txt`, four named redistributable
 DLL/license files, the converter and its three GCC runtime DLLs, launcher, documentation and licenses.
+It also includes the repository's `patches/CUSA24769.xml` and its provenance/credits, so Set up
+automatically applies the Offline mode dealership fix without an additional player download.
 Its input must be an assembled open-source runtime, not an extracted game folder.
-No `app0`, `convert`, `sys`, `_sd`, `user`, `shaders`, `logs`, `patches`, or personal settings are copied.
+No `app0`, `convert`, `sys`, `_sd`, `user`, `shaders`, `logs`, player patches, or personal settings are copied.
 The generated manifest records SHA-256 hashes. The archive is experimental Windows x64 software.
+
+Run `python build-support/test_package_release.py` to check that the release ZIP contains the
+bundled patch and its credits, records their hashes, and excludes player patches and saves.
+This check uses synthetic runtime files and does not require game or firmware data.
 
 Pass `--help` for paths. Source archives for both tagged repositories accompany the binary release;
 dependency checkout revisions are recorded in each repository's `.gitmodules` and Git links.

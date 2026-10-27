@@ -60,7 +60,10 @@ Thumbs.db
 /user/
 /shaders/
 /logs/
-/patches/
+/patches/*
+!/patches/CUSA24769.xml
+!/patches/README.md
+!/patches/Proper-Offline-Patch-README.txt
 /dist/
 /deps/
 /RyGT*.ini

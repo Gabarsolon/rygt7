@@ -9,9 +9,10 @@ Only these go in:
   - amd_fidelityfx_vk.dll and its license, and the three GCC runtime DLLs, from <runtime>
   - converter\\: ryty.exe and the GCC runtime DLLs
   - RyGT7.exe and launcher\\ (original background artwork and its note)
+  - patches\\CUSA24769.xml and its provenance/credits from this repository
   - README.txt, LICENSE, licenses\\ and manifest.json (SHA-256 of every file, source commits)
 Nothing else of the runtime folder is read: no app0, convert, sys, _sd, user, shaders, logs,
-patches, saves or settings. A missing expected file stops the packaging.
+player patches, saves or settings. A missing expected file stops the packaging.
 """
 import argparse
 import datetime
@@ -144,6 +145,8 @@ def main():
     for n in GCC_DLLS:
         package.put(args.runtime / n, "converter\\" + n)
     package.put(args.launcher, "RyGT7.exe")
+    for n in ("CUSA24769.xml", "README.md", "Proper-Offline-Patch-README.txt"):
+        package.put(REPO / "patches" / n, "patches\\" + n)
     package.put(REPO / "loader" / "launcher" / "background.png", "launcher\\background.png")
     package.put(REPO / "loader" / "launcher" / "README.txt", "launcher\\README.txt")
     package.put(REPO / "LICENSE", "LICENSE")
