@@ -9,6 +9,8 @@ Only these go in:
   - amd_fidelityfx_vk.dll and its license, and the three GCC runtime DLLs, from <runtime>
   - converter\\: ryty.exe and the GCC runtime DLLs
   - RyGT7.exe and launcher\\ (original background artwork and its note)
+  - patches\\CUSA24769.xml: the Offline mode group of the community Offline mode patch
+    (build-support\\patches), which Set up applies
   - README.txt, LICENSE, licenses\\ and manifest.json (SHA-256 of every file, source commits)
 Nothing else of the runtime folder is read: no app0, convert, sys, _sd, user, shaders, logs,
 patches, saves or settings. A missing expected file stops the packaging.
@@ -146,6 +148,7 @@ def main():
     package.put(args.launcher, "RyGT7.exe")
     package.put(REPO / "loader" / "launcher" / "background.png", "launcher\\background.png")
     package.put(REPO / "loader" / "launcher" / "README.txt", "launcher\\README.txt")
+    package.put(HERE / "patches" / "CUSA24769.xml", "patches\\CUSA24769.xml")
     package.put(REPO / "LICENSE", "LICENSE")
     package.put(REPO / "LICENSE", "licenses\\RyGT7\\LICENSE")
     package.put(REPO / "AUTHORS.md", "licenses\\RyGT7\\AUTHORS.md")

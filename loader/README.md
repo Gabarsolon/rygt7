@@ -37,9 +37,13 @@ the player's game files after setup.
 ## Offline mode patch
 
 GT7's dealerships ("Failed to get sales list") work with the community **Offline mode** patch, the
-ps-patch-system XML of Proper Offline Patch v1.0 for CUSA24769. The player places that file as
-`patches\CUSA24769.xml`; it is not part of the release. Set up reads only its `Offline mode` group
-(589 `bytes` lines), never the file's other groups such as DLC unlocks or debug settings.
+ps-patch-system XML for CUSA24769. The release ships that file's `Offline mode` group as
+`patches\CUSA24769.xml` (from `build-support\patches`); a player's own copy of the file can replace it.
+Set up reads only its `Offline mode` group (589 `bytes` lines), never other groups such as DLC unlocks
+or debug settings. Set up records the SHA-256 of the file it built `GT7.exe` with in
+`convert\offline-patch.txt`; when the file is added, changed or removed afterwards, Play runs Set up
+again before starting the game (adding the file alone changed nothing, and the dealerships kept saying
+"Failed to get sales list").
 
 The patch's addresses are the console's (executable at 0x400000) and its injected code lies past the
 end of the code segment and the last data segment. Set up therefore extends those segments in the ELF
