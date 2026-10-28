@@ -225,7 +225,7 @@ namespace RyGT
             if (control is Form) control.BackColor = Back;
             if (control.Tag as string != "heading") control.ForeColor = Text;
             var button = control as Button;
-            if (button != null) Round(button);
+            if (button != null && !(button is GlowButton)) Round(button);
             var box = control as TextBox;
             if (box != null)
             {
@@ -535,6 +535,8 @@ namespace RyGT
     class ToggleRow : CheckBox
     {
         bool hover;
+        float knob = -1; // 0 off .. 1 on, while it slides
+        int version;
 
         public ToggleRow()
         {
@@ -568,12 +570,13 @@ namespace RyGT
                                   TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             var track = new RectangleF(Width - 40, (Height - 1 - 18) / 2f, 36, 18);
-            Color trackColor = !Enabled ? Color.FromArgb(36, 39, 46) : Checked ? Color.FromArgb(232, 234, 238) : Color.FromArgb(52, 56, 64);
+            float on = knob < 0 ? (Checked ? 1 : 0) : knob;
+            Color trackColor = !Enabled ? Color.FromArgb(36, 39, 46) : Anim.Mix(Color.FromArgb(52, 56, 64), Color.FromArgb(232, 234, 238), on);
             Dark.FillRounded(g, trackColor, track, 9);
-            const float knob = 12;
-            float x = Checked ? track.Right - knob - 3 : track.X + 3;
-            Color knobColor = !Enabled ? Color.FromArgb(70, 74, 84) : Checked ? Dark.Back : Color.FromArgb(150, 155, 166);
-            using (var fill = new SolidBrush(knobColor)) g.FillEllipse(fill, x, track.Y + 3, knob, knob);
+            const float size = 12;
+            float x = track.X + 3 + (track.Width - size - 6) * on;
+            Color knobColor = !Enabled ? Color.FromArgb(70, 74, 84) : Anim.Mix(Color.FromArgb(150, 155, 166), Dark.Back, on);
+            using (var fill = new SolidBrush(knobColor)) g.FillEllipse(fill, x, track.Y + 3, size, size);
             using (var line = new Pen(Dark.Line)) g.DrawLine(line, 0, Height - 1, Width, Height - 1);
         }
 
@@ -581,6 +584,24 @@ namespace RyGT
         protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = false; Invalidate(); }
         protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
         protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
+
+        protected override void OnCheckedChanged(EventArgs e)
+        {
+            base.OnCheckedChanged(e);
+            if (!Visible || !IsHandleCreated) { knob = -1; return; }
+            int mine = ++version;
+            float from = knob < 0 ? (Checked ? 0 : 1) : knob, to = Checked ? 1 : 0;
+            int start = Environment.TickCount;
+            Anim.Run(() =>
+            {
+                if (mine != version || IsDisposed) return false;
+                float t = Math.Min(1, (Environment.TickCount - start) / 140f);
+                knob = from + (to - from) * Anim.Ease(t);
+                Invalidate();
+                if (t >= 1) knob = -1;
+                return t < 1;
+            });
+        }
     }
 
     /// A setting with a control (a drop-down, a slider, a button): its name on the left, the control
@@ -756,6 +777,378 @@ namespace RyGT
             Color text = active ? Color.White : hover ? Color.FromArgb(206, 210, 218) : Dark.DimText;
             TextRenderer.DrawText(g, Text, Font, new Rectangle(30, 0, Width - 34, Height), text,
                                   TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    /// The launcher's animations: one timer (about 60 times a second) that calls each running
+    /// animation's step until the step says it is done.
+    static class Anim
+    {
+        static readonly List<Func<bool>> running = new List<Func<bool>>();
+        static System.Windows.Forms.Timer timer;
+
+        /// Runs `step` every tick while it returns true.
+        public static void Run(Func<bool> step)
+        {
+            running.Add(step);
+            if (timer == null)
+            {
+                timer = new System.Windows.Forms.Timer { Interval = 15 };
+                timer.Tick += delegate
+                {
+                    for (int i = running.Count - 1; i >= 0; --i)
+                    {
+                        bool more;
+                        try { more = running[i](); } catch { more = false; }
+                        if (!more) running.RemoveAt(i);
+                    }
+                    if (running.Count == 0) timer.Stop();
+                };
+            }
+            if (!timer.Enabled) timer.Start();
+        }
+
+        /// Ease-out (fast start, gentle end) of 0..1.
+        public static float Ease(float t)
+        {
+            t = Math.Max(0, Math.Min(1, t));
+            return 1 - (1 - t) * (1 - t) * (1 - t);
+        }
+
+        public static Color Mix(Color a, Color b, float t)
+        {
+            t = Math.Max(0, Math.Min(1, t));
+            return Color.FromArgb((int)(a.A + (b.A - a.A) * t), (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+        }
+    }
+
+    /// A home view button: outlined, with a light sweeping across it now and then; under the mouse
+    /// (or with the keyboard focus) it fills white, and the home view draws a glow around it.
+    class GlowButton : Button
+    {
+        float hot;
+        int version;
+        bool over, pressing;
+        /// The text is a Segoe MDL2 Assets glyph (the settings button), not a word in capitals.
+        public bool Glyph;
+        static readonly int sweepStart = Environment.TickCount;
+
+        public GlowButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            Cursor = Cursors.Hand;
+        }
+
+        /// 0..1: how far it has filled white.
+        public float Hot { get { return hot; } }
+
+        void Animate()
+        {
+            int mine = ++version;
+            float from = hot, to = (over || (Focused && ShowFocusCues)) && Enabled ? 1 : 0;
+            int start = Environment.TickCount;
+            Anim.Run(() =>
+            {
+                if (mine != version || IsDisposed) return false;
+                float t = Math.Min(1, (Environment.TickCount - start) / 170f);
+                hot = from + (to - from) * Anim.Ease(t);
+                Invalidate();
+                if (Parent != null) Parent.Invalidate(Rectangle.Inflate(Bounds, 16, 16), false);
+                return t < 1;
+            });
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); over = true; Animate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); over = false; pressing = false; Animate(); }
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); pressing = true; Invalidate(); }
+        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); pressing = false; Invalidate(); }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Animate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Animate(); }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Animate(); }
+
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            Dark.PaintUnder(this, g);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var r = new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f);
+            float h = Enabled ? hot : 0;
+            Color fill = !Enabled ? Color.FromArgb(90, 40, 43, 50)
+                       : Anim.Mix(Color.FromArgb(120, 10, 11, 14), pressing ? Color.FromArgb(214, 217, 224) : Color.White, h);
+            Color edge = !Enabled ? Color.FromArgb(52, 55, 62) : Anim.Mix(Color.FromArgb(214, 218, 226), Color.White, h);
+            Color text = !Enabled ? Dark.Disabled : Anim.Mix(Color.White, Dark.Back, h);
+            using (var path = Dark.RoundedRect(r, 3))
+            {
+                using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
+                // The sweeping light: 1.1 s across, every 3.5 s, while not filled.
+                double phase = ((Environment.TickCount - sweepStart) % 3500) / 1100.0;
+                if (Enabled && h < 0.99f && phase < 1)
+                {
+                    float band = 70, x = r.X - band + (float)phase * (r.Width + band);
+                    var bandRect = new RectangleF(x, r.Y, band, r.Height);
+                    using (var light = new LinearGradientBrush(bandRect, Color.Transparent, Color.Transparent, 0f))
+                    {
+                        var blend = new ColorBlend
+                        {
+                            Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb((int)(70 * (1 - h)), 255, 255, 255), Color.FromArgb(0, 255, 255, 255) },
+                            Positions = new[] { 0f, 0.5f, 1f }
+                        };
+                        light.InterpolationColors = blend;
+                        var clip = g.Clip;
+                        g.SetClip(path, CombineMode.Intersect);
+                        g.FillRectangle(light, bandRect);
+                        g.Clip = clip;
+                    }
+                }
+                using (var pen = new Pen(edge)) g.DrawPath(pen, path);
+            }
+            string label = Glyph ? Text : Dark.Spaced(Text.ToUpperInvariant());
+            TextRenderer.DrawText(g, label, Font, ClientRectangle, text,
+                                  TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    /// The launcher's home view, drawn in one piece: the pictures (drifting slowly sideways and
+    /// fading from one to the next every 10 seconds), darkened toward the bottom left, the logo
+    /// or the title, the caption, the status and the version, with glows around its buttons.
+    class HomeView : Control, IBackdrop
+    {
+        readonly List<Image> pictures;
+        readonly GlowButton[] buttons;
+        public Image Logo;
+        public string Title = "", Accent = "", Caption = "", Status = "", Version = "";
+        readonly Dictionary<int, Bitmap> scaled = new Dictionary<int, Bitmap>();
+        Size scaledFor;
+        Bitmap overlay, frame;
+        int current, next = -1, fadeFrom, shownSince;
+        readonly int started = Environment.TickCount;
+        readonly System.Windows.Forms.Timer ticker;
+        const int ShowMs = 10000, FadeMs = 1400;
+        const int Left_ = 56, Bottom_ = 46, Gap = 10;
+
+        public HomeView(List<Image> pictures, params GlowButton[] buttons)
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw, true);
+            this.pictures = pictures;
+            this.buttons = buttons;
+            BackColor = Dark.Back;
+            foreach (var button in buttons) Controls.Add(button);
+            shownSince = Environment.TickCount;
+            ticker = new System.Windows.Forms.Timer { Interval = 33 };
+            ticker.Tick += delegate { Tick(); };
+            VisibleChanged += delegate { if (Visible) ticker.Start(); else ticker.Stop(); };
+            ticker.Start();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { ticker.Dispose(); foreach (var b in scaled.Values) b.Dispose(); if (overlay != null) overlay.Dispose(); if (frame != null) frame.Dispose(); }
+            base.Dispose(disposing);
+        }
+
+        void Tick()
+        {
+            var form = FindForm();
+            if (!Visible || form == null || form.WindowState == FormWindowState.Minimized) return;
+            if (pictures.Count > 1 && next < 0 && Environment.TickCount - shownSince > ShowMs)
+            {
+                next = (current + 1) % pictures.Count;
+                fadeFrom = Environment.TickCount;
+            }
+            Compose();
+            Invalidate(true);
+        }
+
+        Bitmap Scaled(int index)
+        {
+            Bitmap cached;
+            if (scaled.TryGetValue(index, out cached)) return cached;
+            var image = pictures[index];
+            // Covering the view with 6% to spare, for the drift.
+            float scale = 1.06f * Math.Max(Width / (float)image.Width, Height / (float)image.Height);
+            int width = (int)Math.Ceiling(image.Width * scale), height = (int)Math.Ceiling(image.Height * scale);
+            cached = new Bitmap(width, height);
+            using (var g = Graphics.FromImage(cached))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(image, 0, 0, width, height);
+            }
+            scaled[index] = cached;
+            return cached;
+        }
+
+        Bitmap Overlay()
+        {
+            if (overlay != null) return overlay;
+            overlay = new Bitmap(Width, Height);
+            var r = new Rectangle(0, 0, Width, Height);
+            using (var g = Graphics.FromImage(overlay))
+            {
+                using (var dim = new SolidBrush(Color.FromArgb(40, 6, 7, 9))) g.FillRectangle(dim, r);
+                using (var left = new LinearGradientBrush(r, Color.FromArgb(215, 8, 9, 12), Color.FromArgb(0, 8, 9, 12), 0f))
+                {
+                    left.Blend = new Blend { Factors = new[] { 0f, 0.35f, 1f, 1f }, Positions = new[] { 0f, 0.3f, 0.65f, 1f } };
+                    g.FillRectangle(left, r);
+                }
+                using (var bottom = new LinearGradientBrush(r, Color.FromArgb(0, 8, 9, 12), Color.FromArgb(225, 8, 9, 12), 90f))
+                {
+                    bottom.Blend = new Blend { Factors = new[] { 0f, 0f, 1f }, Positions = new[] { 0f, 0.45f, 1f } };
+                    g.FillRectangle(bottom, r);
+                }
+            }
+            return overlay;
+        }
+
+        void DrawPicture(Graphics g, int index, float alpha, float drift)
+        {
+            var image = Scaled(index);
+            int x = -(int)Math.Round((image.Width - Width) * drift);
+            int y = (Height - image.Height) / 12;
+            if (alpha >= 1) { g.DrawImageUnscaled(image, x, y); return; }
+            using (var attributes = new System.Drawing.Imaging.ImageAttributes())
+            {
+                attributes.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha });
+                g.DrawImage(image, new Rectangle(x, y, image.Width, image.Height), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attributes);
+            }
+        }
+
+        /// This moment's picture (with the darkening) into `frame`.
+        void Compose()
+        {
+            if (Width <= 0 || Height <= 0) return;
+            if (scaledFor != Size)
+            {
+                foreach (var b in scaled.Values) b.Dispose();
+                scaled.Clear();
+                if (overlay != null) { overlay.Dispose(); overlay = null; }
+                if (frame != null) { frame.Dispose(); frame = null; }
+                scaledFor = Size;
+            }
+            if (frame == null) frame = new Bitmap(Width, Height);
+            using (var g = Graphics.FromImage(frame))
+            {
+                if (pictures.Count == 0)
+                {
+                    using (var glow = new LinearGradientBrush(ClientRectangle, Color.FromArgb(14, 15, 19), Color.FromArgb(52, 14, 20), 0f))
+                        g.FillRectangle(glow, ClientRectangle);
+                    return;
+                }
+                // Side to side and back every 48 seconds, slowest at the ends.
+                float drift = (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * ((Environment.TickCount - started) / 48000.0)));
+                DrawPicture(g, current, 1, drift);
+                if (next >= 0)
+                {
+                    float t = (Environment.TickCount - fadeFrom) / (float)FadeMs;
+                    DrawPicture(g, next, Math.Min(1, t), drift);
+                    if (t >= 1) { current = next; next = -1; shownSince = Environment.TickCount; }
+                }
+                g.DrawImageUnscaled(Overlay(), 0, 0);
+            }
+        }
+
+        public bool DrawBackdrop(Control control, Graphics g, bool raw)
+        {
+            if (frame == null || frame.Size != Size) Compose();
+            if (frame == null) return false;
+            var at = control == this ? Point.Empty : control.Parent == this ? control.Location : PointToClient(control.PointToScreen(Point.Empty));
+            g.DrawImageUnscaled(frame, -at.X, -at.Y);
+            return true;
+        }
+
+        int ButtonsTop { get { return Height - Bottom_ - 30 - buttons[0].Height; } }
+
+        protected override void OnLayout(LayoutEventArgs e)
+        {
+            base.OnLayout(e);
+            int x = Left_;
+            foreach (var button in buttons)
+            {
+                button.Location = new Point(x, ButtonsTop);
+                x += button.Width + Gap;
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            DrawBackdrop(this, g, false);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            // The glow around a button under the mouse, outside the button itself.
+            foreach (var button in buttons)
+            {
+                if (button.Hot <= 0.01f || !button.Enabled) continue;
+                var r = new RectangleF(button.Left, button.Top, button.Width, button.Height);
+                for (int i = 14; i >= 1; i -= 1)
+                {
+                    int alpha = (int)(button.Hot * 34 * Math.Pow(1 - i / 15.0, 2));
+                    using (var path = Dark.RoundedRect(RectangleF.Inflate(r, i, i), 3 + i))
+                    using (var pen = new Pen(Color.FromArgb(alpha, 255, 255, 255), 2f))
+                        g.DrawPath(pen, path);
+                }
+            }
+            int top = ButtonsTop;
+            // The caption above the buttons, the logo (or title) above it.
+            var captionFont = Dark.Caps(8.5f);
+            var captionSize = TextRenderer.MeasureText(Caption, captionFont);
+            int captionY = top - 22 - captionSize.Height;
+            TextRenderer.DrawText(g, Caption, captionFont, new Point(Left_ + 3, captionY), Color.FromArgb(190, 194, 204), TextFormatFlags.NoPrefix);
+            if (Logo != null)
+            {
+                int w = 330, h = w * Logo.Height / Logo.Width;
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(Logo, new Rectangle(Left_, captionY - 12 - h, w, h));
+            }
+            else
+            {
+                var font = Dark.Caps(34f);
+                var size = TextRenderer.MeasureText(Title + " ", font);
+                int y = captionY - size.Height;
+                TextRenderer.DrawText(g, Title + " ", font, new Point(Left_, y), Color.White, TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, Accent, font, new Point(Left_ + size.Width - 8, y), Dark.AccentText, TextFormatFlags.NoPrefix);
+            }
+            // The status under the buttons, the version at the bottom right.
+            TextRenderer.DrawText(g, Status, Font, new Rectangle(Left_ + 2, top + buttons[0].Height + 12, Math.Max(100, Width - Left_ - 260), 40),
+                                  Color.FromArgb(200, 204, 212), TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+            var versionFont = Dark.Caps(9f);
+            var versionSize = TextRenderer.MeasureText(Version, versionFont);
+            TextRenderer.DrawText(g, Version, versionFont, new Point(Width - versionSize.Width - 30, Height - versionSize.Height - 24),
+                                  Color.FromArgb(200, 204, 212), TextFormatFlags.NoPrefix);
+        }
+    }
+
+    /// Covers the window while it changes views: the old view darkens, then the new one appears.
+    class Curtain : Control
+    {
+        Bitmap picture;
+        float dark;
+
+        public Curtain()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            BackColor = Color.Black;
+        }
+
+        public void Show(Bitmap image, float darkness)
+        {
+            picture = image;
+            dark = darkness;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            if (picture != null) g.DrawImageUnscaled(picture, 0, 0);
+            else g.Clear(Dark.Back);
+            using (var shade = new SolidBrush(Color.FromArgb((int)(255 * Math.Max(0, Math.Min(1, dark))), 6, 7, 9)))
+                g.FillRectangle(shade, ClientRectangle);
         }
     }
 
@@ -1088,7 +1481,9 @@ namespace RyGT
         readonly Label status;
         // Home: the picture over the whole window with the title, Play and the settings button.
         // Settings: a sidebar of categories and their pages.
-        readonly Panel home, settingsView, pagesHost;
+        readonly HomeView home;
+        readonly Panel settingsView, pagesHost;
+        readonly Curtain curtain;
         readonly Dictionary<string, Panel> pages = new Dictionary<string, Panel>();
         readonly Dictionary<string, SidebarItem> pageItems = new Dictionary<string, SidebarItem>();
         string lastPage = "Game";
@@ -1119,53 +1514,26 @@ namespace RyGT
             ResizeRedraw = true;
 
             settingsView = new Panel { Dock = DockStyle.Fill, BackColor = Dark.Panel, Visible = false };
-            home = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+
+            // ---- Home: the pictures, the logo (launcher\logo.png) or the title, Play and the settings button
+            play = new GlowButton { Text = "Play", Size = new Size(236, 46), Font = Dark.Caps(11f) };
+            play.Click += delegate { Play(); };
+            var gear = new GlowButton { Text = ((char)0xE713).ToString(), Glyph = true, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f) };
+            gear.Click += delegate { ShowSettings(lastPage); };
+            var logoImage = LoadLogo();
+            home = new HomeView(pictures, (GlowButton)play, gear)
+            {
+                Dock = DockStyle.Fill, Logo = logoImage, Title = "GRAN TURISMO", Accent = "7",
+                Caption = Dark.Spaced("CUSA24769   " + (char)183 + "   PS4   " + (char)183 + "   RYGT7 FOR WINDOWS"),
+                Version = "ryGT7  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769"
+            };
+            curtain = new Curtain { Dock = DockStyle.Fill, Visible = false };
+            Controls.Add(curtain);
             Controls.Add(settingsView);
             Controls.Add(home);
-
-            // ---- Home
-            var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent };
-            var titleName = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
-            titleName.Controls.Add(new Label { Text = "GRAN TURISMO", AutoSize = true, Font = Dark.Caps(34f), BackColor = Color.Transparent, Margin = new Padding(0) });
-            titleName.Controls.Add(new Label { Text = "7", AutoSize = true, Font = Dark.Caps(34f), ForeColor = Dark.AccentText, Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(0) });
-            // The ryGT7 logo (launcher\logo.png) in place of the title, when it is there.
-            var logoImage = LoadLogo();
-            if (logoImage != null)
-            {
-                title.Controls.Add(new PictureBox
-                {
-                    Image = logoImage, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Transparent,
-                    Size = new Size(330, 330 * logoImage.Height / logoImage.Width), Margin = new Padding(0, 0, 0, 12)
-                });
-            }
-            else title.Controls.Add(titleName);
-            title.Controls.Add(new Label
-            {
-                Text = Dark.Spaced("CUSA24769   " + (char)183 + "   PS4   " + (char)183 + "   RYGT7 FOR WINDOWS"), AutoSize = true,
-                Font = Dark.Caps(8.5f), ForeColor = Color.FromArgb(190, 194, 204), Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(3, 0, 0, 22)
-            });
-            var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
-            play = new Button { Text = "Play", Tag = "play", AutoSize = false, Size = new Size(236, 46), Font = Dark.Caps(11f), Margin = new Padding(0, 0, 10, 0) };
-            play.Click += delegate { Play(); };
-            var gear = new Button { Text = ((char)0xE713).ToString(), Tag = "icon", AutoSize = false, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f), Margin = new Padding(0) };
-            gear.Click += delegate { ShowSettings(lastPage); };
-            buttons.Controls.Add(play);
-            buttons.Controls.Add(gear);
-            title.Controls.Add(buttons);
-            status = new Label { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.FromArgb(200, 204, 212), Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(2, 12, 0, 0) };
-            title.Controls.Add(status);
-            home.Controls.Add(title);
-            var version = new Label
-            {
-                Text = "ryGT7  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769", AutoSize = true, Font = Dark.Caps(9f),
-                ForeColor = Color.FromArgb(200, 204, 212), Tag = "heading", BackColor = Color.Transparent
-            };
-            home.Controls.Add(version);
-            home.Layout += delegate
-            {
-                title.Location = new Point(56, home.ClientSize.Height - title.Height - 48);
-                version.Location = new Point(home.ClientSize.Width - version.Width - 30, home.ClientSize.Height - version.Height - 24);
-            };
+            // The status shows on the home view and on the Game page.
+            status = new Label { AutoSize = true };
+            status.TextChanged += delegate { home.Status = status.Text; home.Invalidate(false); };
 
             // ---- Settings: the sidebar
             var sidebar = new Panel { Dock = DockStyle.Left, Width = 224, BackColor = Dark.Sidebar };
@@ -1526,33 +1894,77 @@ namespace RyGT
             stateTimer.Tick += delegate { if (!busy) RefreshState(); };
             stateTimer.Start();
             FormClosed += delegate { stateTimer.Dispose(); };
-            StartSlideshow();
         }
 
         /// Shows the home view (the picture, Play).
-        public void ShowHome()
+        public void ShowHome(bool animate = true)
         {
-            settingsView.Visible = false;
-            home.Visible = true;
-            home.Invalidate(true);
+            if (home.Visible) return;
+            Fade(settingsView, delegate { settingsView.Visible = false; home.Visible = true; }, home, animate);
         }
 
         /// Shows the settings at one of their pages (Game, Display, Graphics, Shaders, Controls, About).
-        public void ShowSettings(string page)
+        public void ShowSettings(string page, bool animate = true)
         {
             if (!pages.ContainsKey(page)) page = "Game";
             lastPage = page;
             foreach (var pair in pages) pair.Value.Visible = pair.Key == page;
             foreach (var pair in pageItems) pair.Value.Active = pair.Key == page;
-            home.Visible = false;
-            settingsView.Visible = true;
+            if (settingsView.Visible) return;
+            Fade(home, delegate { home.Visible = false; settingsView.Visible = true; }, settingsView, animate);
         }
 
         /// For --snapshot: 0 home, 1 the settings (Display), 2 the controls.
         public void ShowPage(int index)
         {
-            if (index == 0) ShowHome();
-            else ShowSettings(index == 2 ? "Controls" : "Display");
+            if (index == 0) ShowHome(false);
+            else ShowSettings(index == 2 ? "Controls" : "Display", false);
+        }
+
+        bool fading;
+
+        /// Changes views behind the curtain: the old view darkens (120 ms), then the new one
+        /// comes up out of the dark (220 ms).
+        void Fade(Control from, Action change, Control to, bool animate)
+        {
+            if (!animate || fading || !IsHandleCreated || !Visible || !from.Visible || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            {
+                change();
+                return;
+            }
+            fading = true;
+            var before = new Bitmap(ClientSize.Width, ClientSize.Height);
+            from.DrawToBitmap(before, new Rectangle(Point.Empty, from.Size));
+            curtain.Show(before, 0);
+            curtain.Visible = true;
+            curtain.BringToFront();
+            change();
+            Bitmap after = null;
+            int start = Environment.TickCount;
+            const int Out = 120, In = 220;
+            Anim.Run(() =>
+            {
+                int t = Environment.TickCount - start;
+                if (t < Out)
+                {
+                    curtain.Show(before, t / (float)Out);
+                    return true;
+                }
+                if (after == null)
+                {
+                    after = new Bitmap(ClientSize.Width, ClientSize.Height);
+                    to.DrawToBitmap(after, new Rectangle(Point.Empty, to.Size));
+                }
+                float k = Anim.Ease((t - Out) / (float)In);
+                curtain.Show(after, 1 - k);
+                if (k < 1) return true;
+                curtain.Visible = false;
+                curtain.Show(null, 0);
+                before.Dispose();
+                after.Dispose();
+                fading = false;
+                return false;
+            });
         }
 
         /// A settings page: a scrolling column with its title and the line under it.
@@ -1675,12 +2087,6 @@ namespace RyGT
         // ---- The pictures behind the home view
 
         readonly List<Image> pictures;
-        readonly Dictionary<int, Bitmap> scaled = new Dictionary<int, Bitmap>();
-        Size scaledFor;
-        int picture, nextPicture = -1;
-        float fade;
-        System.Windows.Forms.Timer slideshow, fader;
-
         List<Image> LoadBackgrounds()
         {
             var found = new List<Image>();
@@ -1712,100 +2118,10 @@ namespace RyGT
             return found;
         }
 
-        /// With several pictures, the next one fades in every 10 seconds.
-        void StartSlideshow()
-        {
-            if (pictures.Count < 2) return;
-            fader = new System.Windows.Forms.Timer { Interval = 33 };
-            fader.Tick += delegate
-            {
-                fade += 0.04f;
-                if (fade >= 1)
-                {
-                    picture = nextPicture;
-                    nextPicture = -1;
-                    fade = 0;
-                    fader.Stop();
-                }
-                if (home.Visible) { Invalidate(false); home.Invalidate(true); }
-            };
-            slideshow = new System.Windows.Forms.Timer { Interval = 10000 };
-            slideshow.Tick += delegate
-            {
-                if (!home.Visible || fader.Enabled) return;
-                nextPicture = (picture + 1) % pictures.Count;
-                fade = 0;
-                fader.Start();
-            };
-            slideshow.Start();
-        }
-
-        /// One picture covering the window (anchored right and near the top: their subject is on the
-        /// right and the faces in the upper part), darkened toward the bottom left for the title.
-        Bitmap Scaled(int index, Size client)
-        {
-            if (scaledFor != client)
-            {
-                foreach (var bitmap in scaled.Values) bitmap.Dispose();
-                scaled.Clear();
-                scaledFor = client;
-            }
-            Bitmap cached;
-            if (scaled.TryGetValue(index, out cached)) return cached;
-            var image = pictures[index];
-            cached = new Bitmap(client.Width, client.Height);
-            using (var g = Graphics.FromImage(cached))
-            {
-                float scale = Math.Max(client.Width / (float)image.Width, client.Height / (float)image.Height);
-                int width = (int)Math.Ceiling(image.Width * scale), height = (int)Math.Ceiling(image.Height * scale);
-                g.Clear(Dark.Back);
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(image, client.Width - width, (client.Height - height) / 12, width, height);
-                var r = new Rectangle(Point.Empty, client);
-                using (var dim = new SolidBrush(Color.FromArgb(40, 6, 7, 9))) g.FillRectangle(dim, r);
-                using (var left = new LinearGradientBrush(r, Color.FromArgb(215, 8, 9, 12), Color.FromArgb(0, 8, 9, 12), 0f))
-                {
-                    left.Blend = new Blend { Factors = new[] { 0f, 0.35f, 1f, 1f }, Positions = new[] { 0f, 0.3f, 0.65f, 1f } };
-                    g.FillRectangle(left, r);
-                }
-                using (var bottom = new LinearGradientBrush(r, Color.FromArgb(0, 8, 9, 12), Color.FromArgb(225, 8, 9, 12), 90f))
-                {
-                    bottom.Blend = new Blend { Factors = new[] { 0f, 0f, 1f }, Positions = new[] { 0f, 0.45f, 1f } };
-                    g.FillRectangle(bottom, r);
-                }
-            }
-            scaled[index] = cached;
-            return cached;
-        }
-
+        /// The home view's picture (for --snapshot and the controls over it).
         public bool DrawBackdrop(Control control, Graphics g, bool raw)
         {
-            if (pictures.Count == 0) return false;
-            var client = ClientSize;
-            if (client.Width <= 0 || client.Height <= 0) return false;
-            var offset = control == this ? Point.Empty : PointToClient(control.PointToScreen(Point.Empty));
-            g.DrawImageUnscaled(Scaled(picture, client), -offset.X, -offset.Y);
-            if (nextPicture >= 0 && fade > 0)
-            {
-                using (var attributes = new System.Drawing.Imaging.ImageAttributes())
-                {
-                    attributes.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = fade });
-                    var next = Scaled(nextPicture, client);
-                    g.DrawImage(next, new Rectangle(-offset.X, -offset.Y, next.Width, next.Height), 0, 0, next.Width, next.Height,
-                                GraphicsUnit.Pixel, attributes);
-                }
-            }
-            return true;
-        }
-
-        protected override void OnPaintBackground(PaintEventArgs e)
-        {
-            if (!DrawBackdrop(this, e.Graphics, false))
-            {
-                // No picture: a dark gradient.
-                using (var glow = new LinearGradientBrush(ClientRectangle, Color.FromArgb(14, 15, 19), Color.FromArgb(52, 14, 20), 0f))
-                    e.Graphics.FillRectangle(glow, ClientRectangle);
-            }
+            return home.Visible && home.DrawBackdrop(control, g, raw);
         }
 
         /// A file setting: its name, the folder in a field, and a Browse button.
