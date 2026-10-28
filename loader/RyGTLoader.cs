@@ -181,22 +181,43 @@ namespace RyGT
     /// and cards, white text with grey secondary text, white main buttons and grey rounded ones.
     static class Dark
     {
-        public static readonly Color Back = Color.FromArgb(18, 18, 18);       // the window
-        public static readonly Color Panel = Color.FromArgb(26, 26, 26);      // the large rounded areas
-        public static readonly Color Card = Color.FromArgb(34, 34, 34);       // cards on a panel
-        public static readonly Color Field = Color.FromArgb(44, 44, 44);
-        public static readonly Color Button = Color.FromArgb(50, 50, 50);
-        public static readonly Color ButtonHover = Color.FromArgb(64, 64, 64);
-        public static readonly Color ButtonDown = Color.FromArgb(42, 42, 42);
-        public static readonly Color Hover = Color.FromArgb(40, 40, 40);      // list rows under the mouse
+        public static readonly Color Back = Color.FromArgb(17, 18, 22);       // the window
+        public static readonly Color Panel = Color.FromArgb(22, 24, 29);      // the settings pages
+        public static readonly Color Sidebar = Color.FromArgb(13, 14, 18);    // the settings' category list
+        public static readonly Color Card = Color.FromArgb(28, 30, 36);       // cards on a page
+        public static readonly Color Field = Color.FromArgb(32, 35, 42);
+        public static readonly Color Button = Color.FromArgb(32, 35, 42);
+        public static readonly Color ButtonHover = Color.FromArgb(44, 48, 56);
+        public static readonly Color ButtonDown = Color.FromArgb(26, 28, 34);
+        public static readonly Color Hover = Color.FromArgb(30, 33, 40);      // list rows under the mouse
+        public static readonly Color Line = Color.FromArgb(38, 41, 48);       // between settings rows
+        public static readonly Color Disabled = Color.FromArgb(96, 101, 112);
         public static readonly Color Accent = Color.FromArgb(178, 24, 36);
         public static readonly Color AccentHover = Color.FromArgb(206, 40, 52);
         public static readonly Color AccentText = Color.FromArgb(240, 92, 76);
-        public static readonly Color Heading = Color.FromArgb(154, 154, 154);
-        public static readonly Color Border = Color.FromArgb(46, 46, 46);
-        public static readonly Color Text = Color.FromArgb(245, 245, 245);
-        public static readonly Color DimText = Color.FromArgb(154, 154, 154);
-        public const int Radius = 10;
+        public static readonly Color Heading = Color.FromArgb(128, 134, 146);
+        public static readonly Color Border = Color.FromArgb(44, 47, 55);
+        public static readonly Color Text = Color.FromArgb(236, 238, 242);
+        public static readonly Color DimText = Color.FromArgb(132, 138, 150);
+        public const int Radius = 4;
+
+        static readonly bool HasBahnschrift = FontFamily.Families.Any(f => f.Name == "Bahnschrift SemiBold");
+        static readonly Dictionary<float, Font> caps = new Dictionary<float, Font>();
+
+        /// The capitals font of headings and buttons: Bahnschrift SemiBold (Windows 10 and later).
+        public static Font Caps(float size)
+        {
+            Font font;
+            if (!caps.TryGetValue(size, out font))
+                caps[size] = font = HasBahnschrift ? new Font("Bahnschrift SemiBold", size) : new Font("Segoe UI Semibold", size);
+            return font;
+        }
+
+        /// The text with a hair space between its letters (spaced capitals).
+        public static string Spaced(string text)
+        {
+            return string.Join(((char)0x200A).ToString(), text.Select(c => c.ToString()).ToArray());
+        }
 
         public static void Apply(Control control)
         {
@@ -266,8 +287,6 @@ namespace RyGT
             var glass = new List<Card>();
             for (var parent = control.Parent; parent != null; parent = parent.Parent)
             {
-                var hero = parent as Hero;
-                if (hero != null) { hero.DrawUnder(control, g); FillGlass(glass, control, g); return; }
                 var card = parent as Card;
                 if (card != null && card.Fill.A < 255) { glass.Add(card); continue; }
                 var backdrop = parent as IBackdrop;
@@ -297,8 +316,8 @@ namespace RyGT
         {
             foreach (Control child in control.Controls)
             {
-                bool own = child is Card || child is Hero || child is TextBoxBase || child is ListControl || child is ButtonBase ||
-                           child is TrackBar || child is UpDownBase || child is ListItem || child is DarkBar;
+                bool own = child is Card || child is TextBoxBase || child is ListControl || child is ButtonBase ||
+                           child is TrackBar || child is UpDownBase || child is DarkBar || child is Slider || child is ToggleRow;
                 if (!own && !TypeDescriptor.GetProperties(child)["BackColor"].ShouldSerializeValue(child))
                     child.BackColor = Color.Transparent;
                 if (!(child is TextBoxBase) && !(child is ListControl) && !(child is UpDownBase)) SeeThrough(child);
@@ -313,7 +332,8 @@ namespace RyGT
             button.FlatAppearance.BorderSize = 0;
             button.UseVisualStyleBackColor = false;
             button.Cursor = Cursors.Hand;
-            if (button.Padding == Padding.Empty) button.Padding = new Padding(14, 5, 14, 5);
+            if (button.Padding == Padding.Empty) button.Padding = new Padding(18, 7, 18, 7);
+            if (button.Font.Name == "Segoe UI" && !(button.Tag is string && (string)button.Tag == "icon")) button.Font = Caps(9f);
             bool hover = false, down = false;
             button.MouseEnter += delegate { hover = true; button.Invalidate(); };
             button.MouseLeave += delegate { hover = false; down = false; button.Invalidate(); };
@@ -326,28 +346,44 @@ namespace RyGT
         {
             PaintUnder(button, g);
             string kind = button.Tag as string;
-            bool accent = kind == "accent", nav = kind == "nav" || kind == "nav-on";
-            Color fill, text = Text;
+            bool accent = kind == "accent", play = kind == "play", icon = kind == "icon";
+            Color fill = Color.Empty, edge, text = Text;
             if (!button.Enabled)
             {
-                fill = accent ? Color.FromArgb(64, 64, 64) : Color.FromArgb(36, 36, 36);
-                text = Color.FromArgb(112, 112, 112);
+                fill = play ? Color.FromArgb(90, 20, 22, 27) : Color.Empty;
+                edge = Color.FromArgb(52, 55, 62);
+                text = Disabled;
             }
             else if (accent)
             {
-                fill = down ? Color.FromArgb(200, 200, 200) : hover ? Color.White : Color.FromArgb(236, 236, 236);
-                text = Color.FromArgb(18, 18, 18);
+                fill = down ? Color.FromArgb(200, 203, 210) : hover ? Color.White : Color.FromArgb(232, 234, 238);
+                edge = fill;
+                text = Back;
             }
-            else if (nav)
+            else if (play && (hover || down || button.Focused))
             {
-                fill = kind == "nav-on" ? Color.FromArgb(44, 44, 44) : hover ? Color.FromArgb(30, 30, 30) : Color.Empty;
-                text = kind == "nav-on" || hover ? Text : Color.FromArgb(190, 190, 190);
+                fill = down ? Color.FromArgb(214, 217, 224) : Color.White;
+                edge = fill;
+                text = Back;
             }
-            else fill = down ? ButtonDown : hover ? ButtonHover : Button;
+            else if (play)
+            {
+                fill = Color.FromArgb(120, 10, 11, 14);
+                edge = Color.FromArgb(214, 218, 226);
+            }
+            else
+            {
+                fill = down ? Color.FromArgb(10, 255, 255, 255) : hover ? Color.FromArgb(22, 255, 255, 255) : Color.Empty;
+                edge = hover ? Color.FromArgb(150, 156, 168) : Color.FromArgb(72, 77, 88);
+            }
             g.SmoothingMode = SmoothingMode.AntiAlias;
             var r = new RectangleF(0.5f, 0.5f, button.Width - 1f, button.Height - 1f);
-            if (!fill.IsEmpty) FillRounded(g, fill, r, Radius - 2);
-            TextRenderer.DrawText(g, button.Text, button.Font, button.ClientRectangle, text,
+            if (!fill.IsEmpty) FillRounded(g, fill, r, 3);
+            using (var path = RoundedRect(r, 3))
+            using (var pen = new Pen(edge))
+                g.DrawPath(pen, path);
+            string label = icon ? button.Text : play ? Spaced(button.Text.ToUpperInvariant()) : button.Text.ToUpperInvariant();
+            TextRenderer.DrawText(g, label, button.Font, button.ClientRectangle, text,
                                   TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
         }
 
@@ -495,6 +531,234 @@ namespace RyGT
         }
     }
 
+    /// A setting that is on or off: its text on the left, a switch on the right, a line under it.
+    class ToggleRow : CheckBox
+    {
+        bool hover;
+
+        public ToggleRow()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            Cursor = Cursors.Hand;
+            AutoSize = false;
+            Dock = DockStyle.Fill;
+            Height = 40;
+            Margin = new Padding(0);
+        }
+
+        public override Size GetPreferredSize(Size proposedSize)
+        {
+            return new Size(TextRenderer.MeasureText(Text, Font).Width + 70, 40);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Dark.PaintUnder(this, e.Graphics);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            OnPaintBackground(e);
+            if (hover && Enabled)
+                using (var lit = new SolidBrush(Color.FromArgb(8, 255, 255, 255))) g.FillRectangle(lit, ClientRectangle);
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(0, 0, Width - 56, Height - 1), Enabled ? Dark.Text : Dark.Disabled,
+                                  TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var track = new RectangleF(Width - 40, (Height - 1 - 18) / 2f, 36, 18);
+            Color trackColor = !Enabled ? Color.FromArgb(36, 39, 46) : Checked ? Color.FromArgb(232, 234, 238) : Color.FromArgb(52, 56, 64);
+            Dark.FillRounded(g, trackColor, track, 9);
+            const float knob = 12;
+            float x = Checked ? track.Right - knob - 3 : track.X + 3;
+            Color knobColor = !Enabled ? Color.FromArgb(70, 74, 84) : Checked ? Dark.Back : Color.FromArgb(150, 155, 166);
+            using (var fill = new SolidBrush(knobColor)) g.FillEllipse(fill, x, track.Y + 3, knob, knob);
+            using (var line = new Pen(Dark.Line)) g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = false; Invalidate(); }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+        protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
+    }
+
+    /// A setting with a control (a drop-down, a slider, a button): its name on the left, the control
+    /// on the right, a line under it. The name greys out with the control.
+    class SettingRow : TableLayoutPanel
+    {
+        readonly Label label;
+        readonly Control control;
+
+        public SettingRow(string text, Control control)
+        {
+            this.control = control;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            ColumnCount = 2;
+            RowCount = 1;
+            Dock = DockStyle.Fill;
+            Margin = new Padding(0);
+            Padding = new Padding(0, 0, 0, 1);
+            ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            label = new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0), BackColor = Color.Transparent, Tag = "heading" };
+            Controls.Add(label, 0, 0);
+            control.Anchor = AnchorStyles.Right;
+            control.Margin = new Padding(12, 0, 0, 0);
+            Controls.Add(control, 1, 0);
+            control.EnabledChanged += delegate { ShowEnabled(); };
+            ShowEnabled();
+            // A table sizes its rows from this height (a new one is 100 high).
+            Height = GetPreferredSize(Size.Empty).Height;
+            control.SizeChanged += delegate { Height = GetPreferredSize(Size.Empty).Height; };
+        }
+
+        void ShowEnabled()
+        {
+            label.ForeColor = control.Enabled ? Dark.Text : Dark.Disabled;
+        }
+
+        public override Size GetPreferredSize(Size proposedSize)
+        {
+            // From the label and the control (a table offered more height would take all of it).
+            var text = label.GetPreferredSize(Size.Empty);
+            var right = control.AutoSize ? control.GetPreferredSize(Size.Empty) : control.Size;
+            return new Size(text.Width + control.Margin.Horizontal + right.Width, Math.Max(40, Math.Max(text.Height, right.Height) + 12));
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Dark.PaintUnder(this, e.Graphics);
+            using (var line = new Pen(Dark.Line)) e.Graphics.DrawLine(line, 0, Height - 1, Width, Height - 1);
+        }
+    }
+
+    /// A thin slider: a line filled up to the value, a round knob, and the value on its right.
+    class Slider : Control
+    {
+        int minimum, maximum = 100, value;
+        bool dragging;
+        public int TickFrequency = 10, SmallChange = 1, LargeChange = 10;
+        /// Shown after the value ("%").
+        public string Suffix = "";
+        public event EventHandler ValueChanged;
+
+        public Slider()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw | ControlStyles.Selectable | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            Size = new Size(280, 28);
+            Cursor = Cursors.Hand;
+            TabStop = true;
+        }
+
+        public int Minimum { get { return minimum; } set { minimum = value; Value = this.value; Invalidate(); } }
+        public int Maximum { get { return maximum; } set { maximum = value; Value = this.value; Invalidate(); } }
+
+        public int Value
+        {
+            get { return value; }
+            set
+            {
+                int v = Math.Max(minimum, Math.Min(maximum, value));
+                if (v == this.value) return;
+                this.value = v;
+                Invalidate();
+                if (ValueChanged != null) ValueChanged(this, EventArgs.Empty);
+            }
+        }
+
+        Rectangle Track { get { return new Rectangle(8, Height / 2 - 1, Math.Max(10, Width - 8 - 64), 2); } }
+
+        void SetFromX(int x)
+        {
+            var track = Track;
+            float amount = Math.Max(0, Math.Min(1, (x - track.X) / (float)track.Width));
+            Value = minimum + (int)Math.Round(amount * (maximum - minimum));
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); dragging = true; Capture = true; SetFromX(e.X); }
+        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (dragging) SetFromX(e.X); }
+        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); dragging = false; Capture = false; }
+
+        protected override bool IsInputKey(Keys keyData)
+        {
+            return keyData == Keys.Left || keyData == Keys.Right || keyData == Keys.Up || keyData == Keys.Down || base.IsInputKey(keyData);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Down) Value -= SmallChange;
+            else if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Up) Value += SmallChange;
+            else if (e.KeyCode == Keys.PageDown) Value -= LargeChange;
+            else if (e.KeyCode == Keys.PageUp) Value += LargeChange;
+        }
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            Dark.PaintUnder(this, g);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var track = Track;
+            float amount = maximum > minimum ? (value - minimum) / (float)(maximum - minimum) : 0;
+            float x = track.X + track.Width * amount;
+            using (var rest = new SolidBrush(Color.FromArgb(62, 66, 76))) g.FillRectangle(rest, track);
+            using (var done = new SolidBrush(Enabled ? Color.FromArgb(220, 223, 230) : Dark.Disabled))
+                g.FillRectangle(done, track.X, track.Y, x - track.X, track.Height);
+            float knob = Focused ? 14 : 12;
+            using (var fill = new SolidBrush(Enabled ? Color.White : Dark.Disabled)) g.FillEllipse(fill, x - knob / 2, track.Y + 1 - knob / 2, knob, knob);
+            TextRenderer.DrawText(g, value + Suffix, Dark.Caps(9f), new Rectangle(track.Right + 8, 0, Width - track.Right - 8, Height),
+                                  Enabled ? Dark.Text : Dark.Disabled, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    /// A category in the settings' sidebar: grey text, white with a red bar on its left when open.
+    class SidebarItem : Control
+    {
+        bool active, hover;
+
+        public SidebarItem(string text)
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            Text = text;
+            Height = 38;
+            Cursor = Cursors.Hand;
+            Font = new Font("Segoe UI", 10.5f);
+            TabStop = true;
+        }
+
+        public bool Active { get { return active; } set { active = value; Invalidate(); } }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = false; Invalidate(); }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) OnClick(EventArgs.Empty);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            using (var back = new SolidBrush(Dark.Sidebar)) g.FillRectangle(back, ClientRectangle);
+            if (active)
+                using (var bar = new SolidBrush(Dark.Accent)) g.FillRectangle(bar, 16, 6, 3, Height - 12);
+            Color text = active ? Color.White : hover ? Color.FromArgb(206, 210, 218) : Dark.DimText;
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(30, 0, Width - 34, Height), text,
+                                  TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+    }
+
     /// A rounded panel with a thin border; the controls on it take its color.
     class Card : TableLayoutPanel
     {
@@ -524,150 +788,6 @@ namespace RyGT
                 using (var fill = new SolidBrush(Fill)) g.FillPath(fill, path);
                 if (!Edge.IsEmpty) using (var pen = new Pen(Edge)) g.DrawPath(pen, path);
             }
-        }
-    }
-
-    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGT7.exe),
-    /// darkened on the left and at the bottom, where the title and the Play button sit.
-    class Hero : Panel
-    {
-        readonly Image picture;
-        Bitmap cache;
-
-        public Hero(Image picture)
-        {
-            this.picture = picture;
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
-                     ControlStyles.ResizeRedraw, true);
-            BackColor = Color.FromArgb(20, 20, 20);
-        }
-
-        Point cachedAt;
-
-        /// The banner at the current size and place, drawn once; its controls copy their part of it.
-        Bitmap Picture()
-        {
-            var size = new Size(Math.Max(1, Width), Math.Max(1, Height));
-            var form = FindForm();
-            var at = form != null && IsHandleCreated ? form.PointToClient(PointToScreen(Point.Empty)) : Point.Empty;
-            if (cache != null && cache.Size == size && at == cachedAt) return cache;
-            cachedAt = at;
-            if (cache != null) cache.Dispose();
-            cache = new Bitmap(size.Width, size.Height);
-            using (var art = new Bitmap(size.Width, size.Height))
-            {
-                var r = new Rectangle(Point.Empty, size);
-                using (var g = Graphics.FromImage(art))
-                {
-                    var backdrop = form as IBackdrop;
-                    if (backdrop != null && backdrop.DrawBackdrop(this, g, false))
-                    {
-                        // The window's own picture shows through, behind the same grey glass as the cards.
-                        using (var glass = new SolidBrush(Color.FromArgb(150, 32, 32, 32))) g.FillRectangle(glass, r);
-                    }
-                    else if (picture != null)
-                    {
-                        // Scaled to cover the banner, anchored right and near the top: the picture's
-                        // subject is on its right and its faces (helmets) in its upper part.
-                        float scale = Math.Max(size.Width / (float)picture.Width, size.Height / (float)picture.Height);
-                        int width = (int)Math.Ceiling(picture.Width * scale), height = (int)Math.Ceiling(picture.Height * scale);
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.DrawImage(picture, size.Width - width, (size.Height - height) / 12, width, height);
-                    }
-                    else
-                    {
-                        using (var glow = new LinearGradientBrush(r, Color.FromArgb(24, 24, 24), Color.FromArgb(96, 16, 26), 0f))
-                            g.FillRectangle(glow, r);
-                    }
-                    using (var shade = new LinearGradientBrush(r, Color.FromArgb(235, 14, 14, 14), Color.FromArgb(0, 14, 14, 14), 0f))
-                    {
-                        shade.Blend = new Blend { Factors = new[] { 0f, 0.25f, 1f, 1f }, Positions = new[] { 0f, 0.35f, 0.8f, 1f } };
-                        g.FillRectangle(shade, r);
-                    }
-                    using (var bottom = new LinearGradientBrush(r, Color.FromArgb(0, 14, 14, 14), Color.FromArgb(170, 14, 14, 14), 90f))
-                    {
-                        bottom.Blend = new Blend { Factors = new[] { 0f, 0f, 1f }, Positions = new[] { 0f, 0.5f, 1f } };
-                        g.FillRectangle(bottom, r);
-                    }
-                }
-                using (var g = Graphics.FromImage(cache))
-                {
-                    Dark.PaintUnder(this, g);
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    using (var path = Dark.RoundedRect(new RectangleF(0, 0, size.Width - 0.5f, size.Height - 0.5f), 12))
-                    {
-                        using (var brush = new TextureBrush(art)) g.FillPath(brush, path);
-                        using (var pen = new Pen(Color.FromArgb(22, 255, 255, 255))) g.DrawPath(pen, path);
-                    }
-                }
-            }
-            return cache;
-        }
-
-        protected override void OnPaintBackground(PaintEventArgs e)
-        {
-            e.Graphics.DrawImageUnscaled(Picture(), 0, 0);
-        }
-
-        /// The banner under one of its controls (rounded buttons and transparent controls on it).
-        public void DrawUnder(Control control, Graphics g)
-        {
-            var at = PointToClient(control.PointToScreen(Point.Empty));
-            g.DrawImageUnscaled(Picture(), -at.X, -at.Y);
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && cache != null) cache.Dispose();
-            base.Dispose(disposing);
-        }
-    }
-
-    /// A row of the launcher's lists: a round badge with a letter, a title and a grey line under it
-    /// (like a friends list), lighter under the mouse. Click (or Enter/Space) does its action.
-    class ListItem : Control
-    {
-        public string Subtitle = "", Letter = "";
-        public Color Badge = Dark.Accent;
-        bool hover;
-
-        public ListItem()
-        {
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
-                     ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
-            Height = 52;
-            Cursor = Cursors.Hand;
-            Font = new Font("Segoe UI", 9f);
-        }
-
-        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }
-        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = false; Invalidate(); }
-        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
-        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
-
-        protected override void OnKeyDown(KeyEventArgs e)
-        {
-            base.OnKeyDown(e);
-            if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) OnClick(EventArgs.Empty);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            var g = e.Graphics;
-            Dark.PaintUnder(this, g);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (hover || (Focused && ShowFocusCues)) Dark.FillRounded(g, Dark.Hover, new RectangleF(0, 0, Width, Height), 8);
-            int badge = 34, x = 9, y = (Height - badge) / 2;
-            using (var fill = new SolidBrush(Badge)) g.FillEllipse(fill, x, y, badge, badge);
-            using (var letter = new Font("Segoe UI Semibold", 11f))
-                TextRenderer.DrawText(g, Letter, letter, new Rectangle(x, y, badge, badge), Color.White,
-                                      TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            int left = x + badge + 12;
-            using (var title = new Font("Segoe UI Semibold", 9.75f))
-                TextRenderer.DrawText(g, Text, title, new Rectangle(left, Height / 2 - 19, Width - left - 6, 20), Dark.Text,
-                                      TextFormatFlags.Left | TextFormatFlags.Bottom | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-            TextRenderer.DrawText(g, Subtitle, Font, new Rectangle(left, Height / 2 + 1, Width - left - 6, 18), Dark.DimText,
-                                  TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
     }
 
@@ -966,8 +1086,12 @@ namespace RyGT
         readonly TextBox game, update, modules, fonts, log;
         readonly Button setup, play, addDlss;
         readonly Label status;
-        readonly Panel[] pages = new Panel[3];
-        readonly Button[] tabs = new Button[3];
+        // Home: the picture over the whole window with the title, Play and the settings button.
+        // Settings: a sidebar of categories and their pages.
+        readonly Panel home, settingsView, pagesHost;
+        readonly Dictionary<string, Panel> pages = new Dictionary<string, Panel>();
+        readonly Dictionary<string, SidebarItem> pageItems = new Dictionary<string, SidebarItem>();
+        string lastPage = "Game";
         volatile bool busy;
 
         public LoaderForm()
@@ -983,163 +1107,132 @@ namespace RyGT
                     using (var bitmap = new Bitmap(iconPath)) Icon = Icon.FromHandle(bitmap.GetHicon());
             }
             catch { }
-            Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(1280, 800);
-            MinimumSize = new Size(1120, 720);
+            Font = new Font("Segoe UI", 9.5f);
+            ClientSize = new Size(1280, 760);
+            MinimumSize = new Size(1040, 640);
             StartPosition = FormStartPosition.CenterScreen;
             DoubleBuffered = true;
+            BackColor = Dark.Back;
+            // The launcher pictures (launcher\background*.png or .jpg, else GT7's own pic1.png) fill the
+            // home view, one after another when there are several.
+            pictures = LoadBackgrounds();
+            ResizeRedraw = true;
 
-            // The top bar: the logo and the page tabs (Home, Settings, Controls).
-            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 62, Padding = new Padding(22, 15, 20, 0), WrapContents = false };
-            var logo = new PictureBox { Size = new Size(30, 30), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 0, 8, 0) };
-            try { logo.Image = new Icon(Icon, 32, 32).ToBitmap(); } catch { }
-            top.Controls.Add(logo);
-            top.Controls.Add(new Label { Text = "ryGT7", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
-            var tabNames = new[] { "Home", "Settings", "Controls" };
-            for (int i = 0; i < tabs.Length; ++i)
+            settingsView = new Panel { Dock = DockStyle.Fill, BackColor = Dark.Panel, Visible = false };
+            home = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+            Controls.Add(settingsView);
+            Controls.Add(home);
+
+            // ---- Home
+            var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent };
+            var titleName = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
+            titleName.Controls.Add(new Label { Text = "GRAN TURISMO", AutoSize = true, Font = Dark.Caps(34f), BackColor = Color.Transparent, Margin = new Padding(0) });
+            titleName.Controls.Add(new Label { Text = "7", AutoSize = true, Font = Dark.Caps(34f), ForeColor = Dark.AccentText, Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(0) });
+            title.Controls.Add(titleName);
+            title.Controls.Add(new Label
             {
-                int page = i;
-                tabs[i] = new Button
-                {
-                    Text = tabNames[i], AutoSize = true, Tag = "nav", Padding = new Padding(12, 4, 12, 4), Margin = new Padding(0, 0, 4, 0),
-                    Font = new Font("Segoe UI Semibold", 9.75f)
-                };
-                tabs[i].Click += delegate { ShowPage(page); };
-                top.Controls.Add(tabs[i]);
-            }
-
-            // The status bar: what the launcher is doing on the left, the build on the right.
-            var footer = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 36, ColumnCount = 2, RowCount = 1, Padding = new Padding(26, 0, 26, 2) };
-            footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            status = new Label { AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(0) };
-            footer.Controls.Add(status, 0, 0);
-            footer.Controls.Add(new Label
-            {
-                Text = "ryGT7 for Windows " + (char)183 + " GT7 · CUSA24769", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
-                Tag = "heading", Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(0)
-            }, 1, 0);
-
-            // The page on a large rounded panel, the quick-access list on a narrower one beside it.
-            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(16, 0, 16, 0) };
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
-            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            // The launcher picture (launcher\background.png) behind the whole window, the panels and
-            // cards see-through over it; without a picture they are solid.
-            background = LoadBackground();
-            if (background != null) ResizeRedraw = true;
-            var glass = background != null;
-            var main = new Card(glass ? Color.FromArgb(190, 20, 20, 20) : Dark.Panel) { Dock = DockStyle.Fill, Padding = new Padding(20), Margin = new Padding(0, 0, 12, 0), Radius = 12 };
-            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            body.Controls.Add(main, 0, 0);
-            var side = new Card(glass ? Color.FromArgb(190, 20, 20, 20) : Dark.Panel) { Dock = DockStyle.Fill, Padding = new Padding(14, 16, 14, 14), Margin = new Padding(0), Radius = 12 };
-            body.Controls.Add(side, 1, 0);
-            Controls.Add(body);
-            Controls.Add(footer);
-            Controls.Add(top);
-
-            var host = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) };
-            main.Controls.Add(host, 0, 0);
-            for (int i = 0; i < pages.Length; ++i)
-            {
-                pages[i] = new Panel { Dock = DockStyle.Fill, Visible = i == 0 };
-                host.Controls.Add(pages[i]);
-            }
-
-            // Home: the banner with Play, the game files and the set up log.
-            var home = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = new Padding(0) };
-            home.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            home.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));
-            home.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            home.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            pages[0].Controls.Add(home);
-
-            // The background picture (launcher\background.png next to RyGT7.exe) fills the banner.
-            var hero = new Hero(background) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 14) };
-            home.Controls.Add(hero, 0, 0);
-            var heroText = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-                BackColor = Color.Transparent, Padding = new Padding(34, 0, 0, 30)
-            };
-            hero.Controls.Add(heroText);
-            heroText.Controls.Add(new Label
-            {
-                Text = "CUSA24769  " + (char)183 + "  PS4", AutoSize = true, BackColor = Color.Transparent,
-                Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(3, 0, 0, 4)
+                Text = Dark.Spaced("CUSA24769   " + (char)183 + "   PS4   " + (char)183 + "   RYGT7 FOR WINDOWS"), AutoSize = true,
+                Font = Dark.Caps(8.5f), ForeColor = Color.FromArgb(190, 194, 204), Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(3, 0, 0, 22)
             });
-            heroText.Controls.Add(new Label
-            {
-                Text = "Gran Turismo 7", AutoSize = true, BackColor = Color.Transparent,
-                Font = new Font("Segoe UI Semibold", 26f), Margin = new Padding(0, 0, 0, 4)
-            });
-            heroText.Controls.Add(new Label
-            {
-                Text = "From your own decrypted CUSA24769 base game and PS4 firmware's " +
-                       "modules and fonts. Updates can be merged into the base game or selected separately. Set up once, then Play.",
-                AutoSize = true, MaximumSize = new Size(520, 0), BackColor = Color.Transparent, ForeColor = Color.FromArgb(214, 214, 214),
-                Tag = "heading", Font = new Font("Segoe UI", 10f), Margin = new Padding(2, 0, 0, 18)
-            });
-            var buttons = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0), WrapContents = false };
-            play = new Button { Text = "Play", AutoSize = true, Tag = "accent", Font = new Font("Segoe UI Semibold", 10.5f), Padding = new Padding(34, 8, 34, 8), Margin = new Padding(0, 0, 10, 0) };
-            setup = new Button { Text = "Set up", AutoSize = true, Font = new Font("Segoe UI Semibold", 10f), Padding = new Padding(20, 8, 20, 8), Margin = new Padding(0, 0, 10, 0) };
-            var open = new Button { Text = "Open folder", AutoSize = true, Font = new Font("Segoe UI Semibold", 10f), Padding = new Padding(20, 8, 20, 8), Margin = new Padding(0) };
-            setup.Click += delegate { StartSetup(); };
+            var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
+            play = new Button { Text = "Play", Tag = "play", AutoSize = false, Size = new Size(236, 46), Font = Dark.Caps(11f), Margin = new Padding(0, 0, 10, 0) };
             play.Click += delegate { Play(); };
+            var gear = new Button { Text = ((char)0xE713).ToString(), Tag = "icon", AutoSize = false, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f), Margin = new Padding(0) };
+            gear.Click += delegate { ShowSettings(lastPage); };
+            buttons.Controls.Add(play);
+            buttons.Controls.Add(gear);
+            title.Controls.Add(buttons);
+            status = new Label { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.FromArgb(200, 204, 212), Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(2, 12, 0, 0) };
+            title.Controls.Add(status);
+            home.Controls.Add(title);
+            var version = new Label
+            {
+                Text = "ryGT7  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769", AutoSize = true, Font = Dark.Caps(9f),
+                ForeColor = Color.FromArgb(200, 204, 212), Tag = "heading", BackColor = Color.Transparent
+            };
+            home.Controls.Add(version);
+            home.Layout += delegate
+            {
+                title.Location = new Point(56, home.ClientSize.Height - title.Height - 48);
+                version.Location = new Point(home.ClientSize.Width - version.Width - 30, home.ClientSize.Height - version.Height - 24);
+            };
+
+            // ---- Settings: the sidebar
+            var sidebar = new Panel { Dock = DockStyle.Left, Width = 224, BackColor = Dark.Sidebar };
+            pagesHost = new Panel { Dock = DockStyle.Fill, BackColor = Dark.Panel };
+            settingsView.Controls.Add(pagesHost);
+            settingsView.Controls.Add(sidebar);
+            var back = new Label
+            {
+                Text = (char)0x2039 + "   " + Dark.Spaced("BACK"), AutoSize = true, Font = Dark.Caps(9f), ForeColor = Dark.DimText,
+                Tag = "heading", Cursor = Cursors.Hand, Location = new Point(28, 30)
+            };
+            back.Click += delegate { ShowHome(); };
+            back.MouseEnter += delegate { back.ForeColor = Dark.Text; };
+            back.MouseLeave += delegate { back.ForeColor = Dark.DimText; };
+            sidebar.Controls.Add(back);
+            var logo = new PictureBox { Size = new Size(34, 34), SizeMode = PictureBoxSizeMode.Zoom, Location = new Point(28, 78) };
+            try { logo.Image = new Icon(Icon, 48, 48).ToBitmap(); } catch { }
+            sidebar.Controls.Add(logo);
+            sidebar.Controls.Add(new Label { Text = "GRAN TURISMO", AutoSize = true, Font = Dark.Caps(12f), Location = new Point(70, 76) });
+            sidebar.Controls.Add(new Label { Text = "7", AutoSize = true, Font = Dark.Caps(12f), ForeColor = Dark.AccentText, Tag = "heading", Location = new Point(70, 95) });
+            var sideVersion = new Label { Text = "ryGT7 for Windows", AutoSize = true, ForeColor = Color.FromArgb(96, 102, 114), Tag = "heading" };
+            sidebar.Controls.Add(sideVersion);
+            sidebar.Layout += delegate { sideVersion.Location = new Point(28, sidebar.ClientSize.Height - sideVersion.Height - 24); };
+            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "About" };
+            for (int i = 0; i < pageNames.Length; ++i)
+            {
+                string page = pageNames[i];
+                var item = new SidebarItem(page) { Location = new Point(0, 150 + i * 40), Width = 224 };
+                item.Click += delegate { ShowSettings(page); };
+                sidebar.Controls.Add(item);
+                pageItems[page] = item;
+            }
+
+            // ---- Game: the files, Set up and its log
+            var gamePage = NewPage("Game", "Game",
+                "Your own decrypted Gran Turismo 7 base game (CUSA24769), its update if it is separate, and your PS4 firmware's " +
+                "system modules and fonts. Set up converts the game once; Play starts it.");
+            var files = Section(gamePage, "Files");
+            game = AddRow(files, "Base game (CUSA24769)", settings.Game);
+            update = AddRow(files, "Update (optional, if separate)", settings.Update);
+            modules = AddRow(files, "System modules", settings.Modules);
+            fonts = AddRow(files, "Fonts", settings.Fonts);
+            var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 16, 0, 0) };
+            setup = new Button { Text = "Set up", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
+            setup.Click += delegate { StartSetup(); };
+            var open = new Button { Text = "Open folder", AutoSize = true, Margin = new Padding(0) };
             open.Click += delegate { OpenFolder(); };
-            buttons.Controls.AddRange(new Control[] { play, setup, open });
-            heroText.Controls.Add(buttons);
-
-            // Game files.
-            var files = Section(home, "Game files");
-            var fileTable = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0) };
-            fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            files.Controls.Add(fileTable);
-            game = AddRow(fileTable, 0, "Base game (CUSA24769)", settings.Game);
-            update = AddRow(fileTable, 1, "Update (optional, if separate)", settings.Update);
-            modules = AddRow(fileTable, 2, "System modules", settings.Modules);
-            fonts = AddRow(fileTable, 3, "Fonts", settings.Fonts);
-
-            var logCard = Section(home, "Set up log", Dark.Card); // solid: its text box cannot be see-through
-            logCard.Margin = new Padding(0);
-            logCard.AutoSize = false;
+            actions.Controls.Add(setup);
+            actions.Controls.Add(open);
+            gamePage.Controls.Add(actions);
+            var gameStatus = new Label { AutoSize = true, MaximumSize = new Size(860, 0), ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(1, 12, 0, 0) };
+            gamePage.Controls.Add(gameStatus);
+            status.TextChanged += delegate { gameStatus.Text = status.Text; };
+            var logSection = Section(gamePage, "Set up log");
+            var logBox = new Card(Dark.Field) { Dock = DockStyle.Fill, Height = 190, Radius = 3, Edge = Color.Empty, Padding = new Padding(10, 8, 4, 8), Margin = new Padding(0, 6, 0, 0) };
+            logBox.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             log = new TextBox
             {
                 Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, BorderStyle = BorderStyle.None,
                 Font = new Font("Consolas", 8.5f), Margin = new Padding(0)
             };
-            logCard.Controls.Add(log);
-            logCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            logCard.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            logBox.Controls.Add(log);
+            logSection.Controls.Add(logBox);
 
-            // Settings: display and shaders on the left, graphics on the right.
-            var settingsPage = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoScroll = true, Margin = new Padding(0) };
-            settingsPage.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            settingsPage.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            pages[1].Controls.Add(settingsPage);
-            var settingsTitle = PageTitle("Settings", "Saved as you change them; the game reads them when it starts.");
-            settingsPage.Controls.Add(settingsTitle, 0, 0);
-            settingsPage.SetColumnSpan(settingsTitle, 2);
-            var left = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 7, 0) };
-            var right = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(7, 0, 0, 0) };
-            left.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            settingsPage.Controls.Add(left, 0, 1);
-            settingsPage.Controls.Add(right, 1, 1);
-
-            var display = Section(left, "Display");
+            // ---- Display
+            var displayPage = NewPage("Display", "Display", "How the game's window looks. Changes apply the next time you play.");
+            var display = Section(displayPage, "Screen");
             AddScreenSettings(display);
             AddOption(display, "Show an FPS counter", "General", "show_fps_counter", false);
             AddOption(display, "Show the splash screen while the game starts", "General", "show_splash", false);
             AddOption(display, "Show the game on Discord (Rich Presence)", "General", "discord_rpc_enabled", true);
             AddMemorySetting(display);
 
+            // ---- Graphics
+            var graphicsPage = NewPage("Graphics", "Graphics", "The renderer, upscaling and frame generation. Changes apply the next time you play.");
             // Graphics.
-            var graphics = Section(right, "Graphics");
+            var graphics = Section(graphicsPage, "Rendering");
             // Sparks, tire smoke and other effects are always on; an older launcher could have
             // turned them off in the config.
             if (!ReadSetting("GPU", "particle_effects", true))
@@ -1159,7 +1252,7 @@ namespace RyGT
             var framegen = AddOption(graphics, fsr3Installed
                 ? "FSR frame generation: about 2x the frames (any GPU)"
                 : "FSR frame generation (needs amd_fidelityfx_vk.dll)", "GPU", "framegen_enabled", false);
-            foreach (var sub in new[] { fsr3, rcas, framegen }) sub.Margin = new Padding(22, 2, 0, 2);
+            foreach (var sub in new[] { fsr3, rcas, framegen }) sub.Margin = new Padding(22, 0, 0, 0);
             fsr3.Enabled = fsr.Checked && fsr3Installed;
             rcas.Enabled = fsr.Checked;
             framegen.Enabled = fsr3Installed;
@@ -1179,10 +1272,10 @@ namespace RyGT
                 Tag = "heading", Margin = new Padding(22, 2, 0, 6)
             });
             var dlssg = AddOption(graphics, "", "GPU", "dlssg_enabled", false);
-            dlssg.Margin = new Padding(22, 2, 0, 2);
+            dlssg.Margin = new Padding(22, 0, 0, 0);
             // DLSS frame multiplier (GPU.dlssg_frames: generated frames a game frame, 1-5; the
             // game gets it as RYGT_DLSSG_FRAMES): x1 is off, x2 any RTX 40/50, x3-x6 RTX 50.
-            var multRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(22, 2, 0, 2), WrapContents = false };
+            var multRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(22, 0, 0, 0), WrapContents = false };
             var mult = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
             mult.Items.AddRange(new object[] { "x1 (off)", "x2", "x3 (RTX 50)", "x4 (RTX 50)", "x5 (RTX 50)", "x6 (RTX 50)" });
             multRow.Controls.Add(new Label { Text = "Frame multiplier", AutoSize = false, Width = 174, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
@@ -1273,7 +1366,7 @@ namespace RyGT
                         : "Copied " + copied + " DLSS file(s) into the dlss folder.");
                 }
             };
-            graphics.Controls.Add(addDlss);
+            graphics.Controls.Add(new SettingRow("NVIDIA DLSS files", addDlss));
             // DLSS and FSR both upscale, so one at a time; DLSS runs in Performance mode (#61).
             fsr.CheckedChanged += delegate { if (fsr.Checked && dlss.Checked) dlss.Checked = false; };
             Action updateDlss = delegate
@@ -1305,9 +1398,12 @@ namespace RyGT
                 }
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
+
+            // ---- Shaders
+            var shadersPage = NewPage("Shaders", "Shaders", "Shaders are built once per car and track; these settings decide when that happens.");
             // Shaders: the stored ones are built while the splash screen shows; a new one pauses
             // the game until it is compiled (instead of a stutter and missing objects).
-            var shaders = Section(left, "Shaders");
+            var shaders = Section(shadersPage, "Compiling");
             // What the game does while a new shader compiles during play (GPU.compile_mode).
             var modeRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
             var modeLabel = new Label { Text = "When new shaders compile", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
@@ -1333,24 +1429,6 @@ namespace RyGT
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
             batchRow.Controls.Add(batchLabel);
-
-            var logging = Section(right, "Logging"); // under Graphics, where there is room
-            logging.Controls.Add(new Label { Text = "stdout.log minimum level", AutoSize = true,
-                BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 4) });
-            var logLevel = new DarkComboBox { Width = 170, DropDownStyle = ComboBoxStyle.DropDownList,
-                FlatStyle = FlatStyle.Flat, BackColor = Dark.Field, ForeColor = Dark.Text };
-            logLevel.Items.AddRange(LogFiles.Levels);
-            logLevel.SelectedIndex = LogFiles.LevelIndex(settings.StdoutLevel);
-            logLevel.SelectedIndexChanged += delegate
-            {
-                if (logLevel.SelectedIndex < 0) return;
-                settings.StdoutLevel = LogFiles.Levels[logLevel.SelectedIndex];
-                try { settings.Save(); }
-                catch (Exception e) { MessageBox.Show(this, "Could not save the logging level: " + e.Message); }
-            };
-            logging.Controls.Add(logLevel);
-            logging.Controls.Add(new Label { Text = "Selected level and below, on the next launch.\nAll logs are in the logs folder; previous logs are timestamped.",
-                AutoSize = true, MaximumSize = new Size(360, 0), BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0) });
             batchRow.Controls.Add(batch);
             shaders.Controls.Add(batchRow);
             batch.Enabled = mode.SelectedIndex == 0;
@@ -1361,101 +1439,173 @@ namespace RyGT
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
 
-            // Controls: which controller is which player (splitscreen) with a live preview, the
+
+            // ---- Controls: which controller is which player (splitscreen) with a live preview, the
             // controller and keyboard bindings, and racing wheels and pedals (ryty-input.ini /
             // ryty-wheel.ini, read by libScePad).
-            var controlsPage = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoScroll = true, Margin = new Padding(0) };
-            controlsPage.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            pages[2].Controls.Add(controlsPage);
-            controlsPage.Controls.Add(PageTitle("Controls", "Pick your controller, player name, and what each " +
-                                                            "button does. In game, F3 or holding Share + Options (View + Menu) changes controllers."));
-            var controls = Section(controlsPage, "Controllers and wheels");
-            controls.Controls.Add(Item("Controller ports...", "Which controller plays as each player, with a live preview", "P", Badges[0], OpenPorts));
-            controls.Controls.Add(Item("Button bindings...", "What each PS4 button is on your controller and keyboard", "B", Badges[1], OpenBindings));
-            controls.Controls.Add(Item("Steering wheel...", "Map your wheel and pedals; force feedback strength and feel", "W", Badges[2], OpenWheel));
-            var triggerLabel = new Label
+            var controlsPage = NewPage("Controls", "Controls",
+                "Pick your controller, player name, and what each button does. " +
+                "In game, F3 or holding Share + Options (View + Menu) changes controllers.");
+            var controllers = Section(controlsPage, "Controllers and wheels");
+            controllers.Controls.Add(OpenRow("Controller ports: who plays as which player, with a live preview", OpenPorts));
+            controllers.Controls.Add(OpenRow("Button bindings: what each PS4 button is on your controller and keyboard", OpenBindings));
+            controllers.Controls.Add(OpenRow("Steering wheel: your wheel and pedals, force feedback strength and feel", OpenWheel));
+            var feedback = Section(controlsPage, "Feedback");
+            var triggerStrength = new Slider
             {
-                AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 8, 0, 0),
-                Text = "Trigger strength"
+                Name = "triggerStrength", Minimum = 0, Maximum = 200, TickFrequency = 25, SmallChange = 5, LargeChange = 25,
+                Size = new Size(300, 28), Suffix = "%", AccessibleName = "Trigger feedback strength"
             };
-            var triggerStrength = new TrackBar
-            {
-                Name = "triggerStrength", Minimum = 0, Maximum = 200, TickFrequency = 25,
-                SmallChange = 5, LargeChange = 25, AutoSize = false, Height = 36, Dock = DockStyle.Fill,
-                Value = Math.Max(0, Math.Min(200, ReadIntSetting("Input", "trigger_strength", 100))),
-                AccessibleName = "Trigger feedback strength", Margin = new Padding(0)
-            };
-            Action updateTriggerLabel = delegate
-            {
-                triggerLabel.Text = "Trigger strength: " + triggerStrength.Value + "%" +
-                                    (triggerStrength.Value == 0 ? " (off)" : "");
-            };
-            updateTriggerLabel();
+            triggerStrength.Value = Math.Max(0, Math.Min(200, ReadIntSetting("Input", "trigger_strength", 100)));
             triggerStrength.ValueChanged += delegate
             {
-                updateTriggerLabel();
                 try { WriteSetting("Input", "trigger_strength", triggerStrength.Value); }
                 catch (Exception e) { MessageBox.Show(this, "Could not save trigger strength: " + e.Message); }
             };
-            controls.Controls.Add(triggerLabel);
-            controls.Controls.Add(triggerStrength);
-            controls.Controls.Add(new Label
+            feedback.Controls.Add(new SettingRow("Trigger strength", triggerStrength));
+            feedback.Controls.Add(Hint("0% off, 100% standard, 200% boosted. Updates while playing."));
+
+            // ---- About: what ryGT is, its folders and logging
+            var aboutPage = NewPage("About", "About", "ryGT7 for Windows " + (char)183 + " Gran Turismo 7 (CUSA24769)");
+            aboutPage.Controls.Add(new Label
             {
-                AutoSize = true, MaximumSize = new Size(360, 0), BackColor = Color.Transparent,
-                Text = "0% off, 100% standard, 200% boosted. Updates while playing.",
-                ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(0, 0, 0, 2)
+                AutoSize = true, MaximumSize = new Size(860, 0), ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(1, 0, 0, 6),
+                Text = "ryGT7 converts your own copy of Gran Turismo 7 to run on Windows. " +
+                       "It is a fan project, not affiliated with Sony Interactive Entertainment or Polyphony Digital; " +
+                       "Gran Turismo is their trademark. You need your own copy of the game."
             });
-
-            // Quick access, beside every page.
-            side.Controls.Add(new Label { Text = "Quick access", AutoSize = true, Font = new Font("Segoe UI Semibold", 12f), Margin = new Padding(4, 0, 0, 8) });
-            side.Controls.Add(GroupLabel("Controls"));
-            side.Controls.Add(Item("Controller ports", "Who plays as which player", "P", Badges[0], OpenPorts));
-            side.Controls.Add(Item("Button bindings", "Controller and keyboard", "B", Badges[1], OpenBindings));
-            side.Controls.Add(Item("Steering wheel", "Wheel, pedals, force feedback", "W", Badges[2], OpenWheel));
-            side.Controls.Add(GroupLabel("Settings"));
-            side.Controls.Add(Item("Display", "Screen, resolution, refresh rate", "D", Badges[3], delegate { ShowPage(1); }));
-            side.Controls.Add(Item("Graphics", "FSR, DLSS, frame generation", "G", Badges[4], delegate { ShowPage(1); }));
-            side.Controls.Add(Item("Shaders", "Shader compilation", "S", Badges[5], delegate { ShowPage(1); }));
-            side.Controls.Add(GroupLabel("Game"));
-            side.Controls.Add(Item("Set up", "Convert the game from your dump", "U", Badges[6], delegate { if (setup.Enabled) StartSetup(); }));
-            side.Controls.Add(Item("Open folder", "The ryGT7 folder in Explorer", "F", Badges[7], OpenFolder));
-
-            foreach (var column in new[] { settingsPage, controlsPage, side }) Stack(column);
-            ShowPage(0);
-            Dark.Apply(this);
-            if (glass)
+            var folders = Section(aboutPage, "Folders");
+            folders.Controls.Add(OpenRow("The ryGT7 folder", OpenFolder, "Open folder"));
+            folders.Controls.Add(OpenRow("Logs (stdout.log, stderr.log, setup.log)", delegate { OpenSubfolder("logs"); }, "Open log folder"));
+            folders.Controls.Add(OpenRow("Shaders", delegate { OpenSubfolder("shaders"); }, "Open folder"));
+            var logging = Section(aboutPage, "Logging");
+            var logLevel = new DarkComboBox { Width = 200, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat };
+            logLevel.Items.AddRange(LogFiles.Levels);
+            logLevel.SelectedIndex = LogFiles.LevelIndex(settings.StdoutLevel);
+            logLevel.SelectedIndexChanged += delegate
             {
-                Dark.SeeThrough(this);
-                // A track bar cannot be see-through: about the color of its card over the picture.
-                foreach (var bar in Controls.Find("triggerStrength", true)) bar.BackColor = Color.FromArgb(30, 26, 26);
-            }
-            log.BackColor = Dark.Card;
-            log.ForeColor = Color.FromArgb(190, 190, 190);
+                if (logLevel.SelectedIndex < 0) return;
+                settings.StdoutLevel = LogFiles.Levels[logLevel.SelectedIndex];
+                try { settings.Save(); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the logging level: " + e.Message); }
+            };
+            logging.Controls.Add(new SettingRow("stdout.log minimum level", logLevel));
+            logging.Controls.Add(Hint("The selected level and below, from the next launch. Previous logs are kept with a timestamp."));
+
+            // The setting helpers build label + drop-down rows; they become full-width rows here.
+            Rowify(pagesHost);
+            Dark.Apply(this);
+            Dark.SeeThrough(home);
+            log.BackColor = Dark.Field;
+            log.ForeColor = Color.FromArgb(180, 186, 196);
             HandleCreated += delegate { Dark.TitleBar(this); };
-            Shown += delegate { ActiveControl = play.Enabled ? (Control)play : setup; };
+            Shown += delegate { ActiveControl = play.Enabled ? (Control)play : gear; };
             RefreshState();
             var stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             stateTimer.Tick += delegate { if (!busy) RefreshState(); };
             stateTimer.Start();
             FormClosed += delegate { stateTimer.Dispose(); };
+            StartSlideshow();
         }
 
-        // The side list's badge colors.
-        static readonly Color[] Badges =
+        /// Shows the home view (the picture, Play).
+        public void ShowHome()
         {
-            Color.FromArgb(232, 140, 48), Color.FromArgb(214, 84, 132), Color.FromArgb(70, 176, 120), Color.FromArgb(82, 128, 226),
-            Color.FromArgb(140, 104, 222), Color.FromArgb(40, 160, 170), Color.FromArgb(178, 24, 36), Color.FromArgb(110, 110, 118)
-        };
+            settingsView.Visible = false;
+            home.Visible = true;
+            home.Invalidate(true);
+        }
 
-        /// Shows Home (0), Settings (1) or Controls (2), and marks its tab.
+        /// Shows the settings at one of their pages (Game, Display, Graphics, Shaders, Controls, About).
+        public void ShowSettings(string page)
+        {
+            if (!pages.ContainsKey(page)) page = "Game";
+            lastPage = page;
+            foreach (var pair in pages) pair.Value.Visible = pair.Key == page;
+            foreach (var pair in pageItems) pair.Value.Active = pair.Key == page;
+            home.Visible = false;
+            settingsView.Visible = true;
+        }
+
+        /// For --snapshot: 0 home, 1 the settings (Display), 2 the controls.
         public void ShowPage(int index)
         {
-            for (int i = 0; i < pages.Length; ++i)
+            if (index == 0) ShowHome();
+            else ShowSettings(index == 2 ? "Controls" : "Display");
+        }
+
+        /// A settings page: a scrolling column with its title and the line under it.
+        TableLayoutPanel NewPage(string name, string title, string subtitle)
+        {
+            var page = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Dark.Panel, Visible = false, Padding = new Padding(46, 34, 46, 30) };
+            var content = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = new Padding(0) };
+            content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            content.Controls.Add(new Label { Text = title, AutoSize = true, Font = new Font("Segoe UI Light", 22f), Margin = new Padding(0, 0, 0, 2) });
+            content.Controls.Add(new Label { Text = subtitle, AutoSize = true, MaximumSize = new Size(900, 0), ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(2, 0, 0, 10) });
+            page.Controls.Add(content);
+            pagesHost.Controls.Add(page);
+            pages[name] = page;
+            return content;
+        }
+
+        /// A group of settings under a small spaced capital heading with a line under it.
+        TableLayoutPanel Section(TableLayoutPanel parent, string heading)
+        {
+            var panel = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 22, 0, 0) };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            var label = new Label
             {
-                pages[i].Visible = i == index;
-                tabs[i].Tag = i == index ? "nav-on" : "nav";
-                tabs[i].Invalidate();
+                Text = Dark.Spaced(heading.ToUpperInvariant()), AutoSize = false, Dock = DockStyle.Fill, Height = 26, Font = Dark.Caps(8.5f),
+                ForeColor = Dark.Heading, Tag = "heading", Margin = new Padding(0), TextAlign = ContentAlignment.TopLeft
+            };
+            label.Paint += (sender, e) => { using (var line = new Pen(Dark.Line)) e.Graphics.DrawLine(line, 0, label.Height - 1, label.Width, label.Height - 1); };
+            panel.Controls.Add(label);
+            parent.Controls.Add(panel);
+            return panel;
+        }
+
+        static Label Hint(string text)
+        {
+            return new Label { Text = text, AutoSize = true, MaximumSize = new Size(860, 0), ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(0, 8, 0, 0) };
+        }
+
+        /// A row with a button that opens a window or a folder.
+        static SettingRow OpenRow(string text, Action action, string button = "Open")
+        {
+            var open = new Button { Text = button, AutoSize = true };
+            open.Click += delegate { action(); };
+            return new SettingRow(text, open);
+        }
+
+        /// The label + drop-down rows the setting helpers build (in FlowLayoutPanels) become
+        /// SettingRows, in the same place.
+        static void Rowify(Control root)
+        {
+            foreach (var child in root.Controls.Cast<Control>().ToList())
+            {
+                var flow = child as FlowLayoutPanel;
+                if (flow != null && flow.Controls.Count == 2 && flow.Controls[0] is Label && flow.Controls[1] is ListControl)
+                {
+                    var text = flow.Controls[0].Text;
+                    var control = flow.Controls[1];
+                    control.Width = Math.Max(control.Width, 230);
+                    int index = root.Controls.GetChildIndex(flow);
+                    flow.Controls.Clear();
+                    root.Controls.Remove(flow);
+                    var row = new SettingRow(text, control);
+                    root.Controls.Add(row);
+                    root.Controls.SetChildIndex(row, index);
+                    continue;
+                }
+                Rowify(child);
             }
+        }
+
+        void OpenSubfolder(string name)
+        {
+            string path = Path.Combine(root, name);
+            try { Directory.CreateDirectory(path); } catch { }
+            Process.Start("explorer.exe", "\"" + path + "\"");
         }
 
         void OpenPorts()
@@ -1493,119 +1643,153 @@ namespace RyGT
             Process.Start("explorer.exe", "\"" + root + "\"");
         }
 
-        readonly Image background;
-        Bitmap backdropRaw, backdropDim;
+        // ---- The pictures behind the home view
 
-        /// The launcher picture covering the window (anchored right and near the top: its subject is
-        /// on the right and its faces in its upper part), plain and darkened.
+        readonly List<Image> pictures;
+        readonly Dictionary<int, Bitmap> scaled = new Dictionary<int, Bitmap>();
+        Size scaledFor;
+        int picture, nextPicture = -1;
+        float fade;
+        System.Windows.Forms.Timer slideshow, fader;
+
+        List<Image> LoadBackgrounds()
+        {
+            var found = new List<Image>();
+            string folder = Path.Combine(root, "launcher");
+            try
+            {
+                if (Directory.Exists(folder))
+                {
+                    var paths = Directory.GetFiles(folder, "background*.*")
+                        .Where(p => p.EndsWith(".png", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+                        .Where(p => !Path.GetFileNameWithoutExtension(p).EndsWith(".bak", StringComparison.OrdinalIgnoreCase) &&
+                                    Path.GetFileName(p).IndexOf("bak", StringComparison.OrdinalIgnoreCase) < 0)
+                        .OrderBy(p => p, StringComparer.OrdinalIgnoreCase);
+                    foreach (var path in paths)
+                    {
+                        try { found.Add(Image.FromStream(new MemoryStream(File.ReadAllBytes(path)))); } catch { }
+                    }
+                }
+            }
+            catch { }
+            if (found.Count == 0)
+            {
+                foreach (var path in new[] { Path.Combine(root, "app0", "sce_sys", "pic1.png"), Path.Combine(settings.Game, "sce_sys", "pic1.png") })
+                {
+                    try { if (File.Exists(path)) { found.Add(Image.FromStream(new MemoryStream(File.ReadAllBytes(path)))); break; } }
+                    catch { }
+                }
+            }
+            return found;
+        }
+
+        /// With several pictures, the next one fades in every 10 seconds.
+        void StartSlideshow()
+        {
+            if (pictures.Count < 2) return;
+            fader = new System.Windows.Forms.Timer { Interval = 33 };
+            fader.Tick += delegate
+            {
+                fade += 0.04f;
+                if (fade >= 1)
+                {
+                    picture = nextPicture;
+                    nextPicture = -1;
+                    fade = 0;
+                    fader.Stop();
+                }
+                if (home.Visible) { Invalidate(false); home.Invalidate(true); }
+            };
+            slideshow = new System.Windows.Forms.Timer { Interval = 10000 };
+            slideshow.Tick += delegate
+            {
+                if (!home.Visible || fader.Enabled) return;
+                nextPicture = (picture + 1) % pictures.Count;
+                fade = 0;
+                fader.Start();
+            };
+            slideshow.Start();
+        }
+
+        /// One picture covering the window (anchored right and near the top: their subject is on the
+        /// right and the faces in the upper part), darkened toward the bottom left for the title.
+        Bitmap Scaled(int index, Size client)
+        {
+            if (scaledFor != client)
+            {
+                foreach (var bitmap in scaled.Values) bitmap.Dispose();
+                scaled.Clear();
+                scaledFor = client;
+            }
+            Bitmap cached;
+            if (scaled.TryGetValue(index, out cached)) return cached;
+            var image = pictures[index];
+            cached = new Bitmap(client.Width, client.Height);
+            using (var g = Graphics.FromImage(cached))
+            {
+                float scale = Math.Max(client.Width / (float)image.Width, client.Height / (float)image.Height);
+                int width = (int)Math.Ceiling(image.Width * scale), height = (int)Math.Ceiling(image.Height * scale);
+                g.Clear(Dark.Back);
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(image, client.Width - width, (client.Height - height) / 12, width, height);
+                var r = new Rectangle(Point.Empty, client);
+                using (var dim = new SolidBrush(Color.FromArgb(40, 6, 7, 9))) g.FillRectangle(dim, r);
+                using (var left = new LinearGradientBrush(r, Color.FromArgb(215, 8, 9, 12), Color.FromArgb(0, 8, 9, 12), 0f))
+                {
+                    left.Blend = new Blend { Factors = new[] { 0f, 0.35f, 1f, 1f }, Positions = new[] { 0f, 0.3f, 0.65f, 1f } };
+                    g.FillRectangle(left, r);
+                }
+                using (var bottom = new LinearGradientBrush(r, Color.FromArgb(0, 8, 9, 12), Color.FromArgb(225, 8, 9, 12), 90f))
+                {
+                    bottom.Blend = new Blend { Factors = new[] { 0f, 0f, 1f }, Positions = new[] { 0f, 0.45f, 1f } };
+                    g.FillRectangle(bottom, r);
+                }
+            }
+            scaled[index] = cached;
+            return cached;
+        }
+
         public bool DrawBackdrop(Control control, Graphics g, bool raw)
         {
-            if (background == null) return false;
+            if (pictures.Count == 0) return false;
             var client = ClientSize;
             if (client.Width <= 0 || client.Height <= 0) return false;
-            if (backdropRaw == null || backdropRaw.Size != client)
-            {
-                if (backdropRaw != null) { backdropRaw.Dispose(); backdropDim.Dispose(); }
-                backdropRaw = new Bitmap(client.Width, client.Height);
-                using (var bg = Graphics.FromImage(backdropRaw))
-                {
-                    float scale = Math.Max(client.Width / (float)background.Width, client.Height / (float)background.Height);
-                    int width = (int)Math.Ceiling(background.Width * scale), height = (int)Math.Ceiling(background.Height * scale);
-                    bg.Clear(Dark.Back);
-                    bg.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    bg.DrawImage(background, client.Width - width, (client.Height - height) / 12, width, height);
-                }
-                backdropDim = new Bitmap(backdropRaw);
-                using (var bg = Graphics.FromImage(backdropDim))
-                using (var dim = new SolidBrush(Color.FromArgb(120, 8, 8, 8)))
-                    bg.FillRectangle(dim, 0, 0, client.Width, client.Height);
-            }
             var offset = control == this ? Point.Empty : PointToClient(control.PointToScreen(Point.Empty));
-            g.DrawImageUnscaled(raw ? backdropRaw : backdropDim, -offset.X, -offset.Y);
+            g.DrawImageUnscaled(Scaled(picture, client), -offset.X, -offset.Y);
+            if (nextPicture >= 0 && fade > 0)
+            {
+                using (var attributes = new System.Drawing.Imaging.ImageAttributes())
+                {
+                    attributes.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = fade });
+                    var next = Scaled(nextPicture, client);
+                    g.DrawImage(next, new Rectangle(-offset.X, -offset.Y, next.Width, next.Height), 0, 0, next.Width, next.Height,
+                                GraphicsUnit.Pixel, attributes);
+                }
+            }
             return true;
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
         {
-            if (!DrawBackdrop(this, e.Graphics, false)) base.OnPaintBackground(e);
-        }
-
-        Image LoadBackground()
-        {
-            foreach (var path in new[] { Path.Combine(root, "launcher", "background.png"), Path.Combine(root, "launcher", "background.jpg"),
-                Path.Combine(root, "app0", "sce_sys", "pic1.png"), Path.Combine(settings.Game, "sce_sys", "pic1.png") })
+            if (!DrawBackdrop(this, e.Graphics, false))
             {
-                try { if (File.Exists(path)) return Image.FromStream(new MemoryStream(File.ReadAllBytes(path))); }
-                catch { }
+                // No picture: a dark gradient.
+                using (var glow = new LinearGradientBrush(ClientRectangle, Color.FromArgb(14, 15, 19), Color.FromArgb(52, 14, 20), 0f))
+                    e.Graphics.FillRectangle(glow, ClientRectangle);
             }
-            return null;
         }
 
-        /// A titled group on a rounded card.
-        TableLayoutPanel Section(TableLayoutPanel parent, string heading)
+        /// A file setting: its name, the folder in a field, and a Browse button.
+        TextBox AddRow(TableLayoutPanel section, string label, string value)
         {
-            return Section(parent, heading, background != null ? Color.FromArgb(200, 32, 32, 32) : Dark.Card);
-        }
-
-        TableLayoutPanel Section(TableLayoutPanel parent, string heading, Color fill)
-        {
-            var panel = new Card(fill)
-            {
-                AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 14), Margin = new Padding(0, 0, 0, 14)
-            };
-            panel.Controls.Add(new Label
-            {
-                Text = heading, AutoSize = true, Font = new Font("Segoe UI Semibold", 11f), Margin = new Padding(0, 0, 0, 8)
-            });
-            parent.Controls.Add(panel);
-            return panel;
-        }
-
-        /// A page's large title and the grey line under it.
-        static Control PageTitle(string title, string subtitle)
-        {
-            var panel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0, 0, 0, 12) };
-            panel.Controls.Add(new Label { Text = title, AutoSize = true, Font = new Font("Segoe UI Semibold", 18f), Margin = new Padding(0, 0, 0, 2) });
-            panel.Controls.Add(new Label { Text = subtitle, AutoSize = true, MaximumSize = new Size(820, 0), ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(2, 0, 0, 0) });
-            return panel;
-        }
-
-        /// Rows as tall as their controls, with the space left over below the last one.
-        static void Stack(TableLayoutPanel table)
-        {
-            int rows = 0;
-            foreach (Control control in table.Controls) rows = Math.Max(rows, table.GetPositionFromControl(control).Row + 1);
-            table.RowStyles.Clear();
-            table.RowCount = rows + 1;
-            for (int i = 0; i < rows; ++i) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        }
-
-        static Label GroupLabel(string text)
-        {
-            return new Label
-            {
-                Text = text.ToUpperInvariant(), AutoSize = true, ForeColor = Dark.Heading, Tag = "heading",
-                Font = new Font("Segoe UI Semibold", 8f), Margin = new Padding(6, 10, 0, 4)
-            };
-        }
-
-        static ListItem Item(string title, string subtitle, string letter, Color badge, Action action)
-        {
-            var item = new ListItem { Text = title, Subtitle = subtitle, Letter = letter, Badge = badge, Dock = DockStyle.Fill, Margin = new Padding(0, 1, 0, 1) };
-            item.Click += delegate { action(); };
-            return item;
-        }
-
-        TextBox AddRow(TableLayoutPanel table, int row, string label, string value)
-        {
-            table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(0, 4, 16, 4) }, 0, row);
-            // A borderless text box on a rounded field.
-            var field = new Card(Dark.Field) { AutoSize = true, Dock = DockStyle.Fill, Radius = 8, Edge = Color.Empty, Padding = new Padding(10, 7, 10, 6), Margin = new Padding(0, 4, 8, 4) };
+            var inner = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Margin = new Padding(0) };
+            inner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            inner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            var field = new Card(Dark.Field) { AutoSize = false, Size = new Size(520, 30), Radius = 3, Edge = Color.Empty, Padding = new Padding(10, 7, 10, 4), Margin = new Padding(0, 0, 8, 0) };
             var box = new TextBox { Text = value, Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, Margin = new Padding(0) };
             field.Controls.Add(box);
-            table.Controls.Add(field, 1, row);
-            var browse = new Button { Text = "Browse...", AutoSize = true, Margin = new Padding(0, 4, 0, 4) };
+            inner.Controls.Add(field, 0, 0);
+            var browse = new Button { Text = "Browse", AutoSize = true, Margin = new Padding(0) };
             browse.Click += delegate
             {
                 using (var dialog = new FolderBrowserDialog { Description = label, SelectedPath = box.Text })
@@ -1613,7 +1797,8 @@ namespace RyGT
                     if (dialog.ShowDialog(this) == DialogResult.OK) box.Text = dialog.SelectedPath;
                 }
             };
-            table.Controls.Add(browse, 2, row);
+            inner.Controls.Add(browse, 1, 0);
+            section.Controls.Add(new SettingRow(label, inner));
             return box;
         }
 
@@ -1922,7 +2107,7 @@ namespace RyGT
 
         CheckBox AddOption(TableLayoutPanel panel, string text, string sectionName, string key, bool fallback)
         {
-            var box = new DarkCheckBox { Text = text, AutoSize = true, Checked = ReadSetting(sectionName, key, fallback), Margin = new Padding(0, 2, 0, 2) };
+            var box = new ToggleRow { Text = text, Checked = ReadSetting(sectionName, key, fallback) };
             box.CheckedChanged += delegate
             {
                 try { WriteSetting(sectionName, key, box.Checked); }
@@ -2021,7 +2206,7 @@ namespace RyGT
             play.Enabled = ready && !busy && !running;
             setup.Enabled = !busy && !running;
             addDlss.Enabled = !busy && !running;
-            if (!busy) status.Text = ready ? "Ready. Press Play." : "Not set up yet. Pick the folders and press Set up.";
+            if (!busy) status.Text = ready ? "Ready. Press Play." : "Not set up yet: open the settings (the gear), pick your game's folders and press Set up.";
             if (running) status.Text = "GT7 is running. Close the game before running Set up.";
         }
 
@@ -2700,23 +2885,29 @@ namespace RyGT
             if ((args.Length == 2 || args.Length == 3) && args[0] == "--snapshot")
             {
                 // Renders the window's contents to a PNG (for checking the layout); a third argument
-                // picks the page: home, settings or controls.
+                // picks the view: home, settings or controls, or a settings page (game, display,
+                // graphics, shaders, about).
                 using (var form = new LoaderForm())
                 {
                     form.StartPosition = FormStartPosition.Manual;
                     form.Location = new Point(-4000, -4000);
                     form.ShowInTaskbar = false;
                     form.Show();
-                    if (args.Length == 3) form.ShowPage(Math.Max(0, Array.IndexOf(new[] { "home", "settings", "controls" }, args[2])));
+                    if (args.Length == 3)
+                    {
+                        int known = Array.IndexOf(new[] { "home", "settings", "controls" }, args[2]);
+                        if (known >= 0) form.ShowPage(known);
+                        else form.ShowSettings(char.ToUpperInvariant(args[2][0]) + args[2].Substring(1)); // game, graphics, shaders, about
+                    }
                     Application.DoEvents();
                     // The client area only: each part of the window drawn where it sits.
                     using (var image = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
                     {
-                        using (var g = Graphics.FromImage(image)) g.Clear(Dark.Back);
+                        using (var g = Graphics.FromImage(image)) { g.Clear(Dark.Back); form.DrawBackdrop(form, g, false); }
                         for (int i = form.Controls.Count - 1; i >= 0; --i)
                         {
                             var part = form.Controls[i];
-                            part.DrawToBitmap(image, part.Bounds);
+                            if (part.Visible) part.DrawToBitmap(image, part.Bounds);
                         }
                         image.Save(args[1], System.Drawing.Imaging.ImageFormat.Png);
                     }
