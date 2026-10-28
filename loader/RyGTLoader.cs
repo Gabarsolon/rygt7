@@ -1482,6 +1482,7 @@ namespace RyGT
         // Home: the picture over the whole window with the title, Play and the settings button.
         // Settings: a sidebar of categories and their pages.
         readonly HomeView home;
+        ControlsPage controls;
         readonly Panel settingsView, pagesHost;
         readonly Curtain curtain;
         readonly Dictionary<string, Panel> pages = new Dictionary<string, Panel>();
@@ -1829,30 +1830,13 @@ namespace RyGT
             };
 
 
-            // ---- Controls: which controller is which player (splitscreen) with a live preview, the
-            // controller and keyboard bindings, and racing wheels and pedals (ryty-input.ini /
-            // ryty-wheel.ini, read by libScePad).
-            var controlsPage = NewPage("Controls", "Controls",
-                "Pick your controller, player name, and what each button does. " +
-                "In game, F3 or holding Share + Options (View + Menu) changes controllers.");
-            var controllers = Section(controlsPage, "Controllers and wheels");
-            controllers.Controls.Add(OpenRow("Controller ports: who plays as which player, with a live preview", OpenPorts));
-            controllers.Controls.Add(OpenRow("Button bindings: what each PS4 button is on your controller and keyboard", OpenBindings));
-            controllers.Controls.Add(OpenRow("Steering wheel: your wheel and pedals, force feedback strength and feel", OpenWheel));
-            var feedback = Section(controlsPage, "Feedback");
-            var triggerStrength = new Slider
-            {
-                Name = "triggerStrength", Minimum = 0, Maximum = 200, TickFrequency = 25, SmallChange = 5, LargeChange = 25,
-                Size = new Size(300, 28), Suffix = "%", AccessibleName = "Trigger feedback strength"
-            };
-            triggerStrength.Value = Math.Max(0, Math.Min(200, ReadIntSetting("Input", "trigger_strength", 100)));
-            triggerStrength.ValueChanged += delegate
-            {
-                try { WriteSetting("Input", "trigger_strength", triggerStrength.Value); }
-                catch (Exception e) { MessageBox.Show(this, "Could not save trigger strength: " + e.Message); }
-            };
-            feedback.Controls.Add(new SettingRow("Trigger strength", triggerStrength));
-            feedback.Controls.Add(Hint("0% off, 100% standard, 200% boosted. Updates while playing."));
+            // ---- Controls: the controller, keyboard and wheel, drawn (ControlsPage); the controller
+            // ports open from it. It saves as you change things.
+            var controlsHost = new Panel { Dock = DockStyle.Fill, BackColor = Dark.Panel, Visible = false, Padding = new Padding(46, 34, 46, 24) };
+            controls = new ControlsPage(root, ReadIntSetting, WriteSetting, OpenPorts) { Dock = DockStyle.Fill };
+            controlsHost.Controls.Add(controls);
+            pagesHost.Controls.Add(controlsHost);
+            pages["Controls"] = controlsHost;
 
             // ---- About: what ryGT is, its folders and logging
             var aboutPage = NewPage("About", "About", "ryGT7 for Windows " + (char)183 + " Gran Turismo 7 (CUSA24769)");
@@ -1912,6 +1896,12 @@ namespace RyGT
             foreach (var pair in pageItems) pair.Value.Active = pair.Key == page;
             if (settingsView.Visible) return;
             Fade(home, delegate { home.Visible = false; settingsView.Visible = true; }, settingsView, animate);
+        }
+
+        /// For --snapshot: the Controls page's tab (0 controller, 1 keyboard, 2 wheel).
+        public void ShowControlsTab(int index)
+        {
+            controls.ShowTab(index);
         }
 
         /// For --snapshot: 0 home, 1 the settings (Display), 2 the controls.
@@ -2063,20 +2053,6 @@ namespace RyGT
             {
                 form.ShowDialog(this);
             }
-        }
-
-        void OpenBindings()
-        {
-            using (var form = new ControlsForm(root, Math.Max(1, ReadIntSetting("Input", "keyboard_player", 1)),
-                                               player => WriteSetting("Input", "keyboard_player", player)))
-            {
-                form.ShowDialog(this);
-            }
-        }
-
-        void OpenWheel()
-        {
-            using (var form = new WheelForm(root)) form.ShowDialog(this);
         }
 
         void OpenFolder()
@@ -3231,7 +3207,7 @@ namespace RyGT
             {
                 // Renders the window's contents to a PNG (for checking the layout); a third argument
                 // picks the view: home, settings or controls, or a settings page (game, display,
-                // graphics, shaders, about).
+                // graphics, shaders, about), or the Controls page's keyboard or wheel tab.
                 using (var form = new LoaderForm())
                 {
                     form.StartPosition = FormStartPosition.Manual;
@@ -3241,7 +3217,9 @@ namespace RyGT
                     if (args.Length == 3)
                     {
                         int known = Array.IndexOf(new[] { "home", "settings", "controls" }, args[2]);
+                        int tab = Array.IndexOf(new[] { "keyboard", "wheel" }, args[2]);
                         if (known >= 0) form.ShowPage(known);
+                        else if (tab >= 0) { form.ShowPage(2); form.ShowControlsTab(tab + 1); }
                         else form.ShowSettings(char.ToUpperInvariant(args[2][0]) + args[2].Substring(1)); // game, graphics, shaders, about
                     }
                     Application.DoEvents();
@@ -3283,23 +3261,17 @@ namespace RyGT
                 }
                 return 0;
             }
-            if (args.Length == 2 && (args[0] == "--snapshot-ports" || args[0] == "--snapshot-bindings" || args[0] == "--snapshot-wheel"))
+            if (args.Length == 2 && args[0] == "--snapshot-ports")
             {
-                // The Controller ports, Button bindings or Steering wheel window as a PNG (nothing is saved).
-                string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-                using (Form form = args[0] == "--snapshot-ports"
-                           ? (Form)new PortsForm("", null, (ports, names) => { })
-                           : args[0] == "--snapshot-wheel"
-                               ? (Form)new WheelForm(root)
-                               : new ControlsForm(root, 1, player => { }))
+                // The Controller ports window as a PNG (nothing is saved).
+                using (Form form = new PortsForm("", null, (ports, names) => { }))
                 {
                     form.StartPosition = FormStartPosition.Manual;
                     form.Location = new Point(-4000, -4000);
                     form.ShowInTaskbar = false;
                     form.Show();
                     Application.DoEvents();
-                    // The wheel window shows live state from its probe; give it a moment to arrive.
-                    var settle = DateTime.Now.AddMilliseconds(args[0] == "--snapshot-wheel" ? 2000 : 200);
+                    var settle = DateTime.Now.AddMilliseconds(200);
                     while (DateTime.Now < settle) { Application.DoEvents(); Thread.Sleep(20); }
                     using (var image = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
                     {
