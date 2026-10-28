@@ -1197,6 +1197,35 @@ namespace RyGT
             fpsRow.Controls.Add(fpsLock);
             graphics.Controls.Add(fpsRow);
             fpsLock.SelectedIndex = ReadIntSetting("GPU", "race_fps_lock", 30) == 60 ? 1 : 0;
+            // Shader cache size (GPU.driver_cache_gb, GPU.driver_cache_unlimited; the game gets it as
+            // RYGT_DRIVER_CACHE_MAX_MB): the renderer's saved GPU shader cache, like NVIDIA's own
+            // setting. 0 turns it off; a bigger cache keeps more cars and tracks compiled, and is saved
+            // less often as it grows (each save copies it whole).
+            var cacheRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
+            cacheRow.Controls.Add(new Label { Text = "Shader cache size (GB, 0 = off)", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+            var cacheSize = new NumericUpDown { Minimum = 0, Maximum = 100, DecimalPlaces = 0, Increment = 1, Width = 70,
+                                                Value = Math.Max(0, Math.Min(100, ReadIntSetting("GPU", "driver_cache_gb", 5))) };
+            var cacheUnlimited = new DarkCheckBox { Text = "Unlimited", AutoSize = true, Checked = ReadSetting("GPU", "driver_cache_unlimited", false), Margin = new Padding(10, 4, 0, 0) };
+            cacheSize.Enabled = !cacheUnlimited.Checked;
+            cacheRow.Controls.Add(cacheSize);
+            cacheRow.Controls.Add(cacheUnlimited);
+            graphics.Controls.Add(cacheRow);
+            cacheSize.ValueChanged += delegate
+            {
+                try { WriteSetting("GPU", "driver_cache_gb", (int)cacheSize.Value); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            cacheUnlimited.CheckedChanged += delegate
+            {
+                cacheSize.Enabled = !cacheUnlimited.Checked;
+                try { WriteSetting("GPU", "driver_cache_unlimited", cacheUnlimited.Checked); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            // FIX-220: AMD GPUs only, off by default: shaders that read vertex values are interpolated
+            // through KHR barycentrics (GPU.amd_graphics_fix, the game gets it as
+            // RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC). It fixes some AMD rendering glitches but makes shader
+            // loading slower; other GPUs ignore it.
+            AddOption(graphics, "AMD graphics fix (AMD GPUs only; slower shader loading)", "GPU", "amd_graphics_fix", false);
             fpsLock.SelectedIndexChanged += delegate
             {
                 try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }
@@ -1939,6 +1968,31 @@ namespace RyGT
             return parsed as Dictionary<string, object> ?? new Dictionary<string, object>();
         }
 
+        /// A GPU section setting from the game's settings file, or null.
+        static object GpuSetting(string root, string key)
+        {
+            try
+            {
+                string path = Path.Combine(root, "user", "custom_configs", "CUSA03220.json");
+                var config = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                object found, value;
+                var gpu = config != null && config.TryGetValue("GPU", out found) ? found as Dictionary<string, object> : null;
+                if (gpu != null && gpu.TryGetValue(key, out value)) return value;
+            }
+            catch { }
+            return null;
+        }
+
+        /// The shader cache limit in MB for RYGT_DRIVER_CACHE_MAX_MB: -1 unlimited, 0 off, 5 GB unless set.
+        static long DriverCacheMaxMb(string root)
+        {
+            if (GpuSetting(root, "driver_cache_unlimited") is bool && (bool)GpuSetting(root, "driver_cache_unlimited")) return -1;
+            object gb = GpuSetting(root, "driver_cache_gb");
+            int size = gb is int ? Math.Max(0, Math.Min(100, (int)gb)) : 5;
+            return size * 1024L;
+        }
+
         /// GPU.race_fps_lock from the game's settings: the race frame rate, 30 unless 60 was chosen.
         static int RaceFpsLock(string root)
         {
@@ -2592,6 +2646,10 @@ namespace RyGT
                         // renderer region, the CPU saw stale data and culled the whole rear-view mirror.
                         start.EnvironmentVariables["RYGT_NATIVE_INPLACE_FROM"] = "e000000000";
                         start.EnvironmentVariables["SHADGT_FPS_LOCK"] = RaceFpsLock(root).ToString();
+                        // Shader cache size and the AMD graphics fix from the Graphics page.
+                        start.EnvironmentVariables["RYGT_DRIVER_CACHE_MAX_MB"] = DriverCacheMaxMb(root).ToString();
+                        start.EnvironmentVariables["RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC"] =
+                            GpuSetting(root, "amd_graphics_fix") is bool && (bool)GpuSetting(root, "amd_graphics_fix") ? "1" : "0";
                         // DLSS frame multiplier from the Graphics page (generated frames, 1-5).
                         start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
                         started = Process.Start(start);
