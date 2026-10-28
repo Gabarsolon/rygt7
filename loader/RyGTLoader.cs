@@ -1128,7 +1128,17 @@ namespace RyGT
             var titleName = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
             titleName.Controls.Add(new Label { Text = "GRAN TURISMO", AutoSize = true, Font = Dark.Caps(34f), BackColor = Color.Transparent, Margin = new Padding(0) });
             titleName.Controls.Add(new Label { Text = "7", AutoSize = true, Font = Dark.Caps(34f), ForeColor = Dark.AccentText, Tag = "heading", BackColor = Color.Transparent, Margin = new Padding(0) });
-            title.Controls.Add(titleName);
+            // The ryGT7 logo (launcher\logo.png) in place of the title, when it is there.
+            var logoImage = LoadLogo();
+            if (logoImage != null)
+            {
+                title.Controls.Add(new PictureBox
+                {
+                    Image = logoImage, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Transparent,
+                    Size = new Size(330, 330 * logoImage.Height / logoImage.Width), Margin = new Padding(0, 0, 0, 12)
+                });
+            }
+            else title.Controls.Add(titleName);
             title.Controls.Add(new Label
             {
                 Text = Dark.Spaced("CUSA24769   " + (char)183 + "   PS4   " + (char)183 + "   RYGT7 FOR WINDOWS"), AutoSize = true,
@@ -1171,11 +1181,22 @@ namespace RyGT
             back.MouseEnter += delegate { back.ForeColor = Dark.Text; };
             back.MouseLeave += delegate { back.ForeColor = Dark.DimText; };
             sidebar.Controls.Add(back);
-            var logo = new PictureBox { Size = new Size(34, 34), SizeMode = PictureBoxSizeMode.Zoom, Location = new Point(28, 78) };
-            try { logo.Image = new Icon(Icon, 48, 48).ToBitmap(); } catch { }
-            sidebar.Controls.Add(logo);
-            sidebar.Controls.Add(new Label { Text = "GRAN TURISMO", AutoSize = true, Font = Dark.Caps(12f), Location = new Point(70, 76) });
-            sidebar.Controls.Add(new Label { Text = "7", AutoSize = true, Font = Dark.Caps(12f), ForeColor = Dark.AccentText, Tag = "heading", Location = new Point(70, 95) });
+            if (logoImage != null)
+            {
+                sidebar.Controls.Add(new PictureBox
+                {
+                    Image = logoImage, SizeMode = PictureBoxSizeMode.Zoom, Location = new Point(26, 70),
+                    Size = new Size(150, 150 * logoImage.Height / logoImage.Width)
+                });
+            }
+            else
+            {
+                var logo = new PictureBox { Size = new Size(34, 34), SizeMode = PictureBoxSizeMode.Zoom, Location = new Point(28, 78) };
+                try { logo.Image = new Icon(Icon, 48, 48).ToBitmap(); } catch { }
+                sidebar.Controls.Add(logo);
+                sidebar.Controls.Add(new Label { Text = "GRAN TURISMO", AutoSize = true, Font = Dark.Caps(12f), Location = new Point(70, 76) });
+                sidebar.Controls.Add(new Label { Text = "7", AutoSize = true, Font = Dark.Caps(12f), ForeColor = Dark.AccentText, Tag = "heading", Location = new Point(70, 95) });
+            }
             var sideVersion = new Label { Text = "ryGT7 for Windows", AutoSize = true, ForeColor = Color.FromArgb(96, 102, 114), Tag = "heading" };
             sidebar.Controls.Add(sideVersion);
             sidebar.Layout += delegate { sideVersion.Location = new Point(28, sidebar.ClientSize.Height - sideVersion.Height - 24); };
@@ -1599,6 +1620,14 @@ namespace RyGT
                 }
                 Rowify(child);
             }
+        }
+
+        /// The ryGT7 logo, launcher\logo.png next to RyGT7.exe (null without it: the title is text).
+        Image LoadLogo()
+        {
+            string path = Path.Combine(root, "launcher", "logo.png");
+            try { return File.Exists(path) ? Image.FromStream(new MemoryStream(File.ReadAllBytes(path))) : null; }
+            catch { return null; }
         }
 
         void OpenSubfolder(string name)

@@ -148,6 +148,7 @@ def main():
     for n in ("CUSA24769.xml", "README.md", "Proper-Offline-Patch-README.txt"):
         package.put(REPO / "patches" / n, "patches\\" + n)
     package.put(REPO / "loader" / "launcher" / "background.png", "launcher\\background.png")
+    package.put(REPO / "loader" / "launcher" / "logo.png", "launcher\\logo.png")
     package.put(REPO / "loader" / "launcher" / "README.txt", "launcher\\README.txt")
     package.put(REPO / "LICENSE", "LICENSE")
     package.put(REPO / "LICENSE", "licenses\\RyGT7\\LICENSE")
