@@ -964,7 +964,7 @@ namespace RyGT
         readonly string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         readonly Settings settings;
         readonly TextBox game, update, modules, fonts, log;
-        readonly Button setup, play, addDlss;
+        readonly Button setup, play, addDlss, downloadDlss;
         readonly Label status;
         readonly Panel[] pages = new Panel[3];
         readonly Button[] tabs = new Button[3];
@@ -1164,11 +1164,13 @@ namespace RyGT
             rcas.Enabled = fsr.Checked;
             framegen.Enabled = fsr3Installed;
             fsr.CheckedChanged += delegate { fsr3.Enabled = fsr.Checked && fsr3Installed; rcas.Enabled = fsr.Checked; };
-            // NVIDIA (the dlss folder): DLSS upscaling through ryGT_dlss.dll and nvngx_dlss.dll, and
-            // DLSS frame generation through Streamline (sl.*.dll and nvngx_dlssg.dll; RTX 40 and
-            // newer, Windows' hardware-accelerated GPU scheduling on). One frame generation at a time.
-            // The release does not include NVIDIA's files: the player adds their own copies with the
-            // button below (NVIDIA's DLSS SDK and Streamline SDK, or another game's copies).
+            // NVIDIA (the dlss folder): DLSS upscaling through Streamline (sl.dlss.dll and
+            // nvngx_dlss.dll; any RTX card), or through a self-built ryGT_dlss.dll when Streamline's
+            // DLSS plugin is absent, and DLSS frame generation through Streamline (sl.dlss_g.dll and
+            // nvngx_dlssg.dll; RTX 40 and newer, Windows' hardware-accelerated GPU scheduling on). One
+            // frame generation at a time. The release does not include NVIDIA's files: the Download
+            // button fetches NVIDIA's signed files from NVIDIA's GitHub (DlssDownload.cs), or the
+            // player adds their own copies.
             string dlssDir = Path.Combine(root, "dlss");
             var dlss = AddOption(graphics, "", "GPU", "dlss_enabled", false);
             // DLSS's input is the game's own picture, at most 1920 x 1080 (#61).
@@ -1239,17 +1241,37 @@ namespace RyGT
                 mult.SelectedIndex = dlssg.Checked ? generated : 0;
                 multLoading = false;
             };
+            // Status of the NVIDIA files under the button: what is there, and what is missing.
+            var dlssStatus = new Label { AutoSize = true, MaximumSize = new Size(330, 0), BackColor = Color.Transparent,
+                                         ForeColor = Dark.DimText, Margin = new Padding(22, 0, 0, 6) };
             Action refreshDlss = delegate
             {
-                bool dlssInstalled = File.Exists(Path.Combine(dlssDir, "ryGT_dlss.dll")) &&
-                                     File.Exists(Path.Combine(dlssDir, "nvngx_dlss.dll"));
-                bool dlssgInstalled = File.Exists(Path.Combine(dlssDir, "sl.interposer.dll")) &&
-                                      File.Exists(Path.Combine(dlssDir, "nvngx_dlssg.dll"));
-                dlss.Text = dlssInstalled ? "Upscale with NVIDIA DLSS (RTX cards; instead of FSR)"
-                                          : "Upscale with NVIDIA DLSS (add the DLSS files first)";
+                Func<string, bool> has = name => File.Exists(Path.Combine(dlssDir, name));
+                bool upscaler = has("nvngx_dlss.dll");
+                bool streamline = has("sl.interposer.dll") && has("sl.common.dll");
+                bool slUpscale = streamline && has("sl.dlss.dll");
+                bool plugin = has("ryGT_dlss.dll");
+                bool dlssInstalled = upscaler && (slUpscale || plugin);
+                bool dlssgInstalled = streamline && has("sl.dlss_g.dll") && has("nvngx_dlssg.dll");
+                dlss.Text = dlssInstalled ? "Upscale with NVIDIA DLSS (RTX cards only; instead of FSR)"
+                                          : "Upscale with NVIDIA DLSS (download the DLSS files first)";
+                var missing = new List<string>();
+                if (!upscaler) missing.Add("nvngx_dlss.dll");
+                if (!streamline) missing.Add("Streamline");
+                else if (!slUpscale && !plugin) missing.Add("sl.dlss.dll");
+                if (streamline && !has("sl.dlss_g.dll")) missing.Add("sl.dlss_g.dll");
+                if (!has("nvngx_dlssg.dll")) missing.Add("nvngx_dlssg.dll");
+                dlssStatus.Text = !upscaler && !streamline && !has("nvngx_dlssg.dll")
+                    ? "NVIDIA files: not installed. The button downloads NVIDIA's own DLSS " + DlssDownload.DlssVersion +
+                      " and Streamline " + DlssDownload.StreamlineVersion + " files from NVIDIA's GitHub; each is checked " +
+                      "against a pinned SHA-256 hash and NVIDIA's signature. RTX cards only."
+                    : "NVIDIA files: " + (upscaler ? "DLSS " + FileVersion(Path.Combine(dlssDir, "nvngx_dlss.dll")) : "no DLSS") +
+                      ", " + (streamline ? "Streamline " + FileVersion(Path.Combine(dlssDir, "sl.interposer.dll")) : "no Streamline") +
+                      (dlssInstalled ? (slUpscale ? "; upscaling through Streamline" : "; upscaling through ryGT_dlss.dll") : "") +
+                      (missing.Count == 0 ? "." : ". Missing: " + string.Join(", ", missing) + " (use the Download button).");
                 dlss.Enabled = dlssInstalled;
                 dlssg.Text = dlssgInstalled ? "DLSS frame generation (RTX 40+)"
-                                            : "DLSS frame generation (add the DLSS files first)";
+                                            : "DLSS frame generation (download the DLSS files first)";
                 dlssg.Enabled = dlssgInstalled;
                 mult.Enabled = dlssgInstalled;
             };
@@ -1268,14 +1290,14 @@ namespace RyGT
                 }
                 using (var dialog = new FolderBrowserDialog
                 {
-                    Description = "Pick the folder with your NVIDIA DLSS files: nvngx_dlss.dll for upscaling; " +
-                                  "for frame generation also nvngx_dlssg.dll and Streamline's sl.*.dll and " +
+                    Description = "Pick the folder with your NVIDIA DLSS files: nvngx_dlss.dll and Streamline's " +
+                                  "sl.*.dll for upscaling; for frame generation also nvngx_dlssg.dll and " +
                                   "NvLowLatencyVk.dll (from NVIDIA's DLSS and Streamline SDKs)."
                 })
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     var names = new[] { "nvngx_dlss.dll", "nvngx_dlssg.dll", "sl.interposer.dll", "sl.common.dll",
-                                        "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "NvLowLatencyVk.dll" };
+                                        "sl.dlss.dll", "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "NvLowLatencyVk.dll" };
                     int copied = 0;
                     try
                     {
@@ -1302,6 +1324,57 @@ namespace RyGT
                         : "Copied " + copied + " DLSS file(s) into the dlss folder.");
                 }
             };
+            // Download NVIDIA DLSS: NVIDIA's DLSS and Streamline files from NVIDIA's GitHub, pinned
+            // versions checked by SHA-256 and NVIDIA's signature (DlssDownload.cs); no admin rights.
+            downloadDlss = new Button { Text = "Download NVIDIA DLSS (" + DlssDownload.DlssVersion + ")", AutoSize = true,
+                                        Margin = new Padding(22, 6, 0, 2) };
+            downloadDlss.Click += delegate
+            {
+                var games = Process.GetProcessesByName("GT7");
+                bool gameRunning = games.Length != 0;
+                foreach (var process in games) process.Dispose();
+                if (gameRunning)
+                {
+                    MessageBox.Show(this, "Close GT7 before downloading the DLSS files.");
+                    return;
+                }
+                if (MessageBox.Show(this,
+                        "Download NVIDIA DLSS " + DlssDownload.DlssVersion + " and Streamline " + DlssDownload.StreamlineVersion +
+                        " (about 70 MB) into the dlss folder?\n\n" +
+                        "From: NVIDIA's own GitHub repositories (github.com/NVIDIA/DLSS and github.com/NVIDIA-RTX/Streamline). " +
+                        "RyGT7 does not ship these files.\n\n" +
+                        "Checks: each file must match a pinned SHA-256 hash and carry NVIDIA Corporation's digital " +
+                        "signature, or it is not used.\n\n" +
+                        "Needs an NVIDIA RTX card (frame generation: RTX 40 or newer). The files are NVIDIA's, under " +
+                        "NVIDIA's licenses (see dlss\\" + DlssDownload.NoticeName + ").", "Download NVIDIA DLSS",
+                        MessageBoxButtons.OKCancel) != DialogResult.OK) return;
+                downloadDlss.Enabled = false;
+                addDlss.Enabled = false;
+                var worker = new Thread(() =>
+                {
+                    string message;
+                    try
+                    {
+                        int count = DlssDownload.Install(dlssDir, text => BeginInvoke((Action)(() => dlssStatus.Text = text)));
+                        message = count == 0 ? "The NVIDIA DLSS files were already up to date."
+                                             : "Downloaded and checked " + count + " NVIDIA DLSS file(s).";
+                    }
+                    catch (Exception e)
+                    {
+                        message = "Could not download the DLSS files: " + e.Message;
+                    }
+                    BeginInvoke((Action)(() =>
+                    {
+                        downloadDlss.Enabled = true;
+                        addDlss.Enabled = true;
+                        refreshDlss();
+                        MessageBox.Show(this, message);
+                    }));
+                }) { IsBackground = true };
+                worker.Start();
+            };
+            graphics.Controls.Add(downloadDlss);
+            graphics.Controls.Add(dlssStatus);
             graphics.Controls.Add(addDlss);
             // DLSS and FSR both upscale, so one at a time; DLSS runs in Performance mode (#61).
             fsr.CheckedChanged += delegate { if (fsr.Checked && dlss.Checked) dlss.Checked = false; };
@@ -2027,6 +2100,17 @@ namespace RyGT
             return 1;
         }
 
+        /// A DLL's file version ("310.9.16"), or "?" when it has none.
+        static string FileVersion(string path)
+        {
+            try
+            {
+                var info = FileVersionInfo.GetVersionInfo(path);
+                return info.FileMajorPart + "." + info.FileMinorPart + "." + info.FileBuildPart;
+            }
+            catch (Exception) { return "?"; }
+        }
+
         internal static void InstallDlssLibrary(string source, string directory)
         {
             if (!string.Equals(Path.GetFileName(source), "nvngx_dlss.dll", StringComparison.OrdinalIgnoreCase))
@@ -2075,6 +2159,7 @@ namespace RyGT
             play.Enabled = ready && !busy && !running;
             setup.Enabled = !busy && !running;
             addDlss.Enabled = !busy && !running;
+            downloadDlss.Enabled = !busy && !running;
             if (!busy) status.Text = ready ? "Ready. Press Play." : "Not set up yet. Pick the folders and press Set up.";
             if (running) status.Text = "GT7 is running. Close the game before running Set up.";
         }
