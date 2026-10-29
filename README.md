@@ -4,7 +4,8 @@ An experimental Windows porting runtime for **Gran Turismo 7 (PS4, CUSA24769)**,
 [ryGT](https://github.com/mlgprorektm8/RyGT) and [Ryty](https://github.com/aarvsn/Ryty).
 Rendering uses [shadGT7](https://gitlab.com/rygt-team/shadgt7), derived from shadGT/shadPS4.
 The converter prepares the player's executable locally; game code runs on the host CPU and graphics
-are translated to Vulkan.
+are translated to Vulkan. GT7's online servers can be replaced by one a player hosts on their own PC,
+so friends can sign in, open lobby rooms and race each other (see [Online play](#online-play)).
 
 ## Download and set up
 
@@ -31,8 +32,9 @@ drivers are required. Read [the launcher guide](loader/README.md) for the exact 
 Verified locally: clean-folder conversion and launch to the GT7 main menu, and racing at Deep Forest.
 The tested dump reports `APP_VER=01.00` in its metadata. Other updates and hardware are unverified;
 folder-selection support does not guarantee that every update converts or plays correctly.
-Crashes, rendering errors, and shader compilation stutter remain possible. Online functionality is
-not established by these tests.
+Crashes, rendering errors, and shader compilation stutter remain possible. Online play has been
+tested between two players (Australia and the UK, and with a player on Linux): see
+[Online play](#online-play) for what works.
 
 This first prerelease fixes crowd instances flickering black or jumping because GPU output ranges
 overlapped, and black streamed textures on Deep Forest's pit building. Validation included 512
@@ -52,6 +54,85 @@ The launcher retains display, FSR, optional DLSS, input bindings, controller por
 compilation, and logging controls. GT Sport-specific script preparation and graphics patches are
 removed from its interface. DLSS's separate plugin and NVIDIA files are not bundled; see
 [the optional plugin instructions](plugins/dlss/README.md). AMD FSR is available in the supplied renderer.
+
+## Online play
+
+GT7's own online servers are replaced by **RyGTServer** (GT7's online service: sign-in, profiles and
+lobby rooms) and **shadNet** (PSN sign-in), which one player hosts on their PC from the launcher.
+Everyone else joins with an invite code. Lobby races are peer to peer: every player's game connects
+straight to the others, as on a PS4.
+
+### What works
+
+- Signing in to GT7's online service with your own online ID (no PSN account).
+- The **Lobby**: creating rooms, finding other players' rooms, joining them, room chat, and racing.
+- Player names, Driver and Sportsmanship ratings in rooms.
+- The **World Circuits** event lists, news and other online menus (their files come from
+  Polyphony's public servers, which RyGTServer asks the first time GT7 needs them).
+
+Not yet: Sport mode, daily races, the Brand Central / Legend cars dealerships' online stock,
+friends lists and messages.
+
+### Host
+
+1. Open the launcher's **Online** page.
+2. Under **Host**, enter your online ID (3-16 letters, digits, `-` or `_`).
+3. Pick the address friends reach your PC at. For friends over the internet, press
+   **Find my internet address** and forward these ports on your router to your PC:
+
+   | Port | Protocol | For |
+   |---|---|---|
+   | 7890 | TCP | RyGTServer (sign-in, rooms) |
+   | 31313 | TCP | shadNet (PSN sign-in) |
+   | 31315 | TCP | shadNet web API (friends, blocks) |
+   | 3658 | TCP and UDP | the game itself (players connect here) |
+
+   Give your PC a fixed local address in the router (a DHCP reservation) so the forwarding keeps
+   pointing at it. If forwarding does nothing, your provider may share one public address between
+   customers (CGNAT); a VPN such as Tailscale or Radmin VPN works instead, and its address appears
+   in the same list.
+4. Press **Start hosting**. It starts `server\shadnet\shadnet.exe` and `server\RyGTServer.exe`,
+   makes your account, and shows an **invite code** (`RYGT-XXXXX-XXXXX-XXXXX-XXXXX`). Send it to
+   your friends. **New code** stops older codes working for anyone who has not joined yet.
+5. Press **Play online**, open the **Lobby** and create a room.
+
+### Join
+
+1. Open the launcher's **Online** page.
+2. Under **Join a friend**, enter your online ID and the host's invite code, and press **Join**.
+   It makes your account on the host's server and points GT7 at it.
+3. Forward **TCP and UDP 3658** on your own router to your PC too, so the other players' games
+   can reach yours.
+4. Press **Play online**, open the **Lobby** and pick the host's room.
+
+### Everyone
+
+- Press **Allow through firewall** once (Windows asks for administrator rights). It lets
+  `GT7.exe` and the server ports through Windows Firewall on every network type. Note that the
+  game is `GT7.exe`; `RyGT7.exe` is only the launcher.
+- **Play offline instead** goes back to playing offline; your online settings are kept.
+- **Linux (Wine / Proton):** online play itself works under Wine (tested); the launcher's Online page
+  under Wine is not tested yet. Also open port 3658 in your firewall if you run one (for example
+  `sudo ufw allow 3658`).
+- **Distance matters.** Everyone's game sends its car to everyone else's, so the round trip between
+  players decides how smooth other cars look. Close to each other (under about 100 ms) races feel
+  normal; GT7 itself rates above 200 ms as poor, and between far continents (Australia and the UK
+  is about 260 ms) other cars jump. Turning on ghosting in the room settings helps.
+
+### How it works
+
+| Part | What it does |
+|---|---|
+| `libSceNet`, `libSceSsl`, `libSceHttp` | send GT7's traffic for Polyphony's servers to RyGTServer, as plain HTTP |
+| shadNet + `libSceNpAuth` (patch 0062) | PSN sign-in, PSN web API, and the PSN calls shadNet lacks forwarded to RyGTServer |
+| RyGTServer (`server/`) | GT7's online service ("Vegas"): sign-in, profiles, rooms, PSN game sessions |
+| `libSceNpSessionSignaling` | players in a room find each other's addresses through RyGTServer |
+| `libSceNet` P2P transport | the games' direct connections, on UDP and TCP port 3658 |
+| `libSceRtc` | the race clock follows the host's, so every player's race timeline matches |
+
+The settings are in `RyGT.ini` (`online`, `online_id`, `online_server`, `game_log=1`), the shadNet
+account in `user\users.json` and the shadNet addresses in `user\custom_configs\CUSA03220.json`. See
+[the launcher guide](loader/README.md#online) and [the server README](server/README.md#gt7).
 
 ## Racing wheels, ultrawide and frame generation
 
@@ -159,13 +240,17 @@ Tips:
 - Busy race sections stay below 60 FPS. Profiling shows the game and the renderer take turns rather
   than overlap; fixing that needs changes deep in the renderer.
 - The known problems in the release notes still apply (occasional crashes, NVIDIA device loss,
-  replay shot glitches, no online features).
+  replay shot glitches). Online play's limits are under [Online play](#online-play).
 
 ## Source and builds
 
 - [Launcher and setup tests](loader): build with Windows' .NET Framework C# compiler.
 - [Runtime libraries and converter](core): build with CMake, Ninja, and MSYS2 UCRT64 GCC.
 - [GT7 compatibility stubs](runtime/gt7): source and definitions for the two supplemental libraries.
+- [RyGTServer](server): GT7's online service for online play; build with `server\build.cmd`
+  (Windows' .NET Framework C# compiler). It needs `libzstd.dll` (MSYS2 UCRT64's) next to it.
+- [PSN library for online play](renderer/shadGT-patches/0062-online-psn-shadnet-rygtserver.patch):
+  a shadGT patch, built with the renderer's `ryty_np` target.
 - [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, pinned in
   [build-support/renderer.json](build-support/renderer.json). Since 2026-10-27 the pin names
   rygt-team/shadgt7 `main` again: it now carries the wheel + ultrawide edition's renderer work (the
@@ -182,7 +267,8 @@ Join our server for more updates: https://discord.gg/8dz4U9Nd8d
 This repository preserves ryGT/Ryty's Git history and license notices. See [AUTHORS.md](AUTHORS.md)
 for upstream credits. RyGT7 changes build on the work of the ryGT, Ryty, shadGT, shadPS4, and third-party
 dependency contributors. The racing wheel bridge, ultrawide camera and HUD, P-core pinning, DLSS
-frame multiplier and fast flips are by dessierror (the wheel + ultrawide edition). GPL version 2
+frame multiplier and fast flips are by dessierror (the wheel + ultrawide edition), as is GT7 online
+play (RyGTServer's GT7 service, PSN session signaling, the launcher's Online page). GPL version 2
 applies to this project; individual files and dependencies retain their stated licenses.
 [LICENSE](LICENSE) and the release's `licenses` folder contain notices.
 
