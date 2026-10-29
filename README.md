@@ -118,19 +118,21 @@ built from an older renderer pin lacks the ultrawide HUD, DLSS frame multiplier 
 
 ### DLSS frame generation (NVIDIA RTX 40 / 50)
 
-The renderer can show generated frames between the game's own frames through NVIDIA DLSS Frame
-Generation: 2× on RTX 40 cards, up to 6× on RTX 50 cards. NVIDIA's files can't be shipped in this
-GPL release, so you add them yourself:
+The renderer can upscale with NVIDIA DLSS (any RTX card) and show generated frames between the
+game's own frames through NVIDIA DLSS Frame Generation: 2× on RTX 40 cards, up to 6× on RTX 50
+cards. NVIDIA's files can't be shipped in this GPL release, so the launcher fetches them:
 
-1. Download `streamline-sdk-v2.14.16.zip` from
-   [NVIDIA's Streamline releases](https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.16).
-   It must be this version or newer: older Streamline DLLs refuse to start.
-2. Extract it, open the launcher's **Graphics** page, press **Add DLSS files…** and pick the
-   extracted folder. The launcher finds and copies what it needs into a `dlss` folder next to
-   `GT7.exe`: `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`,
-   `sl.pcl.dll`, `nvngx_dlssg.dll` and `NvLowLatencyVk.dll` from `bin\x64`.
-3. Tick **DLSS frame generation** (it turns AMD's frame generation off) and choose the
-   **Frame multiplier**:
+1. On the launcher's **Graphics** page, press **Download NVIDIA DLSS** in the Upscaling section.
+   It downloads NVIDIA DLSS 310.9.16 and Streamline 2.14.16 (about 70 MB) from NVIDIA's own
+   GitHub repositories into a `dlss` folder next to `GT7.exe`, and uses a file only if it matches
+   a pinned SHA-256 hash and carries NVIDIA Corporation's signature (`dlss\NVIDIA-NOTICE.txt`
+   lists the files and NVIDIA's licenses). **Add from a folder…** takes your own copies instead.
+2. Upscaling: pick **NVIDIA DLSS** as the method and a **Quality**. The game always draws
+   1920×1080, so the quality sets the size DLSS scales to (Native 1×, Quality 1.5×, Balanced
+   1.72×, Performance 2×, Ultra Performance 3×), which is then fitted to the window; Auto scales
+   to the window size.
+3. Frame generation: pick **NVIDIA DLSS (RTX 40+)** (it replaces AMD's) and choose the
+   **Multiplier**:
 
    | Frame multiplier | Generated frames per game frame | Needs |
    |---|---|---|
@@ -159,7 +161,10 @@ Tips:
 - Busy race sections stay below 60 FPS. Profiling shows the game and the renderer take turns rather
   than overlap; fixing that needs changes deep in the renderer.
 - The known problems in the release notes still apply (occasional crashes, NVIDIA device loss,
-  replay shot glitches, no online features).
+  replay shot glitches, no online features). For a device loss report, launch once with the
+  environment variable `RYGT_DEVICE_FAULT=1` (in a command prompt: `set RYGT_DEVICE_FAULT=1`, then
+  start `RyGT7.exe` from it) and attach the log; its DIAG-243 lines show the driver's fault report
+  and the last draws.
 
 ## Source and builds
 
