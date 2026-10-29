@@ -1464,7 +1464,7 @@ namespace RyGT
         }
     }
 
-    class LoaderForm : Form, IBackdrop
+    partial class LoaderForm : Form, IBackdrop
     {
         static readonly string[] FirmwareModules = { "libSceFont", "libSceFontFt", "libSceFreeTypeOt", "libSceJson2", "libSceNgs2" };
         // Used when present: the JPEG decoder (Scapes thumbnails and backgrounds) and PNG encoder (photos).
@@ -1569,7 +1569,7 @@ namespace RyGT
             var sideVersion = new Label { Text = "ryGT7 for Windows", AutoSize = true, ForeColor = Color.FromArgb(96, 102, 114), Tag = "heading" };
             sidebar.Controls.Add(sideVersion);
             sidebar.Layout += delegate { sideVersion.Location = new Point(28, sidebar.ClientSize.Height - sideVersion.Height - 24); };
-            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "About" };
+            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Online", "About" };
             for (int i = 0; i < pageNames.Length; ++i)
             {
                 string page = pageNames[i];
@@ -1839,6 +1839,9 @@ namespace RyGT
             pages["Controls"] = controlsHost;
 
             // ---- About: what ryGT is, its folders and logging
+            // ---- Online: hosting, joining a friend (Online.cs)
+            BuildOnlinePage();
+
             var aboutPage = NewPage("About", "About", "ryGT7 for Windows " + (char)183 + " Gran Turismo 7 (CUSA24769)");
             aboutPage.Controls.Add(new Label
             {
@@ -3220,7 +3223,7 @@ namespace RyGT
                         int tab = Array.IndexOf(new[] { "keyboard", "wheel" }, args[2]);
                         if (known >= 0) form.ShowPage(known);
                         else if (tab >= 0) { form.ShowPage(2); form.ShowControlsTab(tab + 1); }
-                        else form.ShowSettings(char.ToUpperInvariant(args[2][0]) + args[2].Substring(1)); // game, graphics, shaders, about
+                        else form.ShowSettings(char.ToUpperInvariant(args[2][0]) + args[2].Substring(1), false); // game, graphics, shaders, online, about
                     }
                     Application.DoEvents();
                     // The client area only: each part of the window drawn where it sits.

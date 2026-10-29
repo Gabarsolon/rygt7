@@ -68,6 +68,24 @@ launcher folder. The log threshold is also mirrored to `RyGT.ini` for existing r
 The current renderer internally uses `user/custom_configs/CUSA03220.json` as its
 configuration alias; this is unrelated to the required game title ID.
 
+## Online
+
+The **Online** page hosts GT7's online service on this PC or joins a friend's (code in `Online.cs`).
+
+- **Host:** pick your online ID and the address friends reach you at, then **Start hosting**. It starts
+  `server\shadnet\shadnet.exe` (PSN sign-in) and `server\RyGTServer.exe` (GT7's online service and
+  rooms), makes your account, and shows an invite code (`RYGT-...`: your address, the server's port
+  and the invite token). For friends over the internet, press **Find my internet address** and forward
+  TCP 7890, 31313 and 31315 and TCP and UDP 3658 on your router to this PC.
+- **Join a friend:** your online ID and their invite code. It makes your account on their server and
+  points GT7 at it.
+- **Play online** sets `online=1` and starts the game; **Allow through firewall** adds Windows Firewall
+  rules for `GT7.exe` (players' games connect to each other on port 3658) and the server ports.
+
+The settings go into `RyGT.ini` (`online`, `online_id`, `online_server`, `online_address`,
+`game_log=1`, which also turns on the hook that signs GT7 in), `user\users.json` (player 1's shadNet
+account) and the shadNet addresses in the game's config. See [the server README](../server/README.md#gt7).
+
 ## Build and check
 
 Run `build.cmd <output-folder>` from a Windows command prompt. It builds `RyGT7.exe` using the

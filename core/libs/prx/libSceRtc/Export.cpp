@@ -1,10 +1,20 @@
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <limits>
+#include <mutex>
+#include <string>
+#include <thread>
 #include "SceTypes.hpp"
+#include "OnlineConfig.hpp"
 #include "prx/libc/include/General.hpp"
 
 namespace {
@@ -92,6 +102,159 @@ RtcDateTime fromTick(std::uint64_t tick) {
 std::uint64_t currentTick() {
     const auto now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     return UNIX_EPOCH_TICK + static_cast<std::uint64_t>(now);
+}
+
+// The PS4 network clock is NTP time, the same on every console, and GT Sport and GT7 time online
+// races by it. A PC's own clock can be seconds off, so with online play on the network clock
+// follows the host's RyGTServer (GET /rygt/time) instead, measured like NTP: of a few samples, the
+// one with the shortest round trip, taking the reply to have been made halfway through it.
+// Two players' race clocks must agree to a few milliseconds and never jump, so:
+//   - the clock runs on the performance counter from a UTC reading taken once (the PC's wall
+//     clock moves in timer steps and can be set while the game runs);
+//   - it is measured every 15 s, and a sample whose round trip is well above the best seen (a lag
+//     spike skews it) is not used;
+//   - a new measurement is eased in, the clock running at most 5% fast or slow until it agrees,
+//     so it never jumps or goes back; only the first measurement is taken at once.
+std::atomic<std::int64_t> targetOffset{0};
+std::atomic<bool> networkClockReady{false};
+std::atomic<bool> takeOffsetAtOnce{false};  // set by the first measurement
+
+#ifdef _WIN32
+// Microseconds of UTC since year 1, from the performance counter after one precise UTC reading.
+std::uint64_t steadyTick() {
+    static LARGE_INTEGER frequency, start;
+    static std::uint64_t startUtc = [] {
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&start);
+        FILETIME now;
+        GetSystemTimePreciseAsFileTime(&now);
+        const std::uint64_t fileTime = (static_cast<std::uint64_t>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+        return UNIX_EPOCH_TICK + (fileTime - 116444736000000000ULL) / 10;
+    }();
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    const std::uint64_t elapsed = static_cast<std::uint64_t>(counter.QuadPart - start.QuadPart);
+    const std::uint64_t ticks = static_cast<std::uint64_t>(frequency.QuadPart);
+    return startUtc + elapsed / ticks * 1000000 + elapsed % ticks * 1000000 / ticks;
+}
+
+bool sampleHostClock(const RyGTOnline::Config& config, std::int64_t& offset, std::int64_t& roundTrip) {
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* address = nullptr;
+    if (getaddrinfo(config.serverHost.c_str(), std::to_string(config.serverPort).c_str(), &hints, &address) != 0) return false;
+    bool sampled = false;
+    const SOCKET native = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (native != INVALID_SOCKET) {
+        const DWORD timeout = 3000;
+        const BOOL noDelay = TRUE;
+        setsockopt(native, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setsockopt(native, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setsockopt(native, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+        if (connect(native, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
+            const std::string request = "GET /rygt/time HTTP/1.1\r\nHost: " + config.serverHost + "\r\nConnection: close\r\n\r\n";
+            const std::uint64_t sent = steadyTick();
+            std::uint64_t answered = 0;
+            std::string response;
+            if (send(native, request.data(), static_cast<int>(request.size()), 0) == static_cast<int>(request.size())) {
+                char buffer[512];
+                int received;
+                while ((received = recv(native, buffer, sizeof(buffer), 0)) > 0) {
+                    if (answered == 0) answered = steadyTick();
+                    response.append(buffer, static_cast<std::size_t>(received));
+                }
+            }
+            const auto body = response.find("\r\n\r\n");
+            const long long host = body == std::string::npos ? 0 : std::atoll(response.c_str() + body + 4);
+            if (answered != 0 && response.compare(0, 13, "HTTP/1.1 200 ") == 0 && host > 0) {
+                roundTrip = static_cast<std::int64_t>(answered - sent);
+                offset = static_cast<std::int64_t>(UNIX_EPOCH_TICK + static_cast<std::uint64_t>(host))
+                    - static_cast<std::int64_t>(sent + static_cast<std::uint64_t>(roundTrip / 2));
+                sampled = true;
+            }
+        }
+        closesocket(native);
+    }
+    freeaddrinfo(address);
+    return sampled;
+}
+
+void followHostClock(RyGTOnline::Config config) {
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        networkClockReady = true;
+        return;
+    }
+    std::int64_t bestEverRoundTrip = std::numeric_limits<std::int64_t>::max();
+    bool everSynced = false;
+    for (;;) {
+        std::int64_t bestOffset = 0;
+        std::int64_t bestRoundTrip = std::numeric_limits<std::int64_t>::max();
+        for (int sample = 0; sample < 8; ++sample) {
+            std::int64_t offset = 0;
+            std::int64_t roundTrip = 0;
+            if (!sampleHostClock(config, offset, roundTrip)) break;
+            if (roundTrip < bestRoundTrip) {
+                bestOffset = offset;
+                bestRoundTrip = roundTrip;
+            }
+        }
+        const bool sampled = bestRoundTrip != std::numeric_limits<std::int64_t>::max();
+        if (sampled) {
+            // The best round trip seen ages slowly, so a route that got slower is followed.
+            if (bestEverRoundTrip != std::numeric_limits<std::int64_t>::max()) bestEverRoundTrip += bestEverRoundTrip / 20;
+            bestEverRoundTrip = (std::min)(bestEverRoundTrip, bestRoundTrip);
+            const bool clean = bestRoundTrip <= (std::max)(bestEverRoundTrip * 2, bestEverRoundTrip + 5000);
+            if (clean) {
+                const std::int64_t previous = targetOffset.exchange(bestOffset);
+                if (!everSynced) takeOffsetAtOnce = true;
+                if (!everSynced || std::llabs(bestOffset - previous) > 2000)
+                    std::fprintf(stderr, "[online] network clock: host is %+.1f ms from this PC (round trip %.1f ms)%s\n",
+                        bestOffset / 1000.0, bestRoundTrip / 1000.0, everSynced ? ", easing in" : "");
+                everSynced = true;
+            }
+        } else if (!everSynced) {
+            std::fprintf(stderr, "[online] network clock: RyGTServer at %s:%u did not answer; using this PC's clock\n",
+                config.serverHost.c_str(), static_cast<unsigned>(config.serverPort));
+        }
+        networkClockReady = true;
+        std::this_thread::sleep_for(std::chrono::seconds(everSynced ? 15 : 5));
+    }
+}
+#endif
+
+std::uint64_t currentNetworkTick() {
+#ifdef _WIN32
+    static const bool online = [] {
+        const RyGTOnline::Config& config = RyGTOnline::Get();
+        if (!config.enabled) return false;
+        steadyTick();
+        std::thread(followHostClock, config).detach();
+        // Give the first measurement a moment, so the game doesn't start on this PC's clock.
+        for (int waited = 0; waited < 150 && !networkClockReady; ++waited)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return true;
+    }();
+    if (online) {
+        static std::mutex mutex;
+        static std::int64_t applied = 0;
+        static std::uint64_t lastNow = 0;
+        const std::uint64_t now = steadyTick();
+        std::lock_guard lock(mutex);
+        const std::int64_t target = targetOffset.load();
+        if (takeOffsetAtOnce.exchange(false) || lastNow == 0) {
+            applied = target;
+        } else {
+            // Ease toward the measured offset: at most 5% of the time passed since the last read.
+            const std::int64_t step = static_cast<std::int64_t>((now - lastNow) / 20);
+            applied += (std::max)(-step, (std::min)(step, target - applied));
+        }
+        lastNow = now;
+        return now + static_cast<std::uint64_t>(applied);
+    }
+#endif
+    return currentTick();
 }
 
 std::int64_t localOffsetSeconds(std::uint64_t utcTick) {
@@ -195,7 +358,9 @@ int APS5_VABI sceRtcGetCurrentTick(RtcTick* tick) {
 }
 
 int APS5_VABI sceRtcGetCurrentNetworkTick(RtcTick* tick) {
-    return sceRtcGetCurrentTick(tick);
+    if (!tick) return SCE_RTC_ERROR_INVALID_POINTER;
+    tick->tick = currentNetworkTick();
+    return 0;
 }
 
 int APS5_VABI sceRtcGetCurrentClock(RtcDateTime* time, int time_zone_minutes) {

@@ -1,0 +1,1514 @@
+From fcf2dd2d4cacab520aab471699edeb1a550fb36f Mon Sep 17 00:00:00 2001
+From: WackyHcky <dessierror@gmail.com>
+Date: Thu, 29 Oct 2026 19:48:03 +1100
+Subject: [PATCH] Online: PSN for GT Sport and GT7 through shadNet and
+ RyGTServer
+
+The NP library (libSceNpAuth.prx, target ryty_np) for online play:
+- NpSignaling gets a P2P transport in RyGT's libSceNet and resolves peers
+  through RyGTServer (ryty_np_p2p.cpp); players register there.
+- The web API's HTTP/2 goes out through the game's libSceHttp; PSN calls
+  shadNet does not answer (communication restriction status, profanity
+  filter, game/player sessions, matches) go to RyGTServer as /rygt/psn/...
+  (online_server in RyGT.ini).
+- Web API user contexts initialize; push context IDs are real UUID
+  strings (games keep them as text); GetPushContext no longer leaves the
+  context locked when the ID is unknown; responses report their size.
+- sceNpGetAccountLanguage2; GT7's game log (game_log=1 in RyGT.ini).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ryty_gpu/RytyGpu.cmake                        |   4 +-
+ ryty_gpu/ryty_game_log.cpp                    | 224 ++++++++++
+ ryty_gpu/ryty_np_entry.cpp                    |  33 ++
+ ryty_gpu/ryty_np_p2p.cpp                      | 389 ++++++++++++++++++
+ ryty_gpu/ryty_np_p2p.h                        |  24 ++
+ ryty_gpu/ryty_np_shims.cpp                    | 219 ++++++----
+ src/core/libraries/np/np_handler.cpp          |   6 +
+ src/core/libraries/np/np_manager.cpp          |  31 ++
+ .../np/np_signaling/np_signaling.cpp          |  84 ++++
+ .../libraries/np/np_utility/np_utility.cpp    |  64 +--
+ src/core/libraries/np/np_utility/np_utility.h |  18 +-
+ .../libraries/np/np_web_api2/np_web_api2.cpp  |  21 +-
+ .../np/np_web_api2/np_web_api2_context.cpp    |   4 +-
+ .../np/np_web_api2/np_web_api2_internal.cpp   |   8 +
+ .../np/np_web_api2/np_web_api2_push_event.cpp |   3 +-
+ .../np/np_web_api2/np_web_api2_push_event.h   |  16 +-
+ 16 files changed, 1026 insertions(+), 122 deletions(-)
+ create mode 100644 ryty_gpu/ryty_game_log.cpp
+ create mode 100644 ryty_gpu/ryty_np_p2p.cpp
+ create mode 100644 ryty_gpu/ryty_np_p2p.h
+
+diff --git a/ryty_gpu/RytyGpu.cmake b/ryty_gpu/RytyGpu.cmake
+index 036ca538..efb9640f 100644
+--- a/ryty_gpu/RytyGpu.cmake
++++ b/ryty_gpu/RytyGpu.cmake
+@@ -222,11 +222,11 @@ foreach(source ${RYTY_NP_SOURCES})
+ endforeach()
+ ryty_add_library(ryty_np libSceNpAuth
+     EXPORT_SOURCES ${RYTY_NP_EXPORT_SOURCES}
+-    SOURCES ${RYTY_NP_SOURCES} ${SHADNET} ryty_gpu/ryty_np_entry.cpp ryty_gpu/ryty_np_shims.cpp
++    SOURCES ${RYTY_NP_SOURCES} ${SHADNET} ryty_gpu/ryty_np_entry.cpp ryty_gpu/ryty_np_shims.cpp ryty_gpu/ryty_np_p2p.cpp ryty_gpu/ryty_game_log.cpp
+             ryty_gpu/ryty_hle_stubs.cpp src/core/libraries/network/net_upnp.cpp
+             src/core/libraries/network/net_util.cpp
+ )
+-target_compile_definitions(ryty_np PRIVATE RYTY_GUEST_PTHREADS)
++target_compile_definitions(ryty_np PRIVATE RYTY_GUEST_PTHREADS RYTY_NP_LIBRARY)
+ target_link_libraries(ryty_np PRIVATE libprotobuf Cpp_Httplib minimp3 miniupnpc::miniupnpc ws2_32 iphlpapi)
+ target_include_directories(ryty_np PRIVATE "${SHADNET_PROTO_OUT}")
+ 
+diff --git a/ryty_gpu/ryty_game_log.cpp b/ryty_gpu/ryty_game_log.cpp
+new file mode 100644
+index 00000000..c0b7db64
+--- /dev/null
++++ b/ryty_gpu/ryty_game_log.cpp
+@@ -0,0 +1,224 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// GTS-009: GT Sport's own log. The game's native code logs through loggers whose output object is
++// a null sink in the release build: its write method (GTSport.exe vtable 0x2971f18, slot 0x20) is
++// a bare "ret" (RVA 0x1c62fc0). With RYGT_GAME_LOG=1 that slot points here instead, and every
++// message goes to gtsport_game.log next to GTSport.exe. The slot is only changed when it still
++// holds the original function (another game version or converter build is left alone).
++
++#include <windows.h>
++#include <cstdarg>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <string>
++
++#include "common/types.h"
++
++namespace {
++
++// The System V x86-64 va_list the game passes (a pointer to this).
++struct SysvVaList {
++    u32 gp_offset;
++    u32 fp_offset;
++    u8* overflow_arg_area;
++    u8* reg_save_area;
++};
++
++u64 NextInt(SysvVaList* list) {
++    u64 value;
++    if (list->gp_offset < 48) {
++        std::memcpy(&value, list->reg_save_area + list->gp_offset, 8);
++        list->gp_offset += 8;
++    } else {
++        std::memcpy(&value, list->overflow_arg_area, 8);
++        list->overflow_arg_area += 8;
++    }
++    return value;
++}
++
++double NextDouble(SysvVaList* list) {
++    double value;
++    if (list->fp_offset < 176) {
++        std::memcpy(&value, list->reg_save_area + list->fp_offset, 8);
++        list->fp_offset += 16;
++    } else {
++        std::memcpy(&value, list->overflow_arg_area, 8);
++        list->overflow_arg_area += 8;
++    }
++    return value;
++}
++
++bool Readable(const void* pointer) {
++    if (pointer == nullptr) {
++        return false;
++    }
++    MEMORY_BASIC_INFORMATION info{};
++    return VirtualQuery(pointer, &info, sizeof(info)) == sizeof(info) && info.State == MEM_COMMIT &&
++           (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0;
++}
++
++// printf with the arguments taken from a guest va_list: each conversion is formatted on its own by
++// the host's snprintf with the same flags, width, precision and type.
++std::string Format(const char* format, SysvVaList* list) {
++    std::string out;
++    if (!Readable(format)) {
++        return "<bad format>";
++    }
++    for (const char* p = format; *p;) {
++        if (*p != '%') {
++            out.push_back(*p++);
++            continue;
++        }
++        const char* start = p++;
++        if (*p == '%') {
++            out.push_back('%');
++            ++p;
++            continue;
++        }
++        std::string spec = "%";
++        while (*p && std::strchr("-+ #0", *p)) {
++            spec.push_back(*p++);
++        }
++        auto width = [&] {
++            if (*p == '*') {
++                spec += std::to_string(static_cast<int>(NextInt(list)));
++                ++p;
++            } else {
++                while (*p >= '0' && *p <= '9') {
++                    spec.push_back(*p++);
++                }
++            }
++        };
++        width();
++        if (*p == '.') {
++            spec.push_back(*p++);
++            width();
++        }
++        int longs = 0;
++        bool size_t_like = false, half = false;
++        while (*p && std::strchr("hlLqjzt", *p)) {
++            if (*p == 'l' || *p == 'q' || *p == 'L') {
++                ++longs;
++            } else if (*p == 'j' || *p == 'z' || *p == 't') {
++                size_t_like = true;
++            } else if (*p == 'h') {
++                half = true;
++            }
++            ++p;
++        }
++        const char conversion = *p ? *p++ : '\0';
++        char buffer[512];
++        switch (conversion) {
++        case 'd':
++        case 'i': {
++            const u64 raw = NextInt(list);
++            const long long value = (longs || size_t_like) ? static_cast<long long>(raw)
++                                                            : static_cast<long long>(static_cast<s32>(raw));
++            std::snprintf(buffer, sizeof(buffer), (spec + "lld").c_str(), half ? static_cast<long long>(static_cast<short>(value)) : value);
++            out += buffer;
++            break;
++        }
++        case 'u':
++        case 'x':
++        case 'X':
++        case 'o': {
++            const u64 raw = NextInt(list);
++            const unsigned long long value = (longs || size_t_like) ? raw : static_cast<u32>(raw);
++            std::snprintf(buffer, sizeof(buffer), (spec + "ll" + conversion).c_str(), value);
++            out += buffer;
++            break;
++        }
++        case 'c':
++            out.push_back(static_cast<char>(NextInt(list)));
++            break;
++        case 'p':
++            std::snprintf(buffer, sizeof(buffer), "%#llx", static_cast<unsigned long long>(NextInt(list)));
++            out += buffer;
++            break;
++        case 's': {
++            const auto* text = reinterpret_cast<const char*>(NextInt(list));
++            if (!Readable(text)) {
++                out += "(null)";
++                break;
++            }
++            std::snprintf(buffer, sizeof(buffer), (spec + "s").c_str(), text);
++            out += buffer;
++            break;
++        }
++        case 'f':
++        case 'F':
++        case 'e':
++        case 'E':
++        case 'g':
++        case 'G':
++        case 'a':
++        case 'A':
++            std::snprintf(buffer, sizeof(buffer), (spec + conversion).c_str(), NextDouble(list));
++            out += buffer;
++            break;
++        default:
++            out.append(start, p);
++            break;
++        }
++    }
++    return out;
++}
++
++std::mutex g_lock;
++std::FILE* g_file = nullptr;
++
++void PS4_SYSV_ABI WriteMessage(void* sink, const void* tags, const char* file, s32 line, s32 level,
++                               s32 flags, const char* format, SysvVaList* args) {
++    (void)sink;
++    (void)tags;
++    (void)flags;
++    const std::string message = Format(format, args);
++    const char* name = Readable(file) ? file : "?";
++    if (const char* slash = std::strrchr(name, '\\')) {
++        name = slash + 1;
++    }
++    std::scoped_lock lock{g_lock};
++    if (g_file != nullptr) {
++        std::fprintf(g_file, "[%2d] %s:%d %s\n", level, name, line, message.c_str());
++        std::fflush(g_file);
++    }
++}
++
++} // namespace
++
++namespace Ryty {
++
++void InstallGameLog() {
++    const char* enabled = std::getenv("RYGT_GAME_LOG");
++    if (enabled == nullptr || *enabled == '\0' || *enabled == '0') {
++        return;
++    }
++    auto* base = reinterpret_cast<u8*>(GetModuleHandleA(nullptr));
++    constexpr u64 VtableRva = 0x2971f18, WriteSlot = 0x20, NullWriteRva = 0x1c62fc0;
++    auto* slot = reinterpret_cast<void**>(base + VtableRva + WriteSlot);
++    if (!Readable(slot) || *slot != base + NullWriteRva) {
++        std::fprintf(stderr, "[patch] GTS-009 game log: the log sink is not the expected one, not applied\n");
++        return;
++    }
++    char path[MAX_PATH] = {};
++    GetModuleFileNameA(nullptr, path, MAX_PATH);
++    std::string log_path = path;
++    log_path = log_path.substr(0, log_path.find_last_of('\\') + 1) + "gtsport_game.log";
++    g_file = std::fopen(log_path.c_str(), "w");
++    if (g_file == nullptr) {
++        return;
++    }
++    DWORD old_protect = 0;
++    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old_protect)) {
++        return;
++    }
++    *slot = reinterpret_cast<void*>(&WriteMessage);
++    VirtualProtect(slot, sizeof(void*), old_protect, &old_protect);
++    std::fprintf(stderr, "[patch] GTS-009 game log -> %s\n", log_path.c_str());
++}
++
++} // namespace Ryty
+diff --git a/ryty_gpu/ryty_np_entry.cpp b/ryty_gpu/ryty_np_entry.cpp
+index 3e233af5..e667dbf4 100644
+--- a/ryty_gpu/ryty_np_entry.cpp
++++ b/ryty_gpu/ryty_np_entry.cpp
+@@ -21,10 +21,43 @@
+ #include "core/libraries/np/np_web_api/np_web_api.h"
+ #include "core/libraries/np/np_web_api2/np_web_api2.h"
+ #include "core/loader/symbols_resolver.h"
++#include "core/user_settings.h"
+ #include "ryty_gpu/ryty_library.h"
+ 
++namespace {
++
++// Ryty's user service (libSceUserService.prx) numbers its players from this ID by slot.
++constexpr s32 RytyFirstUserId = 0x10000000;
++
++// shadNet signs in the logged-in users of user/users.json, by their user IDs. This library has its
++// own copy of the user list, which nothing else loads or logs in (shadGT does that from its window
++// and controllers), and the game asks for players by Ryty's user IDs. So: load the list, give each
++// player Ryty's ID for its slot, and log them in before NpHandler starts. The IDs are changed in
++// memory only; this library never saves the list.
++void LoginRytyUsers() {
++    UserSettings.Load();
++    for (s32 index = 1; index <= Libraries::UserService::ORBIS_USER_SERVICE_MAX_LOGIN_USERS; ++index) {
++        User* user = UserManagement.GetUserByPlayerIndex(index);
++        if (!user)
++            continue;
++        user->user_id = RytyFirstUserId + index - 1;
++        UserManagement.LoginUser(user, index);
++        LOG_INFO(Lib_NpManager, "Ryty: player {} '{}' is user {:#x}, shadNet {}", index,
++                 user->user_name, user->user_id,
++                 user->shadnet_enabled ? "as " + user->shadnet_npid : std::string("off"));
++    }
++}
++
++} // namespace
++
++namespace Ryty {
++void InstallGameLog(); // ryty_game_log.cpp
++}
++
+ void Ryty::RytyLibraryInitialize() {
+     InitializeCommon("shadgt_np.log");
++    InstallGameLog(); // GTS-009, with RYGT_GAME_LOG=1
++    LoginRytyUsers(); // before NpManager::RegisterLib starts NpHandler
+     Core::Loader::SymbolsResolver resolver;
+     using namespace Libraries::Np;
+     NpCommon::RegisterLib(&resolver);
+diff --git a/ryty_gpu/ryty_np_p2p.cpp b/ryty_gpu/ryty_np_p2p.cpp
+new file mode 100644
+index 00000000..dc41ed2a
+--- /dev/null
++++ b/ryty_gpu/ryty_np_p2p.cpp
+@@ -0,0 +1,389 @@
++// PSN signaling for Ryty: how NpSignaling reaches other players.
++//
++// shadPS4's NpSignaling runs a handshake with each peer before the game talks to it, over a
++// transport the network library provides, and asks a resolver where a peer is. In the Ryty build:
++//   - the transport is a P2P socket in Ryty's libSceNet bound to its raw virtual port, so
++//     handshakes leave from the game's own P2P port (UDP 3658) and the address a peer learns from
++//     them is the one the game's own P2P traffic will use;
++//   - the resolver is RyGTServer: each game registers its player there (online ID, account ID and
++//     P2P port) and looks other players up by online ID or by PSN account ID, which is what GT
++//     Sport's lobby uses (sceNpSignalingActivateConnectionA).
++// shadNet's own resolver and STUN echo are replaced: for a game on the same PC as shadNet they
++// would advertise 127.0.0.1, which other players cannot reach.
++
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
++#include <fstream>
++#include <map>
++#include <cctype>
++#include <optional>
++#include <mutex>
++#include <string>
++#include <vector>
++
++#include "common/logging/log.h"
++#include "core/libraries/network/net.h"
++#include "core/libraries/network/sockets.h"
++#include "core/libraries/np/np_signaling/np_signaling_state.h"
++#include "core/libraries/np/np_signaling/np_signaling_stubs.h"
++#include "core/libraries/np/np_types.h"
++#include "ryty_np_p2p.h"
++
++namespace {
++
++constexpr int NetSockDgramP2P = 6;
++constexpr int NetSolSocket = 0xFFFF;
++constexpr int NetSoNbio = 0x1200;
++constexpr u16 RawVport = 0xFFFF;  // libSceNet's raw P2P virtual port
++constexpr u16 DefaultP2PPort = 3658;
++
++template <typename T>
++T NetExport(const char* nid) {
++    HMODULE handle = GetModuleHandleA("libSceNet.prx");
++    auto* address = handle ? reinterpret_cast<void*>(GetProcAddress(handle, nid)) : nullptr;
++    if (address == nullptr) {
++        LOG_CRITICAL(Lib_NpSignaling, "Ryty libSceNet export {} not found", nid);
++    }
++    return reinterpret_cast<T>(address);
++}
++
++struct GuestSockaddr {
++    u8 len = 16;
++    u8 family = 2;
++    u16 port = 0;  // network order
++    u32 addr = 0;  // network order
++    u16 vport = 0; // network order
++    u8 zero[6]{};
++};
++
++std::mutex g_mutex;
++int g_socket = -1;
++struct Datagram {
++    std::vector<u8> data;
++    u32 addr;
++    u16 port;
++};
++std::deque<Datagram> g_signaling;
++std::deque<Datagram> g_control;
++
++u16 P2PPort() {
++    if (const char* text = std::getenv("RYGT_P2P_PORT")) {
++        const long value = std::strtol(text, nullptr, 10);
++        if (value > 0 && value < 65536) return static_cast<u16>(value);
++    }
++    return DefaultP2PPort;
++}
++
++std::string Trim(std::string text) {
++    const auto start = text.find_first_not_of(" \t\r\n");
++    const auto end = text.find_last_not_of(" \t\r\n");
++    return start == std::string::npos ? std::string() : text.substr(start, end - start + 1);
++}
++
++// RyGTServer's address: RYGT_ONLINE_SERVER, else online_server in RyGT.ini, else this PC.
++std::string ServerAddress() {
++    if (const char* text = std::getenv("RYGT_ONLINE_SERVER"); text && *text) return text;
++    std::ifstream ini("RyGT.ini");
++    std::string line;
++    while (std::getline(ini, line)) {
++        const auto eq = line.find('=');
++        if (eq != std::string::npos && Trim(line.substr(0, eq)) == "online_server") {
++            const std::string value = Trim(line.substr(eq + 1));
++            if (!value.empty()) return value;
++        }
++    }
++    return "127.0.0.1:7890";
++}
++
++// A small blocking HTTP GET to RyGTServer; returns the body of a 200 reply.
++bool HttpGet(const std::string& path, std::string* body) {
++    static const int started = [] {
++        WSADATA data{};
++        return WSAStartup(MAKEWORD(2, 2), &data);
++    }();
++    (void)started;
++    std::string host = ServerAddress();
++    std::string port = "7890";
++    const auto colon = host.rfind(':');
++    if (colon != std::string::npos) {
++        port = host.substr(colon + 1);
++        host = host.substr(0, colon);
++    }
++    addrinfo hints{};
++    hints.ai_family = AF_INET;
++    hints.ai_socktype = SOCK_STREAM;
++    addrinfo* found = nullptr;
++    if (getaddrinfo(host.c_str(), port.c_str(), &hints, &found) != 0 || !found) return false;
++    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    const DWORD timeout_ms = 3000;
++    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
++    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
++    const bool connected = s != INVALID_SOCKET && connect(s, found->ai_addr, static_cast<int>(found->ai_addrlen)) == 0;
++    freeaddrinfo(found);
++    if (!connected) {
++        if (s != INVALID_SOCKET) closesocket(s);
++        return false;
++    }
++    const std::string request = "GET " + path + " HTTP/1.1\r\nHost: rygt\r\nConnection: close\r\n\r\n";
++    send(s, request.data(), static_cast<int>(request.size()), 0);
++    std::string reply;
++    char buffer[2048];
++    for (int got; (got = recv(s, buffer, sizeof(buffer), 0)) > 0;) reply.append(buffer, got);
++    closesocket(s);
++    if (reply.compare(0, 12, "HTTP/1.1 200") != 0) return false;
++    const auto split = reply.find("\r\n\r\n");
++    if (body) *body = split == std::string::npos ? std::string() : reply.substr(split + 4);
++    return true;
++}
++
++std::string JsonField(const std::string& json, const char* key) {
++    const std::string pattern = std::string("\"") + key + "\":";
++    auto at = json.find(pattern);
++    if (at == std::string::npos) return {};
++    at += pattern.size();
++    if (at < json.size() && json[at] == '"') {
++        const auto end = json.find('"', at + 1);
++        return end == std::string::npos ? std::string() : json.substr(at + 1, end - at - 1);
++    }
++    const auto end = json.find_first_of(",}", at);
++    return json.substr(at, end == std::string::npos ? std::string::npos : end - at);
++}
++
++std::string UrlEncode(std::string_view text) {
++    std::string out;
++    char hex[4];
++    for (unsigned char c : text) {
++        if (std::isalnum(c) || c == '-' || c == '_' || c == '.') {
++            out += static_cast<char>(c);
++        } else {
++            std::snprintf(hex, sizeof(hex), "%%%02X", c);
++            out += hex;
++        }
++    }
++    return out;
++}
++
++// One peer lookup: ?online=<id> or ?account=<n>.
++// Which online ID each PSN account is, from every lookup (both directions), so the signaling calls
++// that run under its lock can answer without asking RyGTServer.
++std::mutex g_names_mutex;
++std::map<u64, std::string> g_name_of_account;
++std::map<std::string, u64> g_account_of_name;  // online IDs in lower case
++
++std::string Lower(std::string_view text) {
++    std::string out(text);
++    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    return out;
++}
++
++bool LookupPeer(const std::string& query, std::string* online_id, u32* addr_nbo, u16* port_nbo) {
++    std::string body;
++    if (!HttpGet("/rygt/p2p/peer?" + query, &body)) return false;
++    {
++        const std::string name = JsonField(body, "onlineId");
++        const u64 account = std::strtoull(JsonField(body, "accountId").c_str(), nullptr, 10);
++        if (!name.empty() && account != 0) {
++            std::lock_guard lock(g_names_mutex);
++            g_name_of_account[account] = name;
++            g_account_of_name[Lower(name)] = account;
++        }
++    }
++    const std::string address = JsonField(body, "address");
++    const int port = std::atoi(JsonField(body, "port").c_str());
++    in_addr parsed{};
++    if (address.empty() || port <= 0 || inet_pton(AF_INET, address.c_str(), &parsed) != 1) return false;
++    if (online_id) *online_id = JsonField(body, "onlineId");
++    if (addr_nbo) *addr_nbo = parsed.s_addr;
++    if (port_nbo) *port_nbo = htons(static_cast<u16>(port));
++    return true;
++}
++
++// Moves every waiting datagram off the raw socket into the signaling or control queue.
++void Pump() {
++    using RecvFrom = s64(PS4_SYSV_ABI*)(int, void*, u64, int, void*, u32*);
++    static const auto recvfrom_fn = NetExport<RecvFrom>("304ooNZxWDY");
++    if (g_socket < 0 || !recvfrom_fn) return;
++    u8 buffer[2048];
++    for (;;) {
++        GuestSockaddr from{};
++        u32 from_len = sizeof(from);
++        const s64 got = recvfrom_fn(g_socket, buffer, sizeof(buffer), 0, &from, &from_len);
++        if (got < 0) return;
++        Datagram datagram{std::vector<u8>(buffer, buffer + got), from.addr, from.port};
++        const bool control = got >= 5 && std::memcmp(buffer, Libraries::Np::NpSignaling::kSignalingMagic, 4) == 0 &&
++                             buffer[4] == static_cast<u8>(Libraries::Np::NpSignaling::SignalingPacketType::Control);
++        (control ? g_control : g_signaling).push_back(std::move(datagram));
++        if (g_signaling.size() > 256) g_signaling.pop_front();
++        if (g_control.size() > 256) g_control.pop_front();
++    }
++}
++
++int Pop(std::deque<Datagram>& queue, void* buf, u32 len, u32* from_addr, u16* from_port) {
++    std::lock_guard lock(g_mutex);
++    Pump();
++    if (queue.empty()) return -1;
++    Datagram datagram = std::move(queue.front());
++    queue.pop_front();
++    const u32 n = std::min<u32>(len, static_cast<u32>(datagram.data.size()));
++    std::memcpy(buf, datagram.data.data(), n);
++    if (from_addr) *from_addr = datagram.addr;
++    if (from_port) *from_port = datagram.port;
++    return static_cast<int>(n);
++}
++
++int SendRaw(const void* data, u32 len, u32 dest_addr, u16 dest_port) {
++    using SendTo = s64(PS4_SYSV_ABI*)(int, const void*, u64, int, const void*, u32);
++    static const auto sendto_fn = NetExport<SendTo>("gvD1greCu0A");
++    if (!Libraries::Net::EnsureP2PTransport() || !sendto_fn) return -1;
++    GuestSockaddr to{};
++    to.addr = dest_addr;
++    to.port = dest_port;
++    to.vport = htons(RawVport);
++    return static_cast<int>(sendto_fn(g_socket, data, len, 0, &to, sizeof(to)));
++}
++
++bool ResolveByOnlineId(std::string_view online_id, u32* out_addr, u16* out_port) {
++    const bool found = LookupPeer("online=" + UrlEncode(online_id), nullptr, out_addr, out_port);
++    LOG_INFO(Lib_NpSignaling, "RyGTServer lookup of '{}': {}", online_id, found ? "found" : "not registered");
++    return found;
++}
++
++} // namespace
++
++namespace Libraries::Net {
++
++u16 GetP2PConfiguredPort() {
++    return htons(P2PPort());
++}
++
++u32 GetP2PAdvertisedAddr() {
++    return 0;
++}
++
++bool EnsureP2PTransport() {
++    std::lock_guard lock(g_mutex);
++    if (g_socket >= 0) return true;
++    using Socket = int(PS4_SYSV_ABI*)(const char*, int, int, int);
++    using Bind = int(PS4_SYSV_ABI*)(int, const void*, u32);
++    using SetSockOpt = int(PS4_SYSV_ABI*)(int, int, int, const void*, u32);
++    using Close = int(PS4_SYSV_ABI*)(int);
++    static const auto socket_fn = NetExport<Socket>("Q4qBuN-c0ZM");
++    static const auto bind_fn = NetExport<Bind>("bErx49PgxyY");
++    static const auto setsockopt_fn = NetExport<SetSockOpt>("2mKX2Spso7I");
++    static const auto close_fn = NetExport<Close>("45ggEzakPJQ");
++    if (!socket_fn || !bind_fn || !setsockopt_fn) return false;
++    const int s = socket_fn("RyGTSignaling", 2, NetSockDgramP2P, 0);
++    if (s < 0) return false;
++    const int on = 1;
++    setsockopt_fn(s, NetSolSocket, NetSoNbio, &on, sizeof(on));
++    GuestSockaddr local{};
++    local.port = htons(P2PPort());
++    local.vport = htons(RawVport);
++    if (bind_fn(s, &local, sizeof(local)) < 0) {
++        LOG_ERROR(Lib_NpSignaling, "cannot bind the signaling socket to P2P port {}", P2PPort());
++        if (close_fn) close_fn(s);
++        return false;
++    }
++    g_socket = s;
++    LOG_INFO(Lib_NpSignaling, "signaling on P2P port {}", P2PPort());
++    return true;
++}
++
++bool P2PTransportIsReady() {
++    std::lock_guard lock(g_mutex);
++    return g_socket >= 0;
++}
++
++int P2PSignalingSendTo(const void* data, u32 len, u32 dest_addr, u16 dest_port) {
++    return SendRaw(data, len, dest_addr, dest_port);
++}
++
++int P2PSignalingRecvFrom(void* buf, u32 len, u32* from_addr, u16* from_port) {
++    return Pop(g_signaling, buf, len, from_addr, from_port);
++}
++
++int P2PControlSendTo(const void* data, u32 len, u32 dest_addr, u16 dest_port) {
++    return SendRaw(data, len, dest_addr, dest_port);
++}
++
++int P2PControlRecvFrom(void* buf, u32 len, u32* from_addr, u16* from_port) {
++    return Pop(g_control, buf, len, from_addr, from_port);
++}
++
++int P2PMatching2SendTo(const void*, u32, u32, u16) {
++    return -1;
++}
++
++int P2PMatching2RecvFrom(void*, u32, u32*, u16*) {
++    return -1;
++}
++
++} // namespace Libraries::Net
++
++namespace Ryty {
++
++void InstallSignaling() {
++    namespace Stubs = Libraries::Np::NpSignaling::Stubs;
++    Stubs::SetTransportHooks({
++        .signaling_send = Libraries::Net::P2PSignalingSendTo,
++        .signaling_recv = Libraries::Net::P2PSignalingRecvFrom,
++        .control_send = Libraries::Net::P2PControlSendTo,
++        .control_recv = Libraries::Net::P2PControlRecvFrom,
++        .transport_ready = Libraries::Net::P2PTransportIsReady,
++        .configured_port = Libraries::Net::GetP2PConfiguredPort,
++        .advertised_addr = Libraries::Net::GetP2PAdvertisedAddr,
++        .ensure_transport = Libraries::Net::EnsureP2PTransport,
++    });
++    Stubs::SetPeerResolver(ResolveByOnlineId);
++    // No STUN through shadNet: RyGTServer hands out addresses (see the top of this file).
++    Stubs::SetMatching2Enabled(false);
++    Stubs::SetMmServerEndpoint(0, 0);
++    LOG_INFO(Lib_NpSignaling, "peers resolved through RyGTServer at {}", ServerAddress());
++}
++
++void RegisterPlayer(std::string_view online_id, u64 account_id) {
++    const std::string path = "/rygt/p2p/register?online=" + UrlEncode(online_id) +
++                             "&account=" + std::to_string(account_id) + "&port=" + std::to_string(P2PPort());
++    if (HttpGet(path, nullptr)) {
++        LOG_INFO(Lib_NpSignaling, "registered '{}' (account {}) with RyGTServer, P2P port {}", online_id, account_id,
++                 P2PPort());
++    } else {
++        LOG_WARNING(Lib_NpSignaling, "could not register '{}' with RyGTServer at {}", online_id, ServerAddress());
++    }
++}
++
++bool OnlineIdForAccount(u64 account_id, std::string* online_id) {
++    {
++        std::lock_guard lock(g_names_mutex);
++        const auto it = g_name_of_account.find(account_id);
++        if (it != g_name_of_account.end()) {
++            *online_id = it->second;
++            return true;
++        }
++    }
++    return LookupPeer("account=" + std::to_string(account_id), online_id, nullptr, nullptr) && !online_id->empty();
++}
++
++bool AccountForOnlineId(std::string_view online_id, u64* account_id) {
++    {
++        std::lock_guard lock(g_names_mutex);
++        const auto it = g_account_of_name.find(Lower(online_id));
++        if (it != g_account_of_name.end()) {
++            *account_id = it->second;
++            return true;
++        }
++    }
++    if (!LookupPeer("online=" + UrlEncode(online_id), nullptr, nullptr, nullptr)) return false;
++    std::lock_guard lock(g_names_mutex);
++    const auto it = g_account_of_name.find(Lower(online_id));
++    if (it == g_account_of_name.end()) return false;
++    *account_id = it->second;
++    return true;
++}
++
++} // namespace Ryty
+diff --git a/ryty_gpu/ryty_np_p2p.h b/ryty_gpu/ryty_np_p2p.h
+new file mode 100644
+index 00000000..fb606196
+--- /dev/null
++++ b/ryty_gpu/ryty_np_p2p.h
+@@ -0,0 +1,24 @@
++// PSN signaling for Ryty (see ryty_np_p2p.cpp).
++#pragma once
++
++#include <string>
++#include <string_view>
++
++#include "common/types.h"
++
++namespace Ryty {
++
++// Points NpSignaling at the P2P transport and at RyGTServer for peer addresses. Called after the
++// shadNet client is set up, which installs shadNet's own resolver.
++void InstallSignaling();
++
++// Tells RyGTServer where this player's game takes P2P traffic.
++void RegisterPlayer(std::string_view online_id, u64 account_id);
++
++// The online ID RyGTServer has for a PSN account ID, for sceNpSignalingActivateConnectionA.
++bool OnlineIdForAccount(u64 account_id, std::string* online_id);
++
++// The PSN account ID RyGTServer has for an online ID (both are remembered after the first lookup).
++bool AccountForOnlineId(std::string_view online_id, u64* account_id);
++
++} // namespace Ryty
+diff --git a/ryty_gpu/ryty_np_shims.cpp b/ryty_gpu/ryty_np_shims.cpp
+index f3bcb778..fe9452bb 100644
+--- a/ryty_gpu/ryty_np_shims.cpp
++++ b/ryty_gpu/ryty_np_shims.cpp
+@@ -1,13 +1,16 @@
+ // Stand-ins for the emulator services shadGT's NP libraries call directly. In the Ryty build the
+ // game's threads, mutexes and memory belong to Ryty's libkernel, so the kernel calls forward to it
+-// by NID. The NP bundle runs offline, so the network, HTTP and overlay calls report failure or do
+-// nothing.
++// by NID. HTTP forwards to Ryty's libSceHttp and the P2P transport is in ryty_np_p2p.cpp; overlay
++// calls do nothing.
+ 
++#include <mutex>
++#include <unordered_map>
+ #include <winsock2.h>
+ #include <ws2tcpip.h>
+ #include <windows.h>
+ #include <atomic>
+ #include <cstdio>
++#include <cstring>
+ #include <string>
+ 
+ #include "common/logging/log.h"
+@@ -229,8 +232,9 @@ int PS4_SYSV_ABI sceNetInetPton(int af, const char* src, void* dst) {
+     return inet_pton(af == 28 ? AF_INET6 : af, src, dst);
+ }
+ // NpSignaling opens a P2P datagram socket at startup only to probe it, and treats a failure as
+-// fatal (its cleanup then deadlocks). Ryty's libSceNet has no P2P sockets, so those get a
+-// placeholder descriptor; other sockets are Ryty's.
++// fatal (its cleanup then deadlocks). That probe gets a placeholder descriptor, so it never claims
++// a virtual port in Ryty's libSceNet (ryty_np_p2p.cpp opens the real signaling socket); other
++// sockets are Ryty's.
+ constexpr OrbisNetId FirstP2PPlaceholder = 0x10000;
+ std::atomic<OrbisNetId> g_next_p2p_placeholder{FirstP2PPlaceholder};
+ 
+@@ -254,36 +258,7 @@ int PS4_SYSV_ABI sceNetIoctl() {
+     return ORBIS_OK;
+ }
+ 
+-u16 GetP2PConfiguredPort() {
+-    return 0;
+-}
+-u32 GetP2PAdvertisedAddr() {
+-    return 0;
+-}
+-bool EnsureP2PTransport() {
+-    return false;
+-}
+-bool P2PTransportIsReady() {
+-    return false;
+-}
+-int P2PSignalingSendTo(const void*, u32, u32, u16) {
+-    return -1;
+-}
+-int P2PSignalingRecvFrom(void*, u32, u32*, u16*) {
+-    return -1;
+-}
+-int P2PControlSendTo(const void*, u32, u32, u16) {
+-    return -1;
+-}
+-int P2PControlRecvFrom(void*, u32, u32*, u16*) {
+-    return -1;
+-}
+-int P2PMatching2SendTo(const void*, u32, u32, u16) {
+-    return -1;
+-}
+-int P2PMatching2RecvFrom(void*, u32, u32*, u16*) {
+-    return -1;
+-}
++// The P2P transport for NpSignaling is in ryty_np_p2p.cpp.
+ 
+ } // namespace Libraries::Net
+ 
+@@ -298,81 +273,167 @@ int PS4_SYSV_ABI sceNetCtlGetNatInfo(OrbisNetCtlNatInfo* nat_info) {
+ }
+ } // namespace Libraries::NetCtl
+ 
++// The NP web API's HTTP goes through Ryty's libSceHttp, the library the game's own HTTP uses: the
++// game hands NpWebApi an HTTP context it made there. Without it the shadNet web API is unreachable.
++#define RYTY_HTTP(nid, ...)                                                                        \
++    static const auto fn = RytyExport<int(PS4_SYSV_ABI*)(__VA_ARGS__)>("libSceHttp.prx", nid);     \
++    if (fn == nullptr) {                                                                           \
++        return ErrorOffline;                                                                       \
++    }                                                                                              \
++    return fn
++
+ namespace Libraries::Http {
+-int PS4_SYSV_ABI sceHttpCreateTemplate(int, const char*, int, int) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpCreateTemplate(int ctx, const char* agent, int version, int proxy) {
++    RYTY_HTTP("0gYjPTR-6cY", int, const char*, int, int)(ctx, agent, version, proxy);
+ }
+-int PS4_SYSV_ABI sceHttpCreateConnectionWithURL(int, const char*, bool) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpCreateConnectionWithURL(int tmpl, const char* url, bool keep_alive) {
++    RYTY_HTTP("qgxDBjorUxs", int, const char*, int)(tmpl, url, keep_alive ? 1 : 0);
+ }
+-int PS4_SYSV_ABI sceHttpCreateRequestWithURL(int, s32, const char*, u64) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpCreateRequestWithURL(int conn, s32 method, const char* url, u64 length) {
++    RYTY_HTTP("Aeu5wVKkF9w", int, s32, const char*, u64)(conn, method, url, length);
+ }
+-int PS4_SYSV_ABI sceHttpAddRequestHeader(int, const char*, const char*, s32) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpAddRequestHeader(int id, const char* name, const char* value, s32 mode) {
++    RYTY_HTTP("EY28T2bkN7k", int, const char*, const char*, u32)(id, name, value,
++                                                                 static_cast<u32>(mode));
+ }
+-int PS4_SYSV_ABI sceHttpSendRequest(int, const void*, u64) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpSendRequest(int req, const void* data, u64 size) {
++    RYTY_HTTP("1e2BNwI-XzE", int, const void*, u64)(req, data, size);
+ }
+-int PS4_SYSV_ABI sceHttpReadData(s32, void*, u64) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpReadData(s32 req, void* data, u64 size) {
++    RYTY_HTTP("P5pdoykPYTk", s32, void*, u64)(req, data, size);
+ }
+-int PS4_SYSV_ABI sceHttpGetAllResponseHeaders(int, char**, u64*) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpGetAllResponseHeaders(int req, char** header, u64* size) {
++    RYTY_HTTP("aCYPMSUIaP8", int, char**, u64*)(req, header, size);
+ }
+-int PS4_SYSV_ABI sceHttpGetStatusCode(int, int*) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpGetStatusCode(int req, int* status) {
++    RYTY_HTTP("0a2TBNfE3BU", int, int*)(req, status);
+ }
+-int PS4_SYSV_ABI sceHttpParseResponseHeader(const char*, u64, const char*, const char**, u64*) {
+-    return ErrorOffline;
++int PS4_SYSV_ABI sceHttpParseResponseHeader(const char* header, u64 length, const char* field,
++                                            const char** value, u64* value_length) {
++    RYTY_HTTP("hPTXo3bICzI", const char*, u64, const char*, const char**, u64*)(
++        header, length, field, value, value_length);
+ }
+-int PS4_SYSV_ABI sceHttpDeleteConnection(int) {
+-    return ORBIS_OK;
++int PS4_SYSV_ABI sceHttpDeleteConnection(int conn) {
++    RYTY_HTTP("P6A3ytpsiYc", int)(conn);
+ }
+-int PS4_SYSV_ABI sceHttpDeleteTemplate(int) {
+-    return ORBIS_OK;
++int PS4_SYSV_ABI sceHttpDeleteTemplate(int tmpl) {
++    RYTY_HTTP("4I8vEpuEhZ8", int)(tmpl);
+ }
+-int PS4_SYSV_ABI sceHttpDeleteRequest(int) {
+-    return ORBIS_OK;
++int PS4_SYSV_ABI sceHttpDeleteRequest(int req) {
++    RYTY_HTTP("qe7oZ+v4PWA", int)(req);
++}
++int PS4_SYSV_ABI sceHttpInit(int memid, int ssl_ctx, u64 pool_size) {
++    RYTY_HTTP("A9cVMUtEp4Y", int, int, u64)(memid, ssl_ctx, pool_size);
++}
++int PS4_SYSV_ABI sceHttpCreateRequestWithURL2(int conn, const char* method, const char* url, u64 length) {
++    RYTY_HTTP("Cnp77podkCU", int, const char*, const char*, u64)(conn, method, url, length);
++}
++int PS4_SYSV_ABI sceHttpSetRequestContentLength(int req, u64 length) {
++    RYTY_HTTP("PTiFIUxCpJc", int, u64)(req, length);
+ }
+ } // namespace Libraries::Http
+ 
++#undef RYTY_HTTP
++
++// The web API's HTTP/2 goes out through the game's libSceHttp (RyGT's, which sends it to
++// RyGTServer) as HTTP/1.1: a template is a libSceHttp template, and a request gets a connection
++// of its own.
+ namespace Libraries::Http2 {
+-s32 PS4_SYSV_ABI sceHttp2CreateTemplate(s32, const char*, s32, s32) {
+-    return ErrorOffline;
++namespace {
++std::mutex g_connections_mutex;
++std::unordered_map<s32, s32> g_connections; // request -> its connection
++} // namespace
++
++s32 PS4_SYSV_ABI sceHttp2CreateTemplate(s32 ctx, const char* agent, s32, s32 proxy) {
++    const s32 result = Libraries::Http::sceHttpCreateTemplate(ctx, agent, 2 /* HTTP/1.1 */, proxy);
++    LOG_INFO(Lib_NpWebApi2, "HTTP template for context {}: {:#x}", ctx, result);
++    return result;
++}
++// PSN calls shadNet does not answer go to RyGTServer (online_server in RyGT.ini) as
++// /rygt/psn/<path>.
++std::string RouteUrl(const char* url) {
++    static const std::string server = [] {
++        std::string value;
++        if (std::FILE* ini = std::fopen("RyGT.ini", "r")) {
++            char line[256];
++            while (std::fgets(line, sizeof(line), ini)) {
++                if (std::strncmp(line, "online_server=", 14) == 0) {
++                    value = line + 14;
++                    value.erase(value.find_last_not_of(" \r\n") + 1);
++                }
++            }
++            std::fclose(ini);
++        }
++        return value;
++    }();
++    const std::string full = url;
++    const auto scheme = full.find("://");
++    const auto slash = scheme == std::string::npos ? std::string::npos : full.find('/', scheme + 3);
++    if (server.empty() || slash == std::string::npos) {
++        return full;
++    }
++    const std::string path = full.substr(slash);
++    if (path.rfind("/v3/users/me/communication/restriction/status", 0) == 0 ||
++        path.rfind("/v2/profanity/filter/", 0) == 0 || path.rfind("/v1/gameSessions", 0) == 0 ||
++        path.rfind("/v1/playerSessions", 0) == 0 || path.rfind("/v1/matches", 0) == 0) {
++        return "http://" + server + "/rygt/psn" + path;
++    }
++    return full;
+ }
+-s32 PS4_SYSV_ABI sceHttp2CreateRequestWithURL(s32, const char*, const char*, u64) {
+-    return ErrorOffline;
++
++s32 PS4_SYSV_ABI sceHttp2CreateRequestWithURL(s32 tmpl, const char* method, const char* original_url, u64 length) {
++    const std::string routed = RouteUrl(original_url);
++    const char* url = routed.c_str();
++    const s32 conn = Libraries::Http::sceHttpCreateConnectionWithURL(tmpl, url, true);
++    if (conn < 0) {
++        LOG_ERROR(Lib_NpWebApi2, "connection to {} (template {}) failed: {:#x}", url, tmpl, conn);
++        return conn;
++    }
++    const s32 req = Libraries::Http::sceHttpCreateRequestWithURL2(conn, method, url, length);
++    if (req < 0) {
++        LOG_ERROR(Lib_NpWebApi2, "{} request to {} failed: {:#x}", method, url, req);
++        Libraries::Http::sceHttpDeleteConnection(conn);
++        return req;
++    }
++    std::lock_guard lock(g_connections_mutex);
++    g_connections[req] = conn;
++    return req;
+ }
+-s32 PS4_SYSV_ABI sceHttp2AddRequestHeader(s32, const char*, const char*, u32) {
+-    return ErrorOffline;
++s32 PS4_SYSV_ABI sceHttp2AddRequestHeader(s32 req, const char* name, const char* value, u32 mode) {
++    return Libraries::Http::sceHttpAddRequestHeader(req, name, value, static_cast<s32>(mode));
+ }
+-s32 PS4_SYSV_ABI sceHttp2SetRequestContentLength(s32, u64) {
+-    return ErrorOffline;
++s32 PS4_SYSV_ABI sceHttp2SetRequestContentLength(s32 req, u64 length) {
++    return Libraries::Http::sceHttpSetRequestContentLength(req, length);
+ }
+ s32 PS4_SYSV_ABI sceHttp2SetPreSendCallback(s32, OrbisHttp2PreSendCallback, void*) {
+-    return ErrorOffline;
++    return ORBIS_OK; // shadGT's web API callback does nothing yet
+ }
+-s32 PS4_SYSV_ABI sceHttp2SendRequest(s32, const void*, u64) {
+-    return ErrorOffline;
++s32 PS4_SYSV_ABI sceHttp2SendRequest(s32 req, const void* data, u64 size) {
++    return Libraries::Http::sceHttpSendRequest(req, data, size);
+ }
+-s32 PS4_SYSV_ABI sceHttp2ReadData(s32, void*, u64) {
+-    return ErrorOffline;
++s32 PS4_SYSV_ABI sceHttp2ReadData(s32 req, void* data, u64 size) {
++    return Libraries::Http::sceHttpReadData(req, data, size);
+ }
+-s32 PS4_SYSV_ABI sceHttp2GetAllResponseHeaders(s32, char**, u64*) {
+-    return ErrorOffline;
++s32 PS4_SYSV_ABI sceHttp2GetAllResponseHeaders(s32 req, char** header, u64* size) {
++    return Libraries::Http::sceHttpGetAllResponseHeaders(req, header, size);
+ }
+-s32 PS4_SYSV_ABI sceHttp2GetStatusCode(s32, s32*) {
+-    return ErrorOffline;
++s32 PS4_SYSV_ABI sceHttp2GetStatusCode(s32 req, s32* status) {
++    return Libraries::Http::sceHttpGetStatusCode(req, status);
+ }
+ s32 PS4_SYSV_ABI sceHttp2AbortRequest(s32) {
+     return ORBIS_OK;
+ }
+-s32 PS4_SYSV_ABI sceHttp2DeleteRequest(s32) {
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceHttp2DeleteRequest(s32 req) {
++    const s32 result = Libraries::Http::sceHttpDeleteRequest(req);
++    std::lock_guard lock(g_connections_mutex);
++    if (const auto it = g_connections.find(req); it != g_connections.end()) {
++        Libraries::Http::sceHttpDeleteConnection(it->second);
++        g_connections.erase(it);
++    }
++    return result;
+ }
+-s32 PS4_SYSV_ABI sceHttp2DeleteTemplate(s32) {
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceHttp2DeleteTemplate(s32 tmpl) {
++    return Libraries::Http::sceHttpDeleteTemplate(tmpl);
+ }
+ } // namespace Libraries::Http2
+ 
+diff --git a/src/core/libraries/np/np_handler.cpp b/src/core/libraries/np/np_handler.cpp
+index a23b9ac6..bd442b7f 100644
+--- a/src/core/libraries/np/np_handler.cpp
++++ b/src/core/libraries/np/np_handler.cpp
+@@ -25,6 +25,9 @@
+ #include "np_handler.h"
+ #include "shadnet.pb.h"
+ #include "shadnet/server_probe.h"
++#ifdef RYTY_NP_LIBRARY
++#include "ryty_gpu/ryty_np_p2p.h"
++#endif
+ 
+ namespace Libraries::Np {
+ 
+@@ -288,6 +291,9 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
+     }
+ 
+     NpMatching2::SetMmShadNetClient(client, host, port);
++#ifdef RYTY_NP_LIBRARY
++    Ryty::InstallSignaling();
++#endif
+ 
+     // Build OrbisNpId
+     {
+diff --git a/src/core/libraries/np/np_manager.cpp b/src/core/libraries/np/np_manager.cpp
+index 688dd0b2..ef468cc0 100644
+--- a/src/core/libraries/np/np_manager.cpp
++++ b/src/core/libraries/np/np_manager.cpp
+@@ -312,6 +312,36 @@ s32 PS4_SYSV_ABI sceNpGetAccountLanguageA(s32 req_id,
+     return CompleteRequest(*req, ORBIS_OK);
+ }
+ 
++// The language as a BCP 47 tag ("en-US"): the profile's language and country. GT7 reads it once
++// signed in and crashes on a request left without a result.
++s32 PS4_SYSV_ABI sceNpGetAccountLanguage2(s32 req_id,
++                                          Libraries::UserService::OrbisUserServiceUserId user_id,
++                                          OrbisNpLanguageCode* language) {
++    if (language == nullptr ||
++        user_id == Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID) {
++        return ORBIS_NP_ERROR_INVALID_ARGUMENT;
++    }
++    std::scoped_lock lk{g_request_mutex};
++    s32 err;
++    NpRequest* req = GetRequest(req_id, &err);
++    if (!req)
++        return err;
++    if (!g_shadnet_enabled || !Libraries::Np::NpHandler::GetInstance().IsPsnSignedIn(user_id)) {
++        return CompleteRequest(*req, ORBIS_NP_ERROR_SIGNED_OUT);
++    }
++    FillLanguageCodeFromProfile(user_id, language);
++    OrbisNpCountryCode country{};
++    FillCountryCodeFromProfile(user_id, &country);
++    if (country.country_code[0] != '\0') {
++        language->code[2] = '-';
++        language->code[3] = static_cast<char>(std::toupper(static_cast<unsigned char>(country.country_code[0])));
++        language->code[4] = static_cast<char>(std::toupper(static_cast<unsigned char>(country.country_code[1])));
++        language->code[5] = '\0';
++    }
++    LOG_DEBUG(Lib_NpManager, "req_id = {:#x}, user_id = {}, language = {}", req_id, user_id, language->code);
++    return CompleteRequest(*req, ORBIS_OK);
++}
++
+ s32 PS4_SYSV_ABI sceNpGetParentalControlInfo(s32 req_id, OrbisNpOnlineId* online_id, s8* age,
+                                              OrbisNpParentalControlInfo* info) {
+     if (online_id == nullptr || age == nullptr || info == nullptr) {
+@@ -1231,6 +1261,7 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
+     LIB_FUNCTION("r6MyYJkryz8", "libSceNpManager", 1, "libSceNpManager", sceNpCheckPlus);
+     LIB_FUNCTION("KZ1Mj9yEGYc", "libSceNpManager", 1, "libSceNpManager", sceNpGetAccountLanguage);
+     LIB_FUNCTION("TPMbgIxvog0", "libSceNpManager", 1, "libSceNpManager", sceNpGetAccountLanguageA);
++    LIB_FUNCTION("3Tcz5bNCfZQ", "libSceNpManager", 1, "libSceNpManager", sceNpGetAccountLanguage2);
+     LIB_FUNCTION("ilwLM4zOmu4", "libSceNpManager", 1, "libSceNpManager",
+                  sceNpGetParentalControlInfo);
+     LIB_FUNCTION("m9L3O6yst-U", "libSceNpManager", 1, "libSceNpManager",
+diff --git a/src/core/libraries/np/np_signaling/np_signaling.cpp b/src/core/libraries/np/np_signaling/np_signaling.cpp
+index 2de1858b..83969dc0 100644
+--- a/src/core/libraries/np/np_signaling/np_signaling.cpp
++++ b/src/core/libraries/np/np_signaling/np_signaling.cpp
+@@ -18,6 +18,13 @@
+ #include "core/libraries/np/np_signaling/np_signaling_helpers.h"
+ #include "core/libraries/np/np_signaling/np_signaling_state.h"
+ #include "core/libraries/np/np_signaling/np_signaling_stubs.h"
++#ifdef RYTY_NP_LIBRARY
++#include "ryty_gpu/ryty_np_p2p.h"
++
++namespace Libraries::Np::NpManager {
++s32 PS4_SYSV_ABI sceNpGetAccountIdA(Libraries::UserService::OrbisUserServiceUserId user_id, u64* account_id);
++}
++#endif
+ 
+ namespace Libraries::Np::NpSignaling {
+ 
+@@ -202,8 +209,15 @@ s32 PS4_SYSV_ABI sceNpSignalingCreateContextA(s32 userId, void* callback, void*
+     if (npid_rc < 0) {
+         return npid_rc;
+     }
++#ifdef RYTY_NP_LIBRARY
++    // Other players find this one through RyGTServer, by online ID or PSN account ID.
++    u64 account_id = 0;
++    NpManager::sceNpGetAccountIdA(userId, &account_id);
++    Ryty::RegisterPlayer(OnlineIdToString(owner_npid.handle), account_id);
++#else
+     // Account id isn't needed without matchmaking wired up; leave it 0 for now.
+     const OrbisNpAccountId account_id = 0;
++#endif
+ 
+     const bool transport_ready = Stubs::EnsureTransport();
+ 
+@@ -394,6 +408,21 @@ s32 PS4_SYSV_ABI sceNpSignalingActivateConnection(OrbisNpSignalingContextId ctxI
+ s32 PS4_SYSV_ABI sceNpSignalingActivateConnectionA(
+     OrbisNpSignalingContextId ctxId, const OrbisNpSignalingAccountPlatformPair* peerAddr,
+     OrbisNpSignalingConnectionId* outConnId) {
++#ifdef RYTY_NP_LIBRARY
++    // GT Sport's lobby connects to players by PSN account ID. RyGTServer knows which online ID
++    // each account belongs to; from there it is the same handshake as by online ID.
++    if (peerAddr && peerAddr->accountId != 0 && outConnId) {
++        std::string online_id;
++        if (!Ryty::OnlineIdForAccount(peerAddr->accountId, &online_id)) {
++            LOG_WARNING(Lib_NpSignaling, "account {} is not registered with RyGTServer", peerAddr->accountId);
++            return ORBIS_NP_SIGNALING_ERROR_INVALID_ARGUMENT;
++        }
++        OrbisNpId peer_npid{};
++        SetNpId(peer_npid, online_id);
++        LOG_INFO(Lib_NpSignaling, "ctxId={} account {} is '{}'", ctxId, peerAddr->accountId, online_id);
++        return sceNpSignalingActivateConnection(ctxId, &peer_npid, outConnId);
++    }
++#endif
+     SignalingMutexGuard lock;
+     if (!g_initialized) {
+         return ORBIS_NP_SIGNALING_ERROR_NOT_INITIALIZED;
+@@ -537,6 +566,36 @@ s32 PS4_SYSV_ABI sceNpSignalingGetConnectionInfo(OrbisNpSignalingContextId ctxId
+ s32 PS4_SYSV_ABI sceNpSignalingGetConnectionInfoA(OrbisNpSignalingContextId ctxId,
+                                                   OrbisNpSignalingConnectionId connId, s32 infoCode,
+                                                   void* outInfo) {
++#ifdef RYTY_NP_LIBRARY
++    // The peer's PSN account (shadPS4 answers with this player's own): looked up from the peer's
++    // online ID outside the signaling lock.
++    if (infoCode == ORBIS_NP_SIGNALING_CONN_INFO_PEER_ADDRESS_A && outInfo) {
++        std::string online_id;
++        {
++            SignalingMutexGuard lock;
++            if (!g_initialized) {
++                return ORBIS_NP_SIGNALING_ERROR_NOT_INITIALIZED;
++            }
++            if (!IsContextValidLocked(ctxId)) {
++                return ORBIS_NP_SIGNALING_ERROR_CTX_NOT_FOUND;
++            }
++            const auto it = g_connections.find(connId);
++            if (it == g_connections.end() || it->second.ctx_id != ctxId) {
++                return ORBIS_NP_SIGNALING_ERROR_CONN_NOT_FOUND;
++            }
++            online_id = OnlineIdToString(it->second.online_id);
++        }
++        u64 account = 0;
++        if (online_id.empty() || !Ryty::AccountForOnlineId(online_id, &account)) {
++            return ORBIS_NP_SIGNALING_ERROR_CONN_IN_PROGRESS;
++        }
++        auto* pair = static_cast<OrbisNpSignalingAccountPlatformPair*>(outInfo);
++        pair->accountId = account;
++        pair->platformType = 1;  // PS4
++        pair->_pad_0c = 0;
++        return ORBIS_OK;
++    }
++#endif
+     SignalingMutexGuard lock;
+     if (!g_initialized) {
+         return ORBIS_NP_SIGNALING_ERROR_NOT_INITIALIZED;
+@@ -621,6 +680,31 @@ sceNpSignalingGetConnectionFromPeerAddress(OrbisNpSignalingContextId ctxId, u32
+ s32 PS4_SYSV_ABI sceNpSignalingGetConnectionFromPeerAddressA(
+     OrbisNpSignalingContextId ctxId, const OrbisNpSignalingAccountPlatformPair* peerAddr,
+     OrbisNpSignalingConnectionId* outConnId) {
++#ifdef RYTY_NP_LIBRARY
++    // The connection to the player with this PSN account: RyGTServer says which online ID it is
++    // (remembered from sceNpSignalingActivateConnectionA, so normally no request is made).
++    if (peerAddr && outConnId && peerAddr->accountId != 0) {
++        std::string online_id;
++        if (!Ryty::OnlineIdForAccount(peerAddr->accountId, &online_id)) {
++            return ORBIS_NP_SIGNALING_ERROR_CONN_NOT_FOUND;
++        }
++        SignalingMutexGuard lock;
++        if (!g_initialized) {
++            return ORBIS_NP_SIGNALING_ERROR_NOT_INITIALIZED;
++        }
++        if (!IsContextValidLocked(ctxId)) {
++            return ORBIS_NP_SIGNALING_ERROR_CTX_NOT_FOUND;
++        }
++        for (const auto& [conn_id, ci] : g_connections) {
++            if (ci.ctx_id == ctxId && ci.state != ConnState::Inactive && !ci.dead_fired &&
++                OnlineIdEqualsString(ci.online_id, online_id)) {
++                *outConnId = conn_id;
++                return ORBIS_OK;
++            }
++        }
++        return ORBIS_NP_SIGNALING_ERROR_CONN_NOT_FOUND;
++    }
++#endif
+     SignalingMutexGuard lock;
+     if (!g_initialized) {
+         return ORBIS_NP_SIGNALING_ERROR_NOT_INITIALIZED;
+diff --git a/src/core/libraries/np/np_utility/np_utility.cpp b/src/core/libraries/np/np_utility/np_utility.cpp
+index 9398b8d0..d3da3212 100644
+--- a/src/core/libraries/np/np_utility/np_utility.cpp
++++ b/src/core/libraries/np/np_utility/np_utility.cpp
+@@ -455,49 +455,65 @@ s32 PS4_SYSV_ABI sceNpAppLaunchLinkIntInitialize() {
+     return ORBIS_OK;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestAbort() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
++// The bandwidth test measures the connection to PSN's servers, which are gone. Games size their
++// network traffic from its result (GT Sport's lobby picked its slowest setting, cars updated twice a
++// second, from the 0 Kbps a timed-out test gives), so it finishes at once with a good connection.
++namespace {
++struct BandwidthTestResult {
++    double upload_bps;
++    double download_bps;
++    s32 result;
++    u8 padding[4];
++};
++constexpr double kBandwidthUploadBps = 20'000'000.0;
++constexpr double kBandwidthDownloadBps = 50'000'000.0;
++constexpr s32 kBandwidthTestContext = 1;
++constexpr s32 kBandwidthTestFinished = 2;  // SCE_NP_BANDWIDTH_TEST_STATUS_FINISHED
++} // namespace
++
++s32 PS4_SYSV_ABI sceNpBandwidthTestAbort(s32 ctx_id) {
+     return ORBIS_OK;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestDownloadOnlyInitStart() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceNpBandwidthTestDownloadOnlyInitStart(const void* param) {
++    return kBandwidthTestContext;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestGetStatus() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
++s32 PS4_SYSV_ABI sceNpBandwidthTestGetStatus(s32 ctx_id, s32* status) {
++    if (status) *status = kBandwidthTestFinished;
+     return ORBIS_OK;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart(const void* param) {
++    LOG_INFO(Lib_NpUtility, "bandwidth test: reporting {} Mbps up, {} Mbps down", kBandwidthUploadBps / 1e6,
++             kBandwidthDownloadBps / 1e6);
++    return kBandwidthTestContext;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartDownload() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartDownload(const void* param) {
++    return kBandwidthTestContext;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartUpload() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartUpload(const void* param) {
++    return kBandwidthTestContext;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestShutdown() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
++s32 PS4_SYSV_ABI sceNpBandwidthTestShutdown(s32 ctx_id, void* result) {
++    if (result) {
++        auto* out = static_cast<BandwidthTestResult*>(result);
++        *out = {};
++        out->upload_bps = kBandwidthUploadBps;
++        out->download_bps = kBandwidthDownloadBps;
++    }
+     return ORBIS_OK;
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestShutdownWithDetailedInfo() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceNpBandwidthTestShutdownWithDetailedInfo(s32 ctx_id, void* result) {
++    return sceNpBandwidthTestShutdown(ctx_id, result);
+ }
+ 
+-s32 PS4_SYSV_ABI sceNpBandwidthTestUploadOnlyInitStart() {
+-    LOG_ERROR(Lib_NpUtility, "(STUBBED) called");
+-    return ORBIS_OK;
++s32 PS4_SYSV_ABI sceNpBandwidthTestUploadOnlyInitStart(const void* param) {
++    return kBandwidthTestContext;
+ }
+ 
+ s32 PS4_SYSV_ABI sceNpLookupNetAbortRequest() {
+diff --git a/src/core/libraries/np/np_utility/np_utility.h b/src/core/libraries/np/np_utility/np_utility.h
+index 717d733b..bdd4124a 100644
+--- a/src/core/libraries/np/np_utility/np_utility.h
++++ b/src/core/libraries/np/np_utility/np_utility.h
+@@ -81,15 +81,15 @@ s32 PS4_SYSV_ABI sceNpAppLaunchLinkIntFinalize();
+ s32 PS4_SYSV_ABI sceNpAppLaunchLinkIntGetCompatibleTitleIdList();
+ s32 PS4_SYSV_ABI sceNpAppLaunchLinkIntGetCompatibleTitleIdNum();
+ s32 PS4_SYSV_ABI sceNpAppLaunchLinkIntInitialize();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestAbort();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestDownloadOnlyInitStart();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestGetStatus();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartDownload();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartUpload();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestShutdown();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestShutdownWithDetailedInfo();
+-s32 PS4_SYSV_ABI sceNpBandwidthTestUploadOnlyInitStart();
++s32 PS4_SYSV_ABI sceNpBandwidthTestAbort(s32 ctx_id);
++s32 PS4_SYSV_ABI sceNpBandwidthTestDownloadOnlyInitStart(const void* param);
++s32 PS4_SYSV_ABI sceNpBandwidthTestGetStatus(s32 ctx_id, s32* status);
++s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart(const void* param);
++s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartDownload(const void* param);
++s32 PS4_SYSV_ABI sceNpBandwidthTestInitStartUpload(const void* param);
++s32 PS4_SYSV_ABI sceNpBandwidthTestShutdown(s32 ctx_id, void* result);
++s32 PS4_SYSV_ABI sceNpBandwidthTestShutdownWithDetailedInfo(s32 ctx_id, void* result);
++s32 PS4_SYSV_ABI sceNpBandwidthTestUploadOnlyInitStart(const void* param);
+ s32 PS4_SYSV_ABI sceNpLookupAbortRequest(OrbisNpLookupRequestId reqId);
+ s32 PS4_SYSV_ABI sceNpLookupCreateAsyncRequest(
+     OrbisNpLookupTitleCtxId titleCtxId, const OrbisNpLookupCreateAsyncRequestParameter* param);
+diff --git a/src/core/libraries/np/np_web_api2/np_web_api2.cpp b/src/core/libraries/np/np_web_api2/np_web_api2.cpp
+index fc64e82a..0bf58aa7 100644
+--- a/src/core/libraries/np/np_web_api2/np_web_api2.cpp
++++ b/src/core/libraries/np/np_web_api2/np_web_api2.cpp
+@@ -10,6 +10,9 @@
+ #include "core/libraries/np/np_types.h"
+ #include "core/libraries/np/np_web_api2/np_web_api2.h"
+ #include "core/libraries/np/np_web_api2/np_web_api2_internal.h"
++#ifdef RYTY_NP_LIBRARY
++#include "core/libraries/network/http.h"
++#endif
+ #include "core/libraries/system/userservice.h"
+ 
+ namespace Libraries::Np::NpWebApi2 {
+@@ -159,12 +162,26 @@ s32 PS4_SYSV_ABI sceNpWebApi2GetMemoryPoolStats(s32 lib_ctx_id,
+     return getMemoryPoolStats(lib_ctx_id, stats);
+ }
+ 
++namespace {
++// In Ryty the game's libSceHttp2 is not this library's: its HTTP context IDs mean nothing to the
++// HTTP library the web API sends through, so the web API makes a context of its own.
++s32 HttpContextFor(s32 lib_http_ctx_id, u64 pool_size) {
++#ifdef RYTY_NP_LIBRARY
++    const s32 own = Libraries::Http::sceHttpInit(0, 0, pool_size != 0 ? pool_size : 0x10000);
++    if (own > 0) {
++        return own;
++    }
++#endif
++    return lib_http_ctx_id;
++}
++} // namespace
++
+ s32 PS4_SYSV_ABI sceNpWebApi2Initialize(s32 lib_http_ctx_id, u64 pool_size) {
+     LOG_DEBUG(Lib_NpWebApi2, "called, lib_http_ctx_id = {:#x}, pool_size = {:#x}", lib_http_ctx_id,
+               pool_size);
+ 
+     // Uses a sceLncUtilGetAppStatus check to enable debug mode. For now, default to normal.
+-    s32 ctx_id = createLibraryContext(lib_http_ctx_id, 1, pool_size, nullptr);
++    s32 ctx_id = createLibraryContext(HttpContextFor(lib_http_ctx_id, pool_size), 1, pool_size, nullptr);
+     if (ctx_id > 0) {
+         LOG_INFO(Lib_NpWebApi2, "created lib_ctx_id = {:#x}", ctx_id);
+     }
+@@ -175,7 +192,7 @@ s32 PS4_SYSV_ABI sceNpWebApi2InitializeForPresence(s32 lib_http_ctx_id, u64 pool
+     LOG_DEBUG(Lib_NpWebApi2, "called, lib_http_ctx_id = {:#x}, pool_size = {:#x}", lib_http_ctx_id,
+               pool_size);
+ 
+-    s32 ctx_id = createLibraryContext(lib_http_ctx_id, 3, pool_size, nullptr);
++    s32 ctx_id = createLibraryContext(HttpContextFor(lib_http_ctx_id, pool_size), 3, pool_size, nullptr);
+     if (ctx_id > 0) {
+         LOG_INFO(Lib_NpWebApi2, "created lib_ctx_id = {:#x}", ctx_id);
+     }
+diff --git a/src/core/libraries/np/np_web_api2/np_web_api2_context.cpp b/src/core/libraries/np/np_web_api2/np_web_api2_context.cpp
+index 1424ff05..8b88d319 100644
+--- a/src/core/libraries/np/np_web_api2/np_web_api2_context.cpp
++++ b/src/core/libraries/np/np_web_api2/np_web_api2_context.cpp
+@@ -278,9 +278,9 @@ void UserContext::CreatePushContext(OrbisNpWebApi2PushEventPushContextId* push_c
+ PushEventPushContext* UserContext::GetPushContext(
+     const OrbisNpWebApi2PushEventPushContextId* push_ctx_id) {
+     parent_ctx->Lock();
+-    s64 raw_id{};
+-    std::memcpy(&raw_id, push_ctx_id, sizeof(s64));
++    s64 raw_id = PushEventPushContext::FakeIdOf(push_ctx_id);
+     if (!push_contexts.contains(raw_id)) {
++        parent_ctx->Unlock();
+         return nullptr;
+     }
+     PushEventPushContext* push_ctx = push_contexts[raw_id];
+diff --git a/src/core/libraries/np/np_web_api2/np_web_api2_internal.cpp b/src/core/libraries/np/np_web_api2/np_web_api2_internal.cpp
+index eacdd125..97cf571b 100644
+--- a/src/core/libraries/np/np_web_api2/np_web_api2_internal.cpp
++++ b/src/core/libraries/np/np_web_api2/np_web_api2_internal.cpp
+@@ -1,6 +1,8 @@
+ // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <cstdlib>
++
+ #include "common/logging/log.h"
+ #include "core/emulator_settings.h"
+ #include "core/libraries/kernel/time.h"
+@@ -712,6 +714,12 @@ s32 sendRequest(s64 request_id, s32 part_index, void* data, u64 data_size,
+             if (result >= 0) {
+                 if (resp_info_option) {
+                     resp_info_option->http_status = http_status;
++                    // Games size their read buffer from this (the Content-Length).
++                    char length[32]{};
++                    if (request->ParseHttpResponseHeaders("Content-Length", length,
++                                                          sizeof(length) - 1, nullptr) >= 0) {
++                        resp_info_option->response_data_size = std::strtoull(length, nullptr, 10);
++                    }
+                 }
+                 if (http_status >= 400) {
+                     result = http_status | 0x82f00000;
+diff --git a/src/core/libraries/np/np_web_api2/np_web_api2_push_event.cpp b/src/core/libraries/np/np_web_api2/np_web_api2_push_event.cpp
+index ece4023c..b76772f4 100644
+--- a/src/core/libraries/np/np_web_api2/np_web_api2_push_event.cpp
++++ b/src/core/libraries/np/np_web_api2/np_web_api2_push_event.cpp
+@@ -58,7 +58,8 @@ void PushEventPushContext::Initialize() {
+     }
+     s64 new_id = g_current_push_event_push_context_id;
+     std::memset(&this->id, 0, sizeof(this->id));
+-    std::memcpy(&this->id, &new_id, sizeof(s64));
++    std::snprintf(this->id.uuid, sizeof(this->id.uuid), "00000000-0000-4000-8000-%012llx",
++                  static_cast<unsigned long long>(new_id));
+ }
+ 
+ }; // namespace Libraries::Np::NpWebApi2
+\ No newline at end of file
+diff --git a/src/core/libraries/np/np_web_api2/np_web_api2_push_event.h b/src/core/libraries/np/np_web_api2/np_web_api2_push_event.h
+index 98b4f8fe..d43b8982 100644
+--- a/src/core/libraries/np/np_web_api2/np_web_api2_push_event.h
++++ b/src/core/libraries/np/np_web_api2/np_web_api2_push_event.h
+@@ -1,6 +1,9 @@
+ // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
+ #include <string>
+ #include <vector>
+ 
+@@ -133,9 +136,16 @@ public:
+ 
+     // Returns the actual numerical id currently stored in id.
+     s64 GetFakeId() {
+-        s64 fake_id{};
+-        std::memcpy(&fake_id, &id, sizeof(s64));
+-        return fake_id;
++        return FakeIdOf(&id);
++    }
++
++    // The index in a push context ID ("00000000-0000-4000-8000-<12 hex digits>"); games keep the
++    // ID as text, so it has to be a real UUID string.
++    static s64 FakeIdOf(const OrbisNpWebApi2PushEventPushContextId* push_ctx_id) {
++        if (strnlen(push_ctx_id->uuid, sizeof(push_ctx_id->uuid)) != 36) {
++            return 0;
++        }
++        return static_cast<s64>(std::strtoull(push_ctx_id->uuid + 24, nullptr, 16));
+     }
+ 
+     void Start() {
+-- 
+2.55.0.windows.5
+
