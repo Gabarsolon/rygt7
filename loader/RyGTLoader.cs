@@ -1391,8 +1391,11 @@ namespace RyGT
                         "Needs an NVIDIA RTX card (frame generation: RTX 40 or newer). The files are NVIDIA's, under " +
                         "NVIDIA's licenses (see dlss\\" + DlssDownload.NoticeName + ").", "Download NVIDIA DLSS",
                         MessageBoxButtons.OKCancel) != DialogResult.OK) return;
-                downloadDlss.Enabled = false;
-                addDlss.Enabled = false;
+                // Busy like Set up, so the state timer keeps Play, Set up and both DLSS buttons off
+                // while the files in the dlss folder are replaced one by one.
+                busy = true;
+                RefreshState();
+                status.Text = "Downloading the NVIDIA DLSS files...";
                 var worker = new Thread(() =>
                 {
                     string message;
@@ -1408,8 +1411,8 @@ namespace RyGT
                     }
                     BeginInvoke((Action)(() =>
                     {
-                        downloadDlss.Enabled = true;
-                        addDlss.Enabled = true;
+                        busy = false;
+                        RefreshState();
                         refreshDlss();
                         MessageBox.Show(this, message);
                     }));
