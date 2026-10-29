@@ -1,10 +1,10 @@
 # Bundled GT7 Offline mode patch
 
-`CUSA24769.xml` is an unmodified snapshot of Proper Offline Patch v1.0's
-ps-patch-system patch definitions, provided with releases so **Set up** can
-apply the dealership fix without a separate download or manual copy.
-Only the `Offline mode` group is applied; other groups in the upstream XML
-are not enabled. The existing executable compatibility check still applies.
+`CUSA24769.xml` is the `Offline mode` group of Proper Offline Patch v1.0's
+ps-patch-system patch definitions, unmodified, provided with releases so **Set up** can
+apply the dealership fix without a separate download or manual copy. The upstream
+file's other groups (DLC unlocks, store rotation, debug settings) are not included.
+The existing executable compatibility check still applies.
 
 Source: https://github.com/jimnastic89/gt7patcher/blob/e49e2db1fed54fb7b46a666a1c889d821c5903af/xmlpatches/CUSA24769.xml
 

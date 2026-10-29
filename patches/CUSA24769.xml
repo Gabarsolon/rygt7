@@ -596,43 +596,4 @@
             <Line Type="bytes" Address="0x071cf8c0" Value="1d1fdf6626033bff3378054fd3ee27fcf969d841090928e8f3db7afcfff775e79f00636c61" />
         </PatchList>
     </Metadata>
-    <Metadata Title="Gran Turismo 7" Name="Quick Store Rotation" Note="Optional one-minute shop rotation override, offers last six minutes." Author="AI-generated; no author attribution" PatchVer="1.4" AppVer="01.71" AppElf="eboot.bin">
-        <PatchList>
-            <Line Type="bytes" Address="0x019df453" Value="b3" />
-            <Line Type="bytes" Address="0x019df464" Value="a2" />
-            <Line Type="bytes" Address="0x019df474" Value="92" />
-            <Line Type="bytes" Address="0x019df4ae" Value="6a3c594c89f831d248f7f14989c76a4a5e4c89efe8f8ba94036a055e6a1e5a4889c74c89f9e85ef1460285c074266a4a5e4c89e7e8d8ba94036a025e6a0c5a48" />
-            <Line Type="bytes" Address="0x019df4ee" Value="89c74c89f9e83ef1460285c074066a01415eeb084889dfe81613da014489f04883c4185b415c" />
-            <Line Type="bytes" Address="0x019df515" Value="5d" />
-            <Line Type="bytes" Address="0x019df517" Value="5e" />
-            <Line Type="bytes" Address="0x019df519" Value="5f5dc39090" />
-        </PatchList>
-    </Metadata>
-    <Metadata Title="Gran Turismo 7" Name="Debug Settings" Note="Unlocks debug in options" Author="AI-generated; no author attribution" PatchVer="1.0" AppVer="01.71" AppElf="eboot.bin">
-        <PatchList>
-            <Line Type="bytes" Address="0x005f55c0" Value="c60701b001c3" />
-            <Line Type="bytes" Address="0x00609d00" Value="c60701b001c3" />
-            <Line Type="bytes" Address="0x0197b9b0" Value="31c0c3" />
-            <Line Type="bytes" Address="0x036c06c8" Value="eb03" />
-        </PatchList>
-    </Metadata>
-	<Metadata Title="Gran Turismo 7" Name="Unlock Power Pack DLC" Note="Unlocks Power Pack DLC" Author="AI-generated; no author attribution" PatchVer="1.0" AppVer="01.71" AppElf="eboot.bin">
-        <PatchList>
-            <Line Type="bytes" Address="0x03f56e20" Value="b001c3" />
-            <Line Type="bytes" Address="0x040aa673" Value="b30190" />
-        </PatchList>
-    </Metadata>
-    <Metadata Title="Gran Turismo 7" Name="Unlock Vehicle DLCs" Note="Unlocks all vehicle DLCs" Author="AI-generated; no author attribution" PatchVer="1.0" AppVer="01.71" AppElf="eboot.bin">
-        <PatchList>
-            <Line Type="bytes" Address="0x03762c40" Value="e9c192bc01" />
-            <Line Type="bytes" Address="0x03f55b89" Value="e872623d01" />
-            <Line Type="bytes" Address="0x0532be00" Value="554156534881ec000400004989d64889fbe8aa48d0fe89c584c00f84d800000049837e18100f85cd000000498d460849837e20107203488b0048b94754374341" />
-            <Line Type="bytes" Address="0x0532be40" Value="5247524839080f85ac00000048b95941524953303039483948080f8598000000488b4308488b4b104829c14883f9200f85830000006a085948baf80000000000" />
-            <Line Type="bytes" Address="0x0532be80" Value="0010488d350f2d63004881f9f8010000743e488b781848897c4c28488b781048897c4c20488b384c8b40084c89444c1848897c4c104889d74881f9e801000074" />
-            <Line Type="bytes" Address="0x0532bec0" Value="04488b3c3148897c4c204883c110ebb94889e648832600488d44242048894608488d84240004000048894610488946184889dfe8788179fb89e84881c4000400" />
-            <Line Type="bytes" Address="0x0532bf00" Value="005b415e5dc331c048837a1810757b488d4a0848837a20107203488b09803947756880790154756280790237755c8b510c6a015881fa30303039744e81fa5330" />
-            <Line Type="bytes" Address="0x0532bf40" Value="303975478b490881f932323030743b81f932333030743381f941434b30742b81f939555330742381f947543031741b81f959415249741381f939474552740b31" />
-            <Line Type="bytes" Address="0x0532bf80" Value="c081f9323430300f94c0c331c0c3" />
-        </PatchList>
-    </Metadata>
 </Patch>

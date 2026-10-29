@@ -35,24 +35,37 @@ place after Set up: their files are linked, never patched or copied.
 State of this build ({date})
   - Menus, World Map, Music Rally and races run. Races are paced to an even 30 FPS by
     default; the launcher's Graphics page offers 60. Audio works.
-  - Fixed in this build: crowds flickering black or jumping (a shader compiler error made
+  - New in this build: the black car at the start of a race is fixed (the hull shaders now
+    see the other patches' control points they read on PS4, and sample the occlusion
+    pyramid's mip levels at their own size); the Upscaling page with an NVIDIA DLSS
+    download button and quality list; cars' shaders compile first on a new shader cache.
+  - Fixed in earlier builds: crowds flickering black or jumping (a shader compiler error made
     the crowd's GPU writes overlap), the black pit building and other missing streamed
     textures at Deep Forest, the title screen flicker, black cockpit interiors, the
     colour glare around the player's car, the green night sky at Yas Marina, the
     flickering dark shadow band at Alsace, the empty cockpit rear-view mirror, the seam
     in the sky, and frame stutter from GT7's per-frame memory being tracked page by page.
   - Known problems: occasional crashes, intermittent GPU device loss (NVIDIA driver reset),
-    black wedges in some replay and flyover shots, cars black for a moment at the start
-    of a race, background mountains missing from some angles at Deep Forest, busy race
+    black wedges in some replay and flyover shots, cars black or missing for a few seconds in
+    the first race on a new shader cache (a long load the first time a track is visited), background mountains missing from some angles at Deep Forest, busy race
     sections below 30 FPS. Online features are not available.
 
 Options (RyGT7.exe)
-  Display mode and resolution, AMD FSR upscaling and frame generation, optional NVIDIA DLSS
-  (its plugin DLL and NVIDIA's files are not included; see plugins\dlss in the source),
+  Display mode and resolution; Upscaling (Off, AMD FSR 1, AMD FSR 3.1 or NVIDIA DLSS, with a
+  quality list that sets the size the 1920x1080 picture is scaled to) and Frame generation
+  (AMD FSR 3.1, or NVIDIA DLSS on RTX 40/50). NVIDIA's DLSS files are not included: the
+  Graphics page's "Download NVIDIA DLSS" button fetches NVIDIA's own signed files from
+  NVIDIA's GitHub, checked against pinned SHA-256 hashes and NVIDIA's signature. Also
   controller bindings and ports, steering wheels, shader compilation mode, Discord presence
   and logging. GT Sport's livery, shader-pack and renderer patch options do not apply to GT7
   and are gone. Paths are kept in RyGT7.ini next to the launcher; the runtime's settings in
   user\custom_configs\CUSA03220.json (the renderer's fixed configuration name).
+
+Crash reports (GPU device lost)
+  If the game stops with an NVIDIA device loss, start the launcher from a command prompt
+  after "set RYGT_DEVICE_FAULT=1" (for that launch only). The log in user\log then
+  ends with DIAG-243 lines (the driver's fault report and the last draws); please attach
+  that log to the report. Without the variable nothing changes.
 
 Offline mode patch (included)
   The Used Cars and Legendary Cars dealerships need the community "Offline mode" patch

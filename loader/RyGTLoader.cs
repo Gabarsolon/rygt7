@@ -964,7 +964,7 @@ namespace RyGT
         readonly string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         readonly Settings settings;
         readonly TextBox game, update, modules, fonts, log;
-        readonly Button setup, play, addDlss;
+        readonly Button setup, play, addDlss, downloadDlss;
         readonly Label status;
         readonly Panel[] pages = new Panel[3];
         readonly Button[] tabs = new Button[3];
@@ -1146,86 +1146,182 @@ namespace RyGT
             {
                 try { WriteSetting("GPU", "particle_effects", true); } catch { }
             }
-            // AMD FSR scales the game's 1920x1080 picture to the window or screen size: FSR 3.1 through
-            // amd_fidelityfx_vk.dll (next to GT7.exe, part of the release), or shadGT's FSR 1 pass.
-            // AMD: FSR upscaling (FSR 3.1 through amd_fidelityfx_vk.dll, or shadGT's FSR 1) and
-            // FSR 3.1 frame generation (any GPU; independent of the upscaling choice).
-            var fsr = AddOption(graphics, "Upscale with AMD FSR (above 1080p)", "GPU", "fsr_enabled", false);
+            // Upscaling: one method at a time, scaling the game's 1920x1080 picture. AMD FSR 1 is
+            // shadGT's own pass; FSR 3.1 goes through amd_fidelityfx_vk.dll (part of the release);
+            // NVIDIA DLSS goes through Streamline (sl.dlss.dll and nvngx_dlss.dll in the dlss folder,
+            // which the Download button fetches from NVIDIA's GitHub; DlssDownload.cs), or a
+            // self-built ryGT_dlss.dll when Streamline's DLSS plugin is absent. Settings:
+            // GPU.fsr_enabled, fsr3_enabled, dlss_enabled, rcas_enabled and upscale_quality (the game
+            // gets the last as RYGT_UPSCALE_QUALITY).
+            var upscaling = Section(right, "Upscaling");
             bool fsr3Installed = File.Exists(Path.Combine(root, "amd_fidelityfx_vk.dll"));
-            var fsr3 = AddOption(graphics, fsr3Installed
-                ? "Use FSR 3.1.4 (off: FSR 1)"
-                : "Use FSR 3.1.4 (needs amd_fidelityfx_vk.dll)", "GPU", "fsr3_enabled", true);
-            var rcas = AddOption(graphics, "FSR sharpening (RCAS)", "GPU", "rcas_enabled", true);
-            var framegen = AddOption(graphics, fsr3Installed
-                ? "FSR frame generation: about 2x the frames (any GPU)"
-                : "FSR frame generation (needs amd_fidelityfx_vk.dll)", "GPU", "framegen_enabled", false);
-            foreach (var sub in new[] { fsr3, rcas, framegen }) sub.Margin = new Padding(22, 2, 0, 2);
-            fsr3.Enabled = fsr.Checked && fsr3Installed;
-            rcas.Enabled = fsr.Checked;
-            framegen.Enabled = fsr3Installed;
-            fsr.CheckedChanged += delegate { fsr3.Enabled = fsr.Checked && fsr3Installed; rcas.Enabled = fsr.Checked; };
-            // NVIDIA (the dlss folder): DLSS upscaling through ryGT_dlss.dll and nvngx_dlss.dll, and
-            // DLSS frame generation through Streamline (sl.*.dll and nvngx_dlssg.dll; RTX 40 and
-            // newer, Windows' hardware-accelerated GPU scheduling on). One frame generation at a time.
-            // The release does not include NVIDIA's files: the player adds their own copies with the
-            // button below (NVIDIA's DLSS SDK and Streamline SDK, or another game's copies).
             string dlssDir = Path.Combine(root, "dlss");
-            var dlss = AddOption(graphics, "", "GPU", "dlss_enabled", false);
-            // DLSS's input is the game's own picture, at most 1920 x 1080 (#61).
-            graphics.Controls.Add(new Label
+            Func<string, DarkComboBox, Label, FlowLayoutPanel> comboRow = (text, combo, note) =>
             {
-                Text = "Internal resolution: up to 1920 x 1080.\nAt 4K output, DLSS corresponds to Performance mode.",
-                AutoSize = true, MaximumSize = new Size(330, 0), BackColor = Color.Transparent, ForeColor = Dark.DimText,
-                Tag = "heading", Margin = new Padding(22, 2, 0, 6)
-            });
-            var dlssg = AddOption(graphics, "", "GPU", "dlssg_enabled", false);
-            dlssg.Margin = new Padding(22, 2, 0, 2);
-            // DLSS frame multiplier (GPU.dlssg_frames: generated frames a game frame, 1-5; the
-            // game gets it as RYGT_DLSSG_FRAMES): x1 is off, x2 any RTX 40/50, x3-x6 RTX 50.
-            var multRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(22, 2, 0, 2), WrapContents = false };
-            var mult = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
-            mult.Items.AddRange(new object[] { "x1 (off)", "x2", "x3 (RTX 50)", "x4 (RTX 50)", "x5 (RTX 50)", "x6 (RTX 50)" });
-            multRow.Controls.Add(new Label { Text = "Frame multiplier", AutoSize = false, Width = 174, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
-            multRow.Controls.Add(mult);
-            graphics.Controls.Add(multRow);
-            // Race frame rate (GPU.race_fps_lock, the game gets it as SHADGT_FPS_LOCK): an even 30
-            // by default; 60 when the PC keeps up.
-            var fpsRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
-            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
-            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps" });
-            fpsRow.Controls.Add(new Label { Text = "Race frame rate", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
-            fpsRow.Controls.Add(fpsLock);
-            graphics.Controls.Add(fpsRow);
-            fpsLock.SelectedIndex = ReadIntSetting("GPU", "race_fps_lock", 30) == 60 ? 1 : 0;
-            fpsLock.SelectedIndexChanged += delegate
+                var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0), WrapContents = false };
+                row.Controls.Add(new Label { Text = text, AutoSize = false, Width = 110, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+                row.Controls.Add(combo);
+                return row;
+            };
+            Func<Label> noteLabel = () => new Label
             {
-                try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }
+                AutoSize = true, MaximumSize = new Size(340, 0), BackColor = Color.Transparent, ForeColor = Dark.DimText,
+                Margin = new Padding(118, 2, 0, 4)
+            };
+            var method = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
+            method.Items.AddRange(new object[] { "Off", "AMD FSR 1", "AMD FSR 3.1", "NVIDIA DLSS" });
+            var methodNote = noteLabel();
+            upscaling.Controls.Add(comboRow("Method", method, methodNote));
+            upscaling.Controls.Add(methodNote);
+
+            // Quality: the size the upscaler scales to. The game always draws 1920x1080, so a mode
+            // picks the output (the picture times 1.5, 1.72, 2 or 3), which is then fitted to the
+            // window; Auto scales straight to the window (ryty_upscale.h in the renderer).
+            var qualityKeys = new[] { "auto", "native", "quality", "balanced", "performance", "ultra_performance" };
+            var qualityScales = new[] { 0.0, 1.0, 1.5, 1.0 / 0.58, 2.0, 3.0 };
+            var quality = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
+            quality.Items.AddRange(new object[] { "Auto (window size)", "Native (anti-aliasing only)", "Quality", "Balanced", "Performance", "Ultra Performance" });
+            quality.SelectedIndex = Math.Max(0, Array.IndexOf(qualityKeys, ReadStringSetting("GPU", "upscale_quality", "auto")));
+            var qualityNote = noteLabel();
+            upscaling.Controls.Add(comboRow("Quality", quality, qualityNote));
+            upscaling.Controls.Add(qualityNote);
+            var rcas = AddOption(upscaling, "Sharpening (FSR)", "GPU", "rcas_enabled", true);
+            rcas.Margin = new Padding(118, 2, 0, 2);
+
+            // NVIDIA files: the Download button, the status of what is there, and Add from a folder.
+            var dlssStatus = noteLabel();
+            dlssStatus.Margin = new Padding(0, 2, 0, 2);
+            var dlssButtons = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 8, 0, 0), WrapContents = false };
+            downloadDlss = new Button { Text = "Download NVIDIA DLSS " + DlssDownload.DlssVersion, AutoSize = true, Margin = new Padding(0, 0, 6, 0) };
+            addDlss = new Button { Text = "Add from a folder...", AutoSize = true, Margin = new Padding(0) };
+            dlssButtons.Controls.Add(downloadDlss);
+            dlssButtons.Controls.Add(addDlss);
+            upscaling.Controls.Add(dlssButtons);
+            upscaling.Controls.Add(dlssStatus);
+
+            // Frame generation: one at a time, AMD's (any GPU, about 2x) or NVIDIA's (RTX 40 and
+            // newer, Windows' hardware-accelerated GPU scheduling on; 2x-6x, the multiplier is
+            // GPU.dlssg_frames, which the game gets as RYGT_DLSSG_FRAMES). Settings:
+            // GPU.framegen_enabled, dlssg_enabled.
+            var frameGen = Section(right, "Frame generation");
+            var fg = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
+            fg.Items.AddRange(new object[] { "Off", "AMD FSR 3.1 (any GPU)", "NVIDIA DLSS (RTX 40+)" });
+            var fgNote = noteLabel();
+            frameGen.Controls.Add(comboRow("Method", fg, fgNote));
+            var mult = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
+            mult.Items.AddRange(new object[] { "2x", "3x (RTX 50)", "4x (RTX 50)", "5x (RTX 50)", "6x (RTX 50)" });
+            mult.SelectedIndex = Math.Max(1, Math.Min(5, ReadIntSetting("GPU", "dlssg_frames", 1))) - 1;
+            var multRow = comboRow("Multiplier", mult, null);
+            frameGen.Controls.Add(multRow);
+            frameGen.Controls.Add(fgNote);
+
+            bool loading = true;
+            Func<string, bool> has = name => File.Exists(Path.Combine(dlssDir, name));
+            Func<bool> dlssReady = () => has("nvngx_dlss.dll") && ((has("sl.interposer.dll") && has("sl.common.dll") && has("sl.dlss.dll")) || has("ryGT_dlss.dll"));
+            Func<bool> dlssgReady = () => has("sl.interposer.dll") && has("sl.common.dll") && has("sl.dlss_g.dll") && has("nvngx_dlssg.dll");
+            Action save = delegate
+            {
+                if (loading) return;
+                try
+                {
+                    int m = method.SelectedIndex;
+                    WriteSetting("GPU", "fsr_enabled", m == 1 || m == 2);
+                    if (m == 1 || m == 2) WriteSetting("GPU", "fsr3_enabled", m == 2);
+                    WriteSetting("GPU", "dlss_enabled", m == 3);
+                    WriteSetting("GPU", "upscale_quality", qualityKeys[Math.Max(0, quality.SelectedIndex)]);
+                    WriteSetting("GPU", "framegen_enabled", fg.SelectedIndex == 1);
+                    WriteSetting("GPU", "dlssg_enabled", fg.SelectedIndex == 2);
+                    if (fg.SelectedIndex == 2) WriteSetting("GPU", "dlssg_frames", mult.SelectedIndex + 1);
+                }
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
-            bool multLoading = true;
-            Action showMult = delegate
+            Action refresh = delegate
             {
-                multLoading = true;
-                int generated = Math.Max(1, Math.Min(5, ReadIntSetting("GPU", "dlssg_frames", 1)));
-                mult.SelectedIndex = dlssg.Checked ? generated : 0;
-                multLoading = false;
+                bool dlssOk = dlssReady(), dlssgOk = dlssgReady();
+                int m = method.SelectedIndex;
+                methodNote.Text = m == 0 ? "The picture is stretched to the window as it is."
+                                : m == 1 ? "Any GPU. Light and simple."
+                                : m == 2 ? (fsr3Installed ? "Any GPU. Sharper than FSR 1." : "Needs amd_fidelityfx_vk.dll next to GT7.exe.")
+                                : dlssOk ? "RTX cards only. The best image."
+                                         : "RTX cards only. Download the NVIDIA files below first.";
+                bool scaler = m == 2 || m == 3;
+                quality.Enabled = scaler;
+                int q = Math.Max(0, quality.SelectedIndex);
+                if (!scaler)
+                    qualityNote.Text = m == 1 ? "FSR 1 always scales to the window size." : "Pick FSR 3.1 or DLSS to choose a quality.";
+                else if (q == 0)
+                    qualityNote.Text = "1920 x 1080, scaled to the window size (only when the window is bigger).";
+                else
+                {
+                    int w = (int)Math.Round(1920 * qualityScales[q]), h = (int)Math.Round(1080 * qualityScales[q]);
+                    qualityNote.Text = q == 1 ? "1920 x 1080 at its own size, anti-aliased, then fitted to the window."
+                                              : "1920 x 1080 -> " + w + " x " + h + ", then fitted to the window. Higher is sharper and costs more GPU.";
+                }
+                rcas.Visible = m == 1 || m == 2;
+                fgNote.Text = fg.SelectedIndex == 0 ? "Off: the game's own frame rate."
+                            : fg.SelectedIndex == 1 ? (fsr3Installed ? "About 2x the frames on any GPU." : "Needs amd_fidelityfx_vk.dll next to GT7.exe.")
+                            : dlssgOk ? "Generated frames between game frames. RTX 40 or newer."
+                                      : "RTX 40 or newer. Download the NVIDIA files above first.";
+                multRow.Visible = fg.SelectedIndex == 2;
+                var missing = new List<string>();
+                if (!has("nvngx_dlss.dll")) missing.Add("nvngx_dlss.dll");
+                if (!has("sl.interposer.dll") || !has("sl.common.dll")) missing.Add("Streamline");
+                else if (!has("sl.dlss.dll") && !has("ryGT_dlss.dll")) missing.Add("sl.dlss.dll");
+                if (!has("sl.dlss_g.dll") && has("sl.interposer.dll")) missing.Add("sl.dlss_g.dll");
+                if (!has("nvngx_dlssg.dll")) missing.Add("nvngx_dlssg.dll");
+                bool none = !has("nvngx_dlss.dll") && !has("sl.interposer.dll") && !has("nvngx_dlssg.dll");
+                dlssStatus.Text = none
+                    ? "NVIDIA DLSS files: not installed. RyGT7 does not include them; the button downloads NVIDIA's own signed files from NVIDIA's GitHub."
+                    : "NVIDIA DLSS files: " + (has("nvngx_dlss.dll") ? "DLSS " + FileVersion(Path.Combine(dlssDir, "nvngx_dlss.dll")) : "no DLSS") +
+                      ", " + (has("sl.interposer.dll") ? "Streamline " + FileVersion(Path.Combine(dlssDir, "sl.interposer.dll")) : "no Streamline") +
+                      (missing.Count == 0 ? ". Ready." : ". Missing: " + string.Join(", ", missing) + ".");
             };
-            Action refreshDlss = delegate
+            Action load = delegate
             {
-                bool dlssInstalled = File.Exists(Path.Combine(dlssDir, "ryGT_dlss.dll")) &&
-                                     File.Exists(Path.Combine(dlssDir, "nvngx_dlss.dll"));
-                bool dlssgInstalled = File.Exists(Path.Combine(dlssDir, "sl.interposer.dll")) &&
-                                      File.Exists(Path.Combine(dlssDir, "nvngx_dlssg.dll"));
-                dlss.Text = dlssInstalled ? "Upscale with NVIDIA DLSS (RTX cards; instead of FSR)"
-                                          : "Upscale with NVIDIA DLSS (add the DLSS files first)";
-                dlss.Enabled = dlssInstalled;
-                dlssg.Text = dlssgInstalled ? "DLSS frame generation (RTX 40+)"
-                                            : "DLSS frame generation (add the DLSS files first)";
-                dlssg.Enabled = dlssgInstalled;
-                mult.Enabled = dlssgInstalled;
+                loading = true;
+                bool dlssOn = ReadSetting("GPU", "dlss_enabled", false) && dlssReady();
+                bool fsrOn = ReadSetting("GPU", "fsr_enabled", false);
+                method.SelectedIndex = dlssOn ? 3 : !fsrOn ? 0 : ReadSetting("GPU", "fsr3_enabled", true) && fsr3Installed ? 2 : 1;
+                bool dlssgOn = ReadSetting("GPU", "dlssg_enabled", false) && dlssgReady();
+                fg.SelectedIndex = dlssgOn ? 2 : ReadSetting("GPU", "framegen_enabled", false) && fsr3Installed ? 1 : 0;
+                loading = false;
+                refresh();
             };
-            refreshDlss();
-            addDlss = new Button { Text = "Add DLSS files...", AutoSize = true, Margin = new Padding(22, 2, 0, 4) };
+            Action refreshDlss = delegate { load(); };
+            int lastMethod = -1, lastFg = -1;
+            method.SelectedIndexChanged += delegate
+            {
+                if (!loading && ((method.SelectedIndex == 3 && !dlssReady()) || (method.SelectedIndex == 2 && !fsr3Installed)))
+                {
+                    MessageBox.Show(this, method.SelectedIndex == 3
+                        ? "DLSS needs NVIDIA's files. Use \"Download NVIDIA DLSS\" first (RTX cards only)."
+                        : "FSR 3.1 needs amd_fidelityfx_vk.dll next to GT7.exe.");
+                    method.SelectedIndex = Math.Max(0, lastMethod);
+                    return;
+                }
+                lastMethod = method.SelectedIndex;
+                save();
+                refresh();
+            };
+            quality.SelectedIndexChanged += delegate { save(); refresh(); };
+            fg.SelectedIndexChanged += delegate
+            {
+                if (!loading && ((fg.SelectedIndex == 2 && !dlssgReady()) || (fg.SelectedIndex == 1 && !fsr3Installed)))
+                {
+                    MessageBox.Show(this, fg.SelectedIndex == 2
+                        ? "DLSS frame generation needs NVIDIA's files. Use \"Download NVIDIA DLSS\" first (RTX 40 or newer)."
+                        : "FSR frame generation needs amd_fidelityfx_vk.dll next to GT7.exe.");
+                    fg.SelectedIndex = Math.Max(0, lastFg);
+                    return;
+                }
+                lastFg = fg.SelectedIndex;
+                save();
+                refresh();
+            };
+            mult.SelectedIndexChanged += delegate { save(); };
+            load();
+            lastMethod = method.SelectedIndex;
+            lastFg = fg.SelectedIndex;
             addDlss.Click += delegate
             {
                 // The game keeps the DLSS files open while it runs (#61).
@@ -1239,14 +1335,14 @@ namespace RyGT
                 }
                 using (var dialog = new FolderBrowserDialog
                 {
-                    Description = "Pick the folder with your NVIDIA DLSS files: nvngx_dlss.dll for upscaling; " +
-                                  "for frame generation also nvngx_dlssg.dll and Streamline's sl.*.dll and " +
+                    Description = "Pick the folder with your NVIDIA DLSS files: nvngx_dlss.dll and Streamline's " +
+                                  "sl.*.dll for upscaling; for frame generation also nvngx_dlssg.dll and " +
                                   "NvLowLatencyVk.dll (from NVIDIA's DLSS and Streamline SDKs)."
                 })
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     var names = new[] { "nvngx_dlss.dll", "nvngx_dlssg.dll", "sl.interposer.dll", "sl.common.dll",
-                                        "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "NvLowLatencyVk.dll" };
+                                        "sl.dlss.dll", "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "NvLowLatencyVk.dll" };
                     int copied = 0;
                     try
                     {
@@ -1273,36 +1369,94 @@ namespace RyGT
                         : "Copied " + copied + " DLSS file(s) into the dlss folder.");
                 }
             };
-            graphics.Controls.Add(addDlss);
-            // DLSS and FSR both upscale, so one at a time; DLSS runs in Performance mode (#61).
-            fsr.CheckedChanged += delegate { if (fsr.Checked && dlss.Checked) dlss.Checked = false; };
-            Action updateDlss = delegate
+            // Download NVIDIA DLSS: NVIDIA's DLSS and Streamline files from NVIDIA's GitHub, pinned
+            // versions checked by SHA-256 and NVIDIA's signature (DlssDownload.cs); no admin rights.
+            downloadDlss.Click += delegate
             {
-                if (!dlss.Checked) return;
-                if (fsr.Checked) fsr.Checked = false;
-                try
+                var games = Process.GetProcessesByName("GT7");
+                bool gameRunning = games.Length != 0;
+                foreach (var process in games) process.Dispose();
+                if (gameRunning)
                 {
-                    if (ReadStringSetting("GPU", "dlss_quality", "performance") != "performance")
-                        WriteSetting("GPU", "dlss_quality", "performance");
+                    MessageBox.Show(this, "Close GT7 before downloading the DLSS files.");
+                    return;
                 }
-                catch (Exception e) { MessageBox.Show(this, "Could not save the DLSS setting: " + e.Message); }
+                if (MessageBox.Show(this,
+                        "Download NVIDIA DLSS " + DlssDownload.DlssVersion + " and Streamline " + DlssDownload.StreamlineVersion +
+                        " (about 70 MB) into the dlss folder?\n\n" +
+                        "From: NVIDIA's own GitHub repositories (github.com/NVIDIA/DLSS and github.com/NVIDIA-RTX/Streamline). " +
+                        "RyGT7 does not ship these files.\n\n" +
+                        "Checks: each file must match a pinned SHA-256 hash and carry NVIDIA Corporation's digital " +
+                        "signature, or it is not used.\n\n" +
+                        "Needs an NVIDIA RTX card (frame generation: RTX 40 or newer). The files are NVIDIA's, under " +
+                        "NVIDIA's licenses (see dlss\\" + DlssDownload.NoticeName + ").", "Download NVIDIA DLSS",
+                        MessageBoxButtons.OKCancel) != DialogResult.OK) return;
+                downloadDlss.Enabled = false;
+                addDlss.Enabled = false;
+                var worker = new Thread(() =>
+                {
+                    string message;
+                    try
+                    {
+                        int count = DlssDownload.Install(dlssDir, text => BeginInvoke((Action)(() => dlssStatus.Text = text)));
+                        message = count == 0 ? "The NVIDIA DLSS files were already up to date."
+                                             : "Downloaded and checked " + count + " NVIDIA DLSS file(s).";
+                    }
+                    catch (Exception e)
+                    {
+                        message = "Could not download the DLSS files: " + e.Message;
+                    }
+                    BeginInvoke((Action)(() =>
+                    {
+                        downloadDlss.Enabled = true;
+                        addDlss.Enabled = true;
+                        refreshDlss();
+                        MessageBox.Show(this, message);
+                    }));
+                }) { IsBackground = true };
+                worker.Start();
             };
-            dlss.CheckedChanged += delegate { updateDlss(); };
-            updateDlss();
-            framegen.CheckedChanged += delegate { if (framegen.Checked && dlssg.Checked) dlssg.Checked = false; };
-            dlssg.CheckedChanged += delegate { if (dlssg.Checked && framegen.Checked) framegen.Checked = false; };
-            // The multiplier and the DLSS frame generation box follow each other.
-            showMult();
-            dlssg.CheckedChanged += delegate { showMult(); };
-            mult.SelectedIndexChanged += delegate
+            // Race frame rate (GPU.race_fps_lock, the game gets it as SHADGT_FPS_LOCK): an even 30
+            // by default; 60 when the PC keeps up.
+            var fpsRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
+            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
+            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps" });
+            fpsRow.Controls.Add(new Label { Text = "Race frame rate", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+            fpsRow.Controls.Add(fpsLock);
+            graphics.Controls.Add(fpsRow);
+            fpsLock.SelectedIndex = ReadIntSetting("GPU", "race_fps_lock", 30) == 60 ? 1 : 0;
+            // Shader cache size (GPU.driver_cache_gb, GPU.driver_cache_unlimited; the game gets it as
+            // RYGT_DRIVER_CACHE_MAX_MB): the renderer's saved GPU shader cache, like NVIDIA's own
+            // setting. 0 turns it off; a bigger cache keeps more cars and tracks compiled, and is saved
+            // less often as it grows (each save copies it whole).
+            var cacheRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
+            cacheRow.Controls.Add(new Label { Text = "Shader cache size (GB, 0 = off)", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+            var cacheSize = new NumericUpDown { Minimum = 0, Maximum = 100, DecimalPlaces = 0, Increment = 1, Width = 70,
+                                                Value = Math.Max(0, Math.Min(100, ReadIntSetting("GPU", "driver_cache_gb", 5))) };
+            var cacheUnlimited = new DarkCheckBox { Text = "Unlimited", AutoSize = true, Checked = ReadSetting("GPU", "driver_cache_unlimited", false), Margin = new Padding(10, 4, 0, 0) };
+            cacheSize.Enabled = !cacheUnlimited.Checked;
+            cacheRow.Controls.Add(cacheSize);
+            cacheRow.Controls.Add(cacheUnlimited);
+            graphics.Controls.Add(cacheRow);
+            cacheSize.ValueChanged += delegate
             {
-                if (multLoading) return;
-                try
-                {
-                    if (mult.SelectedIndex > 0) WriteSetting("GPU", "dlssg_frames", mult.SelectedIndex);
-                    bool on = mult.SelectedIndex > 0;
-                    if (dlssg.Checked != on) dlssg.Checked = on; // saves dlssg_enabled
-                }
+                try { WriteSetting("GPU", "driver_cache_gb", (int)cacheSize.Value); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            cacheUnlimited.CheckedChanged += delegate
+            {
+                cacheSize.Enabled = !cacheUnlimited.Checked;
+                try { WriteSetting("GPU", "driver_cache_unlimited", cacheUnlimited.Checked); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            // FIX-220: AMD GPUs only, off by default: shaders that read vertex values are interpolated
+            // through KHR barycentrics (GPU.amd_graphics_fix, the game gets it as
+            // RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC). It fixes some AMD rendering glitches but makes shader
+            // loading slower; other GPUs ignore it.
+            AddOption(graphics, "AMD graphics fix (AMD GPUs only; slower shader loading)", "GPU", "amd_graphics_fix", false);
+            fpsLock.SelectedIndexChanged += delegate
+            {
+                try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
             // Shaders: the stored ones are built while the splash screen shows; a new one pauses
@@ -1939,6 +2093,31 @@ namespace RyGT
             return parsed as Dictionary<string, object> ?? new Dictionary<string, object>();
         }
 
+        /// A GPU section setting from the game's settings file, or null.
+        static object GpuSetting(string root, string key)
+        {
+            try
+            {
+                string path = Path.Combine(root, "user", "custom_configs", "CUSA03220.json");
+                var config = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                object found, value;
+                var gpu = config != null && config.TryGetValue("GPU", out found) ? found as Dictionary<string, object> : null;
+                if (gpu != null && gpu.TryGetValue(key, out value)) return value;
+            }
+            catch { }
+            return null;
+        }
+
+        /// The shader cache limit in MB for RYGT_DRIVER_CACHE_MAX_MB: -1 unlimited, 0 off, 5 GB unless set.
+        static long DriverCacheMaxMb(string root)
+        {
+            if (GpuSetting(root, "driver_cache_unlimited") is bool && (bool)GpuSetting(root, "driver_cache_unlimited")) return -1;
+            object gb = GpuSetting(root, "driver_cache_gb");
+            int size = gb is int ? Math.Max(0, Math.Min(100, (int)gb)) : 5;
+            return size * 1024L;
+        }
+
         /// GPU.race_fps_lock from the game's settings: the race frame rate, 30 unless 60 was chosen.
         static int RaceFpsLock(string root)
         {
@@ -1971,6 +2150,17 @@ namespace RyGT
             }
             catch { }
             return 1;
+        }
+
+        /// A DLL's file version ("310.9.16"), or "?" when it has none.
+        static string FileVersion(string path)
+        {
+            try
+            {
+                var info = FileVersionInfo.GetVersionInfo(path);
+                return info.FileMajorPart + "." + info.FileMinorPart + "." + info.FileBuildPart;
+            }
+            catch (Exception) { return "?"; }
         }
 
         internal static void InstallDlssLibrary(string source, string directory)
@@ -2021,6 +2211,7 @@ namespace RyGT
             play.Enabled = ready && !busy && !running;
             setup.Enabled = !busy && !running;
             addDlss.Enabled = !busy && !running;
+            downloadDlss.Enabled = !busy && !running;
             if (!busy) status.Text = ready ? "Ready. Press Play." : "Not set up yet. Pick the folders and press Set up.";
             if (running) status.Text = "GT7 is running. Close the game before running Set up.";
         }
@@ -2592,8 +2783,14 @@ namespace RyGT
                         // renderer region, the CPU saw stale data and culled the whole rear-view mirror.
                         start.EnvironmentVariables["RYGT_NATIVE_INPLACE_FROM"] = "e000000000";
                         start.EnvironmentVariables["SHADGT_FPS_LOCK"] = RaceFpsLock(root).ToString();
+                        // Shader cache size and the AMD graphics fix from the Graphics page.
+                        start.EnvironmentVariables["RYGT_DRIVER_CACHE_MAX_MB"] = DriverCacheMaxMb(root).ToString();
+                        start.EnvironmentVariables["RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC"] =
+                            GpuSetting(root, "amd_graphics_fix") is bool && (bool)GpuSetting(root, "amd_graphics_fix") ? "1" : "0";
                         // DLSS frame multiplier from the Graphics page (generated frames, 1-5).
                         start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
+                        // Upscaling quality from the Graphics page (the size DLSS and FSR 3.1 scale to).
+                        start.EnvironmentVariables["RYGT_UPSCALE_QUALITY"] = GpuSetting(root, "upscale_quality") as string ?? "auto";
                         started = Process.Start(start);
                     }
                     catch (Exception e)
