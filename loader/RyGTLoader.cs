@@ -1949,6 +1949,8 @@ namespace RyGT
             // RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC). It fixes some AMD rendering glitches but makes shader
             // loading slower; other GPUs ignore it.
             AddOption(graphics, "AMD graphics fix (AMD GPUs only; slower shader loading)", "GPU", "amd_graphics_fix", false);
+            // A tester's RX 6000 series card crashed loading into races with it on (2026-10-30).
+            graphics.Controls.Add(Hint("Can crash RX 6000 series GPUs when loading into a race. If the game crashes when a race loads, turn this off."));
             fpsLock.SelectedIndexChanged += delegate
             {
                 try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }
@@ -2918,6 +2920,16 @@ namespace RyGT
             File.Copy(convertedExe, Exe, true);
             string registry = Path.ChangeExtension(convertedExe, ".registry.json");
             if (File.Exists(registry)) File.Copy(registry, Path.ChangeExtension(Exe, ".registry.json"), true);
+            // The converter's own GT7.exe (and those of earlier Set ups) stay as GT7.exe.converted: started
+            // from convert\runtime-*, GT7 found none of the launcher's settings next to it.
+            foreach (string runtimeDir in Directory.GetDirectories(work, "runtime-*"))
+            {
+                string leftover = Path.Combine(runtimeDir, "GT7.exe");
+                if (!File.Exists(leftover)) continue;
+                string kept = leftover + ".converted";
+                if (File.Exists(kept)) File.Delete(kept);
+                File.Move(leftover, kept);
+            }
 
             // 4. Fonts.
             SetStatus("Copying the fonts...");
