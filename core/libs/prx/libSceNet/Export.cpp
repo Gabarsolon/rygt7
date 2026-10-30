@@ -1546,6 +1546,8 @@ int APS5_VABI sceNetConnect(int s, const void* addr, uint32_t addrlen) {
     if (native.ss_family == AF_INET) {
         auto& destination = reinterpret_cast<sockaddr_in&>(native);
         const auto port = ntohs(destination.sin_port);
+        // Offline: nothing leaves this PC, so GT7 is told at once instead of waiting on the internet.
+        if (!RyGTOnline::Enabled() && (ntohl(destination.sin_addr.s_addr) >> 24) != 127) return fail(NET_ECONNREFUSED);
         bool polyphony = false;
         {
             std::lock_guard<std::mutex> lk(g_polyphony_mutex);
@@ -2179,7 +2181,11 @@ int APS5_VABI sceNetResolverStartNtoa(int rid, const char* hostname, void* addr,
     const std::string name = hostname;
     const bool polyphony = name.find('{') != std::string::npos || name.find("gran-turismo.com") != std::string::npos ||
         name.find("granturismo-online.net") != std::string::npos;
-    const char* lookup = polyphony && RyGTOnline::Enabled() ? RyGTOnline::Get().serverHost.c_str() : hostname;
+    if (!RyGTOnline::Enabled()) {
+        *errno_slot() = NET_ENOENT;
+        return NET_ERROR_RESOLVER_ENODNS;
+    }
+    const char* lookup = polyphony ? RyGTOnline::Get().serverHost.c_str() : hostname;
     if (lookup != hostname) log_soft(__func__, ("sending " + name + " to RyGTServer").c_str());
     const int result = ::getaddrinfo(lookup, nullptr, &hints, &results);
     if (result != 0) {

@@ -1526,7 +1526,7 @@ namespace RyGT
 
             // ---- Home: the pictures, the logo (launcher\logo.png) or the title, Play and the settings button
             play = new GlowButton { Text = "Play", Size = new Size(236, 46), Font = Dark.Caps(11f) };
-            play.Click += delegate { Play(); };
+            play.Click += delegate { ChooseMode(); };
             var gear = new GlowButton { Text = ((char)0xE713).ToString(), Glyph = true, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f) };
             gear.Click += delegate { ShowSettings(lastPage); };
             var logoImage = LoadLogo();
@@ -2045,7 +2045,11 @@ namespace RyGT
             log.BackColor = Dark.Field;
             log.ForeColor = Color.FromArgb(180, 186, 196);
             HandleCreated += delegate { Dark.TitleBar(this); };
-            Shown += delegate { ActiveControl = play.Enabled ? (Control)play : gear; };
+            Shown += delegate
+            {
+                ActiveControl = play.Enabled ? (Control)play : gear;
+                if (NeedsAccount) AskForAccount(delegate { });
+            };
             RefreshState();
             var stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             stateTimer.Tick += delegate { if (!busy) RefreshState(); };

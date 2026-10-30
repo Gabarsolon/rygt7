@@ -931,8 +931,10 @@ namespace RyGT.Server
             request.ContentType = "application/json";
             request.Timeout = 10000;
             if (key.Length > 0) request.Headers["X-Member-Api-Key"] = key;
+            // The registration key is asked for by shadNet once shadnet.cfg has one (the launcher fills it in).
             byte[] body = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
-                { "npid", onlineId }, { "email", onlineId + "@shadps4.local" }, { "password", password } }));
+                { "npid", onlineId }, { "email", onlineId + "@shadps4.local" }, { "password", password },
+                { "key", ShadNetSetting("RegistrationSecretKey") ?? "" } }));
             try
             {
                 using (var stream = request.GetRequestStream()) stream.Write(body, 0, body.Length);
