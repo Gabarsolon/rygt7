@@ -69,7 +69,7 @@ Options (RyGT7.exe)
   (AMD FSR 3.1, or NVIDIA DLSS on RTX 40/50). NVIDIA's DLSS files are not included: the
   Graphics page's "Download NVIDIA DLSS" button fetches NVIDIA's own signed files from
   NVIDIA's GitHub, checked against pinned SHA-256 hashes and NVIDIA's signature. Also
-  controller bindings and ports, steering wheels, shader compilation mode, Discord presence
+  texture sharpness, controller bindings and ports, steering wheels, shader compilation mode, Discord presence
   and logging. GT Sport's livery, shader-pack and renderer patch options do not apply to GT7
   and are gone. Paths are kept in RyGT7.ini next to the launcher; the runtime's settings in
   user\custom_configs\CUSA03220.json (the renderer's fixed configuration name).
