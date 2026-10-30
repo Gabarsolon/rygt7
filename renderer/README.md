@@ -98,3 +98,7 @@ stored shaders and pipelines with its progress bar and game hold, the background
 `GPU.precompile_shaders` setting, and the shader pack's rebuild (PB-1 to PB-4). Shaders are compiled
 when the game first needs them and kept in the shaders folder (PERF-032) as before.
 `ryty-gpu` and `linux-proton` have every patch through 0061 (commit `087e2a70`).
+Patch 0062 is online play's PSN library (`libSceNpAuth.prx`, target `ryty_np`): NpSignaling's P2P
+transport and RyGTServer peer lookup, the web API's HTTP/2 through the game's `libSceHttp`, PSN calls
+shadNet does not answer sent to RyGTServer (`/rygt/psn/...`), push context IDs as UUID strings, a
+web API lock fix, response sizes, and GT7's game log (see [the server README](../server/README.md#gt7)).

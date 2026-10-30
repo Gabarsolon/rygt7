@@ -197,6 +197,28 @@ int APS5_VABI sceHttpUriEscape(char* out, size_t* require, size_t prepare, const
     return copyOut(escaped, out, require, prepare);
 }
 
+int APS5_VABI sceHttpUriUnescape(char* out, size_t* require, size_t prepare, const char* in) {
+    if (!in) return ERROR_INVALID_VALUE;
+    if (!out && !require) return ERROR_INVALID_VALUE;
+
+    const auto hexValue = [](char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::string unescaped;
+    for (const char* c = in; *c; ++c) {
+        if (*c == '%' && c[1] && c[2] && hexValue(c[1]) >= 0 && hexValue(c[2]) >= 0) {
+            unescaped.push_back(static_cast<char>(hexValue(c[1]) << 4 | hexValue(c[2])));
+            c += 2;
+        } else {
+            unescaped.push_back(*c);
+        }
+    }
+    return copyOut(unescaped, out, require, prepare);
+}
+
 int APS5_VABI sceHttpUriParse(SceHttpUriElement* out, const char* src_url, void* pool, size_t* require, size_t prepare) {
     if (!src_url) return ERROR_INVALID_URL;
     const bool write = out && pool;
