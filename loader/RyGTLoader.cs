@@ -1391,8 +1391,11 @@ namespace RyGT
                         "Needs an NVIDIA RTX card (frame generation: RTX 40 or newer). The files are NVIDIA's, under " +
                         "NVIDIA's licenses (see dlss\\" + DlssDownload.NoticeName + ").", "Download NVIDIA DLSS",
                         MessageBoxButtons.OKCancel) != DialogResult.OK) return;
-                downloadDlss.Enabled = false;
-                addDlss.Enabled = false;
+                // Busy like Set up, so the state timer keeps Play, Set up and both DLSS buttons off
+                // while the files in the dlss folder are replaced one by one.
+                busy = true;
+                RefreshState();
+                status.Text = "Downloading the NVIDIA DLSS files...";
                 var worker = new Thread(() =>
                 {
                     string message;
@@ -1408,8 +1411,8 @@ namespace RyGT
                     }
                     BeginInvoke((Action)(() =>
                     {
-                        downloadDlss.Enabled = true;
-                        addDlss.Enabled = true;
+                        busy = false;
+                        RefreshState();
                         refreshDlss();
                         MessageBox.Show(this, message);
                     }));
@@ -1417,10 +1420,11 @@ namespace RyGT
                 worker.Start();
             };
             // Race frame rate (GPU.race_fps_lock, the game gets it as SHADGT_FPS_LOCK): an even 30
-            // by default; 60 when the PC keeps up.
+            // by default; 60 when the PC keeps up. 60 is marked experimental: busy race sections
+            // stay well under it, and frames of 16.7, 33 and 50 ms mixed judder more than an even 30.
             var fpsRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
-            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
-            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps" });
+            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
+            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps (experimental)" });
             fpsRow.Controls.Add(new Label { Text = "Race frame rate", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
             fpsRow.Controls.Add(fpsLock);
             graphics.Controls.Add(fpsRow);
