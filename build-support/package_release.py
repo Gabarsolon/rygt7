@@ -3,7 +3,7 @@
 Usage:
   python -I package_release.py --runtime <folder> --launcher <RyGT7.exe> --converter <ryty.exe>
       --out <folder> [--renderer-source <shadGT7 checkout>] [--name RyGT7-<date>-prerelease] [--zip]
-      [--server <RyGTServer.exe> --shadnet <shadNet folder>]
+      [--server <RyGTServer.exe> [--shadnet <shadNet folder, default server/shadnet>]]
 
 Only these go in:
   - libs\\: the file names listed in runtime-files.txt, from <runtime>\\libs
@@ -58,7 +58,7 @@ SHADNET_KEYS = ("MemberApiKey", "AdminApiKey", "RegistrationSecretKey", "AdminsL
 def put_server(package, args):
     """server\\ for hosting online play (see the top of this file)."""
     if not (args.server and args.shadnet):
-        raise SystemExit("--server and --shadnet go together")
+        raise SystemExit("--server needs a shadNet folder (--shadnet)")
     package.put(args.server, "server\\RyGTServer.exe")
     package.put(args.runtime_zstd, "server\\libzstd.dll")
     package.put_tree(args.gcc_licenses / "zstd", "licenses\\zstd")
@@ -161,7 +161,8 @@ def main():
     parser.add_argument("--gcc-licenses", type=Path,
                         default=Path(r"C:\msys64\ucrt64\share\licenses"))
     parser.add_argument("--server", type=Path, help="RyGTServer.exe built with server/build.cmd")
-    parser.add_argument("--shadnet", type=Path, help="a shadNet server folder (shadnet.exe and its DLLs)")
+    parser.add_argument("--shadnet", type=Path, default=REPO / "server" / "shadnet",
+                        help="a shadNet server folder (shadnet.exe and its DLLs); default this repository's")
     parser.add_argument("--runtime-zstd", type=Path, default=Path(r"C:\msys64\ucrt64\bin\libzstd.dll"),
                         help="the libzstd.dll RyGTServer loads (MSYS2 UCRT64's)")
     parser.add_argument("--name")
@@ -209,7 +210,7 @@ def main():
         if not source.is_dir():
             raise SystemExit("GCC runtime license notices not found: %s" % source)
         package.put_tree(source, "licenses\\gcc-runtime\\" + n)
-    if args.server or args.shadnet:
+    if args.server:
         put_server(package, args)
     readme = (HERE / "release-readme.txt").read_text(encoding="utf-8")
     package.put_text(readme.replace("{name}", name).replace("{date}", today), "README.txt")
