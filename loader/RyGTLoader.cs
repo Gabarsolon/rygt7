@@ -1949,6 +1949,8 @@ namespace RyGT
             // RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC). It fixes some AMD rendering glitches but makes shader
             // loading slower; other GPUs ignore it.
             AddOption(graphics, "AMD graphics fix (AMD GPUs only; slower shader loading)", "GPU", "amd_graphics_fix", false);
+            // A tester's RX 6000 series card crashed loading into races with it on (2026-10-30).
+            graphics.Controls.Add(Hint("Can crash RX 6000 series GPUs when loading into a race. If the game crashes when a race loads, turn this off."));
             fpsLock.SelectedIndexChanged += delegate
             {
                 try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }

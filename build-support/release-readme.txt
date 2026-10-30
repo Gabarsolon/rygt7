@@ -35,6 +35,13 @@ place after Set up: their files are linked, never patched or copied.
 State of this build ({date})
   - Menus, World Map, Music Rally and races run. Races are paced to an even 30 FPS by
     default; the launcher's Graphics page offers 60. Audio works.
+  - New in 2026-10-30: a redesigned launcher (a home view and a settings view) and online play
+    (hosting and joining rooms through the launcher's Online page, by WackyHacky; online play
+    needs the host's ports forwarded); fewer race hitches from shader compiles (background
+    compiles follow the race frame rate and draws on screen are built first, by WillScarlett);
+    Ryty v1.1.0 (relinker checks, AMD and Intel CPU instruction coverage); Discord shows the
+    official Gran Turismo 7 game; Set up says when the game dump or system modules must be
+    dumped again; Play and Set up wait while the DLSS files download.
   - New in 2026-10-29b: GT7 always uses the native renderer; the launcher's settings are
     read from any folder path; a "protect region as write-only" crash during play is fixed;
     AMD GPUs get the BC6H textures they refused to create (they were missing); far less log
@@ -52,7 +59,9 @@ State of this build ({date})
   - Known problems: occasional crashes, intermittent GPU device loss (NVIDIA driver reset),
     black wedges in some replay and flyover shots, cars black or missing for a few seconds in
     the first race on a new shader cache (a long load the first time a track is visited), background mountains missing from some angles at Deep Forest, busy race
-    sections below 30 FPS. Online features are not available.
+    sections below 30 FPS. The AMD graphics fix can crash RX 6000 series GPUs when loading
+    into a race: if the game crashes when a race loads, turn it off. Online play is new and was
+    tested by its author only.
 
 Options (RyGT7.exe)
   Display mode and resolution; Upscaling (Off, AMD FSR 1, AMD FSR 3.1 or NVIDIA DLSS, with a
