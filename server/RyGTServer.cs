@@ -977,8 +977,14 @@ namespace RyGT.Server
                     log("invite: " + onlineId + " joined again from " + request.Remote);
                     return Reply(200, true, "Welcome back.", new Dictionary<string, object> { { "onlineId", onlineId }, { "password", known } });
                 }
-                string password = Convert.ToBase64String(Guid.NewGuid().ToByteArray()).TrimEnd('=').Replace('+', 'x').Replace('/', 'y').Substring(0, 16);
+                // The host's launcher passes the password it already has, so a fresh server (new
+                // shadNet database) makes the account with it instead of a new one.
+                string offered = Query(request, "password") ?? "";
+                bool reuse = offered.Length > 0 && IPAddress.IsLoopback(request.Remote);
+                string password = reuse ? offered : Convert.ToBase64String(Guid.NewGuid().ToByteArray()).TrimEnd('=').Replace('+', 'x').Replace('/', 'y').Substring(0, 16);
                 string problem = Register(onlineId, password);
+                if (problem != null && reuse && (problem.IndexOf("exist", StringComparison.OrdinalIgnoreCase) >= 0 || problem.IndexOf("taken", StringComparison.OrdinalIgnoreCase) >= 0))
+                    problem = null;
                 if (problem != null)
                     return Reply(409, false, "Could not make the account '" + onlineId + "': " + problem +
                                              (problem.IndexOf("exist", StringComparison.OrdinalIgnoreCase) >= 0 || problem.IndexOf("taken", StringComparison.OrdinalIgnoreCase) >= 0

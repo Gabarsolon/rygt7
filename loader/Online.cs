@@ -536,16 +536,15 @@ namespace RyGT
                     { WorkingDirectory = ServerFolder, WindowStyle = ProcessWindowStyle.Minimized });
                     if (!OnlinePlay.WaitForPort(OnlinePlay.ServerPort, 15)) throw new InvalidOperationException("RyGTServer did not start (see its window).");
 
-                    // This player's account, made the same way as a friend's.
-                    string password = OnlinePlay.StoredPassword(root, id);
-                    if (password == null)
-                    {
-                        var reply = OnlinePlay.Get("http://127.0.0.1:" + OnlinePlay.ServerPort + "/rygt/invite/join?token=" + InviteToken() +
-                                                   "&online=" + Uri.EscapeDataString(id), 15000);
-                        if (OnlinePlay.Text(reply, "result") != "True") throw new InvalidOperationException(OnlinePlay.Text(reply, "message"));
-                        password = OnlinePlay.Text(reply, "password");
-                    }
-                    OnlinePlay.SetAccount(root, id, password);
+                    // This player's account, made the same way as a friend's. Always asked for: a
+                    // new server (fresh shadNet database) has no account yet even when users.json
+                    // has a password, so that password is offered for it.
+                    string stored = OnlinePlay.StoredPassword(root, id);
+                    var reply = OnlinePlay.Get("http://127.0.0.1:" + OnlinePlay.ServerPort + "/rygt/invite/join?token=" + InviteToken() +
+                                               "&online=" + Uri.EscapeDataString(id) +
+                                               (stored != null ? "&password=" + Uri.EscapeDataString(stored) : ""), 15000);
+                    if (OnlinePlay.Text(reply, "result") != "True") throw new InvalidOperationException(OnlinePlay.Text(reply, "message"));
+                    OnlinePlay.SetAccount(root, id, OnlinePlay.Text(reply, "password"));
                     UseShadNet("127.0.0.1");
                     UseServer(id, "127.0.0.1:" + OnlinePlay.ServerPort, vpn ? address : null);
                 }
