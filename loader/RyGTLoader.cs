@@ -2815,16 +2815,21 @@ namespace RyGT
                     RefreshState();
                     if (ok) status.Text = "Set up finished. Press Play.";
                     else status.Text = "Set up failed; see the log.";
-                    if (dumpProblem != null)
-                        MessageBox.Show(this,
-                            "Set up couldn't use this file:\n" + dumpProblem.File + "\n\n" + dumpProblem.Message + "\n\n" +
-                            "Your game dump or system modules (sys_modules) look incomplete or damaged. " +
-                            "Dump the game and/or the system modules from your PS4 again, then run Set up again.",
-                            "Set up: redump needed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    if (dumpProblem != null) ShowRedumpHint(dumpProblem);
                 }));
             });
             thread.IsBackground = true;
             thread.Start();
+        }
+
+        /// Set up couldn't use a game or system module file: the dump needs doing again.
+        void ShowRedumpHint(DumpFileException problem)
+        {
+            MessageBox.Show(this,
+                "Set up couldn't use this file:\n" + problem.File + "\n\n" + problem.Message + "\n\n" +
+                "Your game dump or system modules (sys_modules) look incomplete or damaged. " +
+                "Dump the game and/or the system modules from your PS4 again, then run Set up again.",
+                "Set up: redump needed", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         void RunSetup()
@@ -3243,6 +3248,7 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 bool prepared = false;
+                DumpFileException playDumpProblem = null;
                 try
                 {
                     if (OfflinePatchChanged())
@@ -3260,11 +3266,13 @@ namespace RyGT
                     settings.Save();
                     prepared = true;
                 }
+                catch (DumpFileException e) { Log("ERROR: " + e.Message); playDumpProblem = e; }
                 catch (Exception e) { Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
+                    if (playDumpProblem != null) ShowRedumpHint(playDumpProblem);
                     if (prepared)
                     {
                         StartGame(root);
