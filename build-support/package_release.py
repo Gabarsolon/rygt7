@@ -39,9 +39,12 @@ GCC_DLLS = ROOT_FILES[2:]
 GCC_LICENSE_PACKAGES = ["libgcc", "libstdc++", "libwinpthread"]
 LICENSE_NAMES = ("LICENSE", "LICENCE", "COPYING")
 PROVENANCE = (
-    "libSceVideoOut.prx (shadGT7 renderer) and libSceAudio3d.prx are built from the shadGT7 "
-    "commit in sources; libc.prx, libkernel.prx, libSceFiber.prx and libScePad.prx and the "
-    "converter from the RyGT7 commit (MSYS2 UCRT64 GCC 16.2, from 2026-10-27); "
+    "libSceVideoOut.prx (shadGT7 renderer), libSceAudio3d.prx and libSceNpAuth.prx (online "
+    "play's PSN library) are built from the shadGT7 commit in sources; libc.prx, libkernel.prx, "
+    "libSceFiber.prx, libScePad.prx, online play's libSceHttp.prx, libSceNet.prx, "
+    "libSceNetCtl.prx, libSceNpManager.prx, libSceNpSessionSignaling.prx, libSceRtc.prx and "
+    "libSceSsl.prx, and the converter from the RyGT7 commit (MSYS2 UCRT64 GCC 16.2, from "
+    "2026-10-30); "
     "libSceTextToSpeech.prx and libSceMbus.prx from runtime/gt7; "
     "libSceAppContentUtil.prx, libSceVideoRecording.prx and libMozaSDK-PS4.prx are copies of "
     "Ryty's empty placeholder module. The other libraries are ryGT's GT Sport build of "
