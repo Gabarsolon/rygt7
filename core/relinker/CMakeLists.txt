@@ -77,6 +77,8 @@ endif()
 if(BUILD_TESTING)
     add_executable(relinker_tests
             ${CMAKE_CURRENT_SOURCE_DIR}/RelinkerTests.cpp
+            ${CMAKE_SOURCE_DIR}/core/libs/prx/libRytyNet/src/RytyNetBridge.cpp
+            ${CMAKE_SOURCE_DIR}/core/libs/prx/libRytyNet/Export.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/cli/src/CliArgs.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/cli/src/Autorun.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/linux/LinuxElfPatcher.cpp
@@ -145,9 +147,36 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/io/include
             ${CMAKE_CURRENT_SOURCE_DIR}/codegen/include
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/include
+            ${CMAKE_SOURCE_DIR}/core/libs
     )
     if(APPLE)
         target_link_libraries(relinker_tests PRIVATE ryty_metal)
     endif()
+    if(WIN32)
+        target_link_libraries(relinker_tests PRIVATE ws2_32)
+    endif()
+    if(MSVC)
+        target_compile_options(relinker_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(relinker_tests PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME relinker_tests COMMAND relinker_tests)
+
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test_executable(autorun_test_driver
+                tests/AutorunTestDriver.cpp
+                cli/src/Autorun.cpp
+        )
+        target_include_directories(autorun_test_driver PRIVATE cli/include)
+        add_test(NAME cli_integration_tests COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/CliIntegrationTests.py
+                $<TARGET_FILE:ryty> $<TARGET_FILE:autorun_test_driver>)
+        add_test(NAME elf_validation_tests COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/ElfValidationTests.py
+                $<TARGET_FILE:ryty>)
+        add_test(NAME macos_signature_tests COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/MacOsSignatureTests.py
+                $<TARGET_FILE:ryty>)
+    endif()
 endif()

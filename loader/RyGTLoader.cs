@@ -1219,6 +1219,14 @@ namespace RyGT
         }
     }
 
+    /// A game or system module file Set up can't use (missing, not a SELF/ELF, encrypted): the dump is
+    /// incomplete or damaged, and Set up shows how to fix it (dump again).
+    class DumpFileException : Exception
+    {
+        public readonly string File;
+        public DumpFileException(string file, string message) : base(message) { File = file; }
+    }
+
     /// Unwraps an unencrypted (fake-signed) PS4 SELF into a plain ELF.
     static class Self
     {
@@ -1231,7 +1239,7 @@ namespace RyGT
         {
             if (IsElf(d)) return d;
             if (d.Length < 32 || d[0] != 0x4f || d[1] != 0x15 || d[2] != 0x3d || d[3] != 0x1d)
-                throw new Exception(name + " is neither a SELF nor an ELF file.");
+                throw new DumpFileException(name, name + " is neither a SELF nor an ELF file.");
             int count = BitConverter.ToUInt16(d, 24);
             var entries = new Dictionary<long, long[]>();
             for (int i = 0; i < count; i++)
@@ -1240,7 +1248,7 @@ namespace RyGT
                 long offset = (long)BitConverter.ToUInt64(d, 40 + i * 32);
                 long size = (long)BitConverter.ToUInt64(d, 48 + i * 32);
                 if ((props & 0xA) != 0)
-                    throw new Exception(name + " has encrypted or compressed segments. The dump must be decrypted.");
+                    throw new DumpFileException(name, name + " has encrypted or compressed segments. The dump must be decrypted.");
                 if ((props & 0x800) != 0) entries[(props >> 20) & 0xFFF] = new[] { offset, size };
             }
             int elf = 32 + count * 32;
@@ -1874,8 +1882,11 @@ namespace RyGT
                         "Needs an NVIDIA RTX card (frame generation: RTX 40 or newer). The files are NVIDIA's, under " +
                         "NVIDIA's licenses (see dlss\\" + DlssDownload.NoticeName + ").", "Download NVIDIA DLSS",
                         MessageBoxButtons.OKCancel) != DialogResult.OK) return;
-                downloadDlss.Enabled = false;
-                addDlss.Enabled = false;
+                // Busy like Set up, so the state timer keeps Play, Set up and both DLSS buttons off
+                // while the files in the dlss folder are replaced one by one.
+                busy = true;
+                RefreshState();
+                status.Text = "Downloading the NVIDIA DLSS files...";
                 var worker = new Thread(() =>
                 {
                     string message;
@@ -1891,8 +1902,8 @@ namespace RyGT
                     }
                     BeginInvoke((Action)(() =>
                     {
-                        downloadDlss.Enabled = true;
-                        addDlss.Enabled = true;
+                        busy = false;
+                        RefreshState();
                         refreshDlss();
                         MessageBox.Show(this, message);
                     }));
@@ -1900,10 +1911,11 @@ namespace RyGT
                 worker.Start();
             };
             // Race frame rate (GPU.race_fps_lock, the game gets it as SHADGT_FPS_LOCK): an even 30
-            // by default; 60 when the PC keeps up.
+            // by default; 60 when the PC keeps up. 60 is marked experimental: busy race sections
+            // stay well under it, and frames of 16.7, 33 and 50 ms mixed judder more than an even 30.
             var fpsRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
-            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
-            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps" });
+            var fpsLock = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
+            fpsLock.Items.AddRange(new object[] { "30 fps (steady)", "60 fps (experimental)" });
             fpsRow.Controls.Add(new Label { Text = "Race frame rate", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
             fpsRow.Controls.Add(fpsLock);
             graphics.Controls.Add(fpsRow);
@@ -2793,7 +2805,9 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 bool ok = false;
+                DumpFileException dumpProblem = null;
                 try { RunSetup(); ok = true; }
+                catch (DumpFileException e) { Log("ERROR: " + e.Message); dumpProblem = e; }
                 catch (Exception e) { Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
@@ -2801,10 +2815,21 @@ namespace RyGT
                     RefreshState();
                     if (ok) status.Text = "Set up finished. Press Play.";
                     else status.Text = "Set up failed; see the log.";
+                    if (dumpProblem != null) ShowRedumpHint(dumpProblem);
                 }));
             });
             thread.IsBackground = true;
             thread.Start();
+        }
+
+        /// Set up couldn't use a game or system module file: the dump needs doing again.
+        void ShowRedumpHint(DumpFileException problem)
+        {
+            MessageBox.Show(this,
+                "Set up couldn't use this file:\n" + problem.File + "\n\n" + problem.Message + "\n\n" +
+                "Your game dump or system modules (sys_modules) look incomplete or damaged. " +
+                "Dump the game and/or the system modules from your PS4 again, then run Set up again.",
+                "Set up: redump needed", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         void RunSetup()
@@ -2827,7 +2852,7 @@ namespace RyGT
             foreach (var name in FirmwareModules)
             {
                 var found = FindModule(settings.Modules, name);
-                if (found == null) throw new Exception("System module " + name + " was not found under " + settings.Modules + ".");
+                if (found == null) throw new DumpFileException(name + ".sprx", "System module " + name + " was not found under " + settings.Modules + ".");
                 firmware[name] = found;
             }
             foreach (var name in OptionalFirmwareModules)
@@ -2856,7 +2881,7 @@ namespace RyGT
             foreach (var name in new[] { "libc.prx", "libSceFios2.prx" })
             {
                 string source = layout.Get("sce_module\\" + name);
-                if (source == null) throw new Exception("The game's sce_module\\" + name + " is missing.");
+                if (source == null) throw new DumpFileException("sce_module\\" + name, "The game's sce_module\\" + name + " is missing.");
                 Unwrap(source, Path.Combine(workModules, name));
             }
             foreach (var name in new[] { "libSceSecure.prx", "logiWheel.prx" })
@@ -2968,7 +2993,9 @@ namespace RyGT
         void Unwrap(string source, string destination, OfflinePatch offline = null)
         {
             var bytes = File.ReadAllBytes(source);
-            var elf = Self.RelroToLoad(Self.ToElf(bytes, Path.GetFileName(source)));
+            byte[] elf;
+            try { elf = Self.RelroToLoad(Self.ToElf(bytes, Path.GetFileName(source))); }
+            catch (DumpFileException e) { throw new DumpFileException(source, e.Message); }
             if (Path.GetFileName(source).Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) && GameLayout.PatchKnownExecutable(elf))
                 Log("Applied the verified CUSA24769 1.00 conversion fix.");
             if (offline != null)
@@ -3221,6 +3248,7 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 bool prepared = false;
+                DumpFileException playDumpProblem = null;
                 try
                 {
                     if (OfflinePatchChanged())
@@ -3238,11 +3266,13 @@ namespace RyGT
                     settings.Save();
                     prepared = true;
                 }
+                catch (DumpFileException e) { Log("ERROR: " + e.Message); playDumpProblem = e; }
                 catch (Exception e) { Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
+                    if (playDumpProblem != null) ShowRedumpHint(playDumpProblem);
                     if (prepared)
                     {
                         StartGame(root);

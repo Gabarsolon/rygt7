@@ -17,4 +17,24 @@ int APS5_VABI sceVideoOutColorSettingsSetGamma_(VideoOutColorSettings* settings,
     return sceVideoOutColorSettingsSetGamma(settings, gamma);
 }
 
+struct VideoOutOutputMode {
+    int aspect;
+    int scanMode;
+    int format;
+    int refreshRate;
+    int resolution;
+};
+
+int APS5_VABI sceVideoOutGetOutputMode(int handle, VideoOutOutputMode* mode) {
+    (void)handle;
+    if (mode) {
+        mode->aspect = 0; // 16:9
+        mode->scanMode = 0; // progressive
+        mode->format = 0; // RGB
+        mode->refreshRate = 60;
+        mode->resolution = 0; // 1080p
+    }
+    return 0;
+}
+
 }

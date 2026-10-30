@@ -253,6 +253,46 @@ void RytyMetalSetBlendMode(int blendMode) {
     (void)blendMode;
 }
 
+void RytyMetalSetCullMode(int cullMode) {
+    (void)cullMode;
+}
+
+void RytyMetalSetTriangleFillMode(int fillMode) {
+    (void)fillMode;
+}
+
+void RytyMetalSetFrontFacingWinding(int winding) {
+    (void)winding;
+}
+
+void RytyMetalSetDepthBias(float depthBias, float slopeScale, float clamp) {
+    (void)depthBias;
+    (void)slopeScale;
+    (void)clamp;
+}
+
+void RytyMetalSetStencilReferenceValue(unsigned int referenceValue) {
+    (void)referenceValue;
+}
+
+void RytyMetalSetRenderPipelineState(void* pipelineState) {
+    (void)pipelineState;
+}
+
+void RytyMetalSetComputePipelineState(void* computePipeline) {
+    (void)computePipeline;
+}
+
+void RytyMetalDispatchThreadgroups(unsigned int threadsX, unsigned int threadsY, unsigned int threadsZ, unsigned int tgX, unsigned int tgY, unsigned int tgZ) {
+    (void)threadsX; (void)threadsY; (void)threadsZ;
+    (void)tgX; (void)tgY; (void)tgZ;
+}
+
+void RytyMetalSetSamplerState(int index, void* sampler) {
+    (void)index;
+    (void)sampler;
+}
+
 void RytyMetalDrawPrimitives(int primitiveType, unsigned int start, unsigned int count) {
     (void)primitiveType; (void)start; (void)count;
 }
@@ -268,4 +308,16 @@ unsigned long RytyMetalGetMaxThreadsPerThreadgroup(void) {
 int RytyMetalSupportsFeatureSet(int featureSet) {
     (void)featureSet;
     return 1;
+}
+
+void RytyMetalSetSampleCount(int sampleCount) {
+    (void)sampleCount;
+}
+
+void RytyMetalSetRasterizerDiscardEnabled(int enabled) {
+    (void)enabled;
+}
+
+int RytyMetalGetDeviceCapabilities(void) {
+    return 0x00010100;
 }
