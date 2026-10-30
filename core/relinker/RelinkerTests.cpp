@@ -2,8 +2,13 @@
 #include <io/ByteReader.hpp>
 #include <io/ByteWriter.hpp>
 #include <relinker/parsing/ElfReader.hpp>
+#include <relinker/guest/GuestImage.hpp>
+#include <relinker/analysis/SyscallScanner.hpp>
 #include <elfpatcher/macos/MacOsElfPatcher.hpp>
 #include <codegen/IInstructionScanner.hpp>
+#include <codegen/x86/IAmd64OnlyInstructionMatcher.hpp>
+#include <filesystem>
+#include <fstream>
 
 extern "C" {
 void RytyMetalInitializeDevice(void);
@@ -20,15 +25,35 @@ void RytyMetalDestroyBuffer(void* handle);
 void RytyMetalSetViewport(double x, double y, double width, double height, double znear, double zfar);
 void RytyMetalSetScissorRect(unsigned int x, unsigned int y, unsigned int width, unsigned int height);
 void RytyMetalSetBlendMode(int blendMode);
+void RytyMetalSetCullMode(int cullMode);
+void RytyMetalSetTriangleFillMode(int fillMode);
+void RytyMetalSetFrontFacingWinding(int winding);
+void RytyMetalSetDepthBias(float depthBias, float slopeScale, float clamp);
+void RytyMetalSetStencilReferenceValue(unsigned int referenceValue);
+void RytyMetalSetRenderPipelineState(void* pipelineState);
+void RytyMetalSetComputePipelineState(void* computePipeline);
+void RytyMetalDispatchThreadgroups(unsigned int threadsX, unsigned int threadsY, unsigned int threadsZ, unsigned int tgX, unsigned int tgY, unsigned int tgZ);
+void RytyMetalSetSamplerState(int index, void* sampler);
 void RytyMetalDrawPrimitives(int primitiveType, unsigned int start, unsigned int count);
 void RytyMetalDrawIndexedPrimitives(int primitiveType, unsigned int indexCount, int indexType, void* indexBuffer, unsigned int indexBufferOffset);
 unsigned long RytyMetalGetMaxThreadsPerThreadgroup(void);
 int RytyMetalSupportsFeatureSet(int featureSet);
+void RytyMetalSetSampleCount(int sampleCount);
+void RytyMetalSetRasterizerDiscardEnabled(int enabled);
+int RytyMetalGetDeviceCapabilities(void);
 }
+#include <SceTypes.hpp>
+#include <prx/libRytyNet/src/RytyNetBridge.hpp>
 #include <cassert>
 #include <cstring>
 #include <iostream>
 #include <vector>
+
+extern "C" {
+int APS5_VABI RytyNetIsEnabled(void);
+std::uint32_t APS5_VABI RytyNetVersion(void);
+int APS5_VABI RytyNetSetEnabled(int enable);
+}
 
 void TestCliArgs() {
     std::cout << "[Test] Running TestCliArgs...\n";
@@ -88,9 +113,9 @@ void TestMacOsPatcher() {
     put32(20, 1);           // e_version
     put64(24, 0x10000000);  // e_entry
     put64(32, 64);          // e_phoff
-    put16(54, 64);          // e_ehsize
-    put16(56, 56);          // e_phentsize
-    put16(58, 1);           // e_phnum
+    put16(52, 64);
+    put16(54, 56);
+    put16(56, 1);
     put32(64, 1);           // p_type = PT_LOAD
     put32(68, 5);           // p_flags = R|X
     put64(72, 0x1000);      // p_offset
@@ -117,10 +142,50 @@ void TestMacOsPatcher() {
     assert(patched[0] == 0xcf && patched[1] == 0xfa && patched[2] == 0xed && patched[3] == 0xfe);
 
     // Load command count: one LC_SEGMENT_64 per PT_LOAD (1) plus seg_tramp,
-    // __LINKEDIT, LC_MAIN, LC_LOAD_DYLINKER, LC_BUILD_VERSION, 5 dylibs and LC_RPATH.
+    // __LINKEDIT, LC_MAIN, LC_LOAD_DYLINKER, LC_BUILD_VERSION, 5 dylibs, LC_RPATH,
+    // LC_UUID, LC_SOURCE_VERSION, LC_SYMTAB, LC_DYSYMTAB, LC_CODE_SIGNATURE.
     std::uint32_t cmdsCount = 0;
     std::memcpy(&cmdsCount, patched.data() + 16, 4);
-    assert(cmdsCount == 1 /* PT_LOAD segments */ + 11);
+    assert(cmdsCount == 1 /* PT_LOAD segments */ + 16);
+
+    // The ad-hoc code signature command (LC_CODE_SIGNATURE, 0x1d) must be present
+    // and point at a SuperBlob inside the file.
+    bool haveCodeSignature = false;
+    std::uint32_t signatureOffset = 0, signatureSize = 0;
+    for (std::uint32_t offset = 32; offset + 8 <= 32 + 1024 && offset + 8 <= patched.size();) {
+        std::uint32_t cmd = 0, cmdSize = 0;
+        std::memcpy(&cmd, patched.data() + offset, 4);
+        std::memcpy(&cmdSize, patched.data() + offset + 4, 4);
+        if (cmdSize < 8) break;
+        if (cmd == 0x1d) { // LC_CODE_SIGNATURE
+            std::memcpy(&signatureOffset, patched.data() + offset + 8, 4);
+            std::memcpy(&signatureSize, patched.data() + offset + 12, 4);
+            haveCodeSignature = signatureOffset != 0 && signatureSize >= 20
+                && signatureOffset + signatureSize <= patched.size();
+            break;
+        }
+        offset += cmdSize;
+    }
+    assert(haveCodeSignature);
+    // SuperBlob magic (CSMAGIC_EMBEDDED_SIGNATURE, big endian 0xfade0cc0) and the
+    // ad-hoc CodeDirectory (CSMAGIC_CODEDIRECTORY, 0xfade0c02) must be there.
+    assert(patched[signatureOffset] == 0xfa && patched[signatureOffset + 1] == 0xde
+        && patched[signatureOffset + 2] == 0x0c && patched[signatureOffset + 3] == 0xc0);
+    const std::uint32_t codeDirectoryOffset = (static_cast<std::uint32_t>(patched[signatureOffset + 16]) << 24)
+        | (static_cast<std::uint32_t>(patched[signatureOffset + 17]) << 16)
+        | (static_cast<std::uint32_t>(patched[signatureOffset + 18]) << 8)
+        | static_cast<std::uint32_t>(patched[signatureOffset + 19]);
+    assert(patched[signatureOffset + codeDirectoryOffset] == 0xfa
+        && patched[signatureOffset + codeDirectoryOffset + 1] == 0xde
+        && patched[signatureOffset + codeDirectoryOffset + 2] == 0x0c
+        && patched[signatureOffset + codeDirectoryOffset + 3] == 0x02);
+    // CodeDirectory flags must carry CS_ADHOC (0x2) and the SHA-256 hash type (2).
+    const std::uint32_t codeDirectoryFlags = (static_cast<std::uint32_t>(patched[signatureOffset + codeDirectoryOffset + 12]) << 24)
+        | (static_cast<std::uint32_t>(patched[signatureOffset + codeDirectoryOffset + 13]) << 16)
+        | (static_cast<std::uint32_t>(patched[signatureOffset + codeDirectoryOffset + 14]) << 8)
+        | static_cast<std::uint32_t>(patched[signatureOffset + codeDirectoryOffset + 15]);
+    assert(codeDirectoryFlags == 0x00000002);
+    assert(patched[signatureOffset + codeDirectoryOffset + 37] == 2); // CS_HASHTYPE_SHA256
 
     // The first command must be an executable LC_SEGMENT_64 ("__TEXT")
     // mapped at the guest's own PT_LOAD vaddr (no rebasing).
@@ -134,7 +199,15 @@ void TestMacOsPatcher() {
     std::memcpy(&textVmaddr, patched.data() + 56, 8);
     assert(textVmaddr == 0x10000000);
 
-    // Verify Metal bridge initialization and expanded C API functions
+    std::cout << "  -> PASSED!\n";
+}
+
+void TestMetalBridge() {
+    std::cout << "[Test] Running TestMetalBridge...\n";
+    if (RytyMetalIsSupported() == 0) {
+        std::cout << "  -> SKIPPED (Metal device unavailable)\n";
+        return;
+    }
     RytyMetalInitializeDevice();
     assert(RytyMetalIsSupported() != 0);
     assert(RytyMetalGetDeviceName() != nullptr);
@@ -155,11 +228,23 @@ void TestMacOsPatcher() {
     RytyMetalSetViewport(0, 0, 1920, 1080, 0.0, 1.0);
     RytyMetalSetScissorRect(0, 0, 1920, 1080);
     RytyMetalSetBlendMode(1);
+    RytyMetalSetCullMode(1);
+    RytyMetalSetTriangleFillMode(0);
+    RytyMetalSetFrontFacingWinding(0);
+    RytyMetalSetDepthBias(0.0f, 0.0f, 0.0f);
+    RytyMetalSetStencilReferenceValue(0);
+    RytyMetalSetRenderPipelineState(nullptr);
+    RytyMetalSetComputePipelineState(nullptr);
+    RytyMetalDispatchThreadgroups(1, 1, 1, 16, 16, 1);
+    RytyMetalSetSamplerState(0, nullptr);
     RytyMetalDrawPrimitives(3, 0, 6);
     RytyMetalDrawIndexedPrimitives(3, 6, 0, buf, 0);
 
     assert(RytyMetalGetMaxThreadsPerThreadgroup() > 0);
     assert(RytyMetalSupportsFeatureSet(0) != 0);
+    RytyMetalSetSampleCount(4);
+    RytyMetalSetRasterizerDiscardEnabled(0);
+    assert(RytyMetalGetDeviceCapabilities() == 0x00010100);
 
     std::cout << "  -> PASSED!\n";
 }
@@ -177,12 +262,255 @@ void TestByteIo() {
     std::cout << "  -> PASSED!\n";
 }
 
+void TestRytyNetBridge() {
+    std::cout << "[Test] Running TestRytyNetBridge...\n";
+    assert(RytyNetVersion() == 0x00010100u);
+
+    bool isHttps = false;
+    std::string host, path;
+    std::uint16_t port = 0;
+    assert(RytyNet::ParseHttpUrl("http://example.com:8080/api/v1", isHttps, host, port, path) == true);
+    assert(isHttps == false);
+    assert(host == "example.com");
+    assert(port == 8080);
+    assert(path == "/api/v1");
+
+    // Test GetHeader helper
+    RytyNet::HttpResponse resp;
+    resp.headers = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nLocation: http://example.com/login\r\nServer: RytyServer/1.0\r\n\r\n";
+    assert(resp.GetHeader("content-type") == "text/html; charset=utf-8");
+    assert(resp.GetHeader("LOCATION") == "http://example.com/login");
+    assert(resp.GetHeader("Server") == "RytyServer/1.0");
+    assert(resp.GetHeader("NonExistent") == "");
+
+    RytyNetSetEnabled(1);
+    assert(RytyNetIsEnabled() == 1);
+
+    RytyNetSetEnabled(0);
+    assert(RytyNetIsEnabled() == 0);
+
+    RytyNetSetEnabled(-1); // restore default
+    std::cout << "  -> PASSED!\n";
+}
+
+void TestIntelCpuLowering() {
+    std::cout << "[Test] Running TestIntelCpuLowering...\n";
+    auto matcher = Codegen::MakeAmd64OnlyInstructionMatcher();
+
+    // 1. AMD SVM instructions (3 bytes each)
+    {
+        const std::uint8_t skinit[] = {0x0F, 0x01, 0xDE};
+        auto match = matcher->Match(skinit, sizeof(skinit));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "SKINIT");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+        assert(match->ReplacementBytes.size() == 3);
+        assert(match->ReplacementBytes[0] == 0x0F && match->ReplacementBytes[1] == 0x1F && match->ReplacementBytes[2] == 0x00);
+    }
+    {
+        const std::uint8_t clgi[] = {0x0F, 0x01, 0xDD};
+        auto match = matcher->Match(clgi, sizeof(clgi));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "CLGI");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+    }
+    {
+        const std::uint8_t stgi[] = {0x0F, 0x01, 0xDC};
+        auto match = matcher->Match(stgi, sizeof(stgi));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "STGI");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+    }
+    {
+        const std::uint8_t invlpga[] = {0x0F, 0x01, 0xDF};
+        auto match = matcher->Match(invlpga, sizeof(invlpga));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "INVLPGA");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+    }
+
+    // 2. 3DNow! PREFETCH -> PREFETCHT0
+    {
+        const std::uint8_t prefetch3d[] = {0x0F, 0x0D, 0x00}; // prefetch [rax]
+        auto match = matcher->Match(prefetch3d, sizeof(prefetch3d));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "PREFETCH");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+        assert(match->ReplacementBytes.size() == 3);
+        assert(match->ReplacementBytes[1] == 0x18); // PREFETCHT0 opcode
+        assert((match->ReplacementBytes[2] & 0x38) == 0x08); // ModRM reg = 1
+    }
+
+    // 3. CLFLUSHOPT -> NOP + CLFLUSH
+    {
+        const std::uint8_t clflushopt[] = {0x66, 0x0F, 0xAE, 0x38}; // clflushopt [rax]
+        auto match = matcher->Match(clflushopt, sizeof(clflushopt));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "CLFLUSHOPT");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+        assert(match->ReplacementBytes[0] == 0x90); // 66 prefix replaced by NOP
+        assert(match->ReplacementBytes[1] == 0x0F && match->ReplacementBytes[2] == 0xAE);
+    }
+
+    // 4. CLWB -> NOP + CLFLUSH
+    {
+        const std::uint8_t clwb[] = {0x66, 0x0F, 0xAE, 0x30}; // clwb [rax] (modrm reg = 6)
+        auto match = matcher->Match(clwb, sizeof(clwb));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "CLWB");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+        assert(match->ReplacementBytes[0] == 0x90);
+        assert((match->ReplacementBytes[3] & 0x38) == 0x38); // ModRM reg converted to 7 (CLFLUSH)
+    }
+
+    // 5. User-level wait instructions
+    {
+        const std::uint8_t umonitor[] = {0xF3, 0x0F, 0xAE, 0xF0}; // umonitor eax
+        auto match = matcher->Match(umonitor, sizeof(umonitor));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "UMONITOR");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+    }
+    {
+        const std::uint8_t umwait[] = {0xF2, 0x0F, 0xAE, 0xF0}; // umwait eax
+        auto match = matcher->Match(umwait, sizeof(umwait));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "UMWAIT");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+        assert(match->ReplacementBytes[0] == 0xF3 && match->ReplacementBytes[1] == 0x90); // PAUSE
+    }
+    {
+        const std::uint8_t tpause[] = {0x66, 0x0F, 0xAE, 0xF0}; // tpause eax
+        auto match = matcher->Match(tpause, sizeof(tpause));
+        assert(match.has_value());
+        assert(std::string(match->InstructionName) == "TPAUSE");
+        assert(match->Lowering == Codegen::Amd64OnlyLowering::InPlace);
+        assert(match->ReplacementBytes[0] == 0xF3 && match->ReplacementBytes[1] == 0x90); // PAUSE
+    }
+
+    std::cout << "  -> PASSED!\n";
+}
+
+void TestGuestModulePath() {
+    std::cout << "[Test] Running TestGuestModulePath...\n";
+    const auto tempDir = std::filesystem::temp_directory_path() / "ryty_guest_path_test";
+    std::filesystem::remove_all(tempDir);
+    std::filesystem::create_directories(tempDir / "sce_module");
+
+    std::vector<std::uint8_t> dummyElf(0x1000, 0);
+    const std::uint8_t ident[16] = {0x7f, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::memcpy(dummyElf.data(), ident, 16);
+
+    auto put16 = [&](std::size_t off, std::uint16_t v) { std::memcpy(dummyElf.data() + off, &v, 2); };
+    auto put32 = [&](std::size_t off, std::uint32_t v) { std::memcpy(dummyElf.data() + off, &v, 4); };
+    auto put64 = [&](std::size_t off, std::uint64_t v) { std::memcpy(dummyElf.data() + off, &v, 8); };
+
+    put16(16, 3);          // e_type = ET_DYN
+    put16(18, 62);         // e_machine = EM_X86_64
+    put32(20, 1);          // e_version
+    put64(32, 64);         // e_phoff
+    put16(52, 64);         // e_ehsize
+    put16(54, 56);         // e_phentsize
+    put16(56, 3);          // e_phnum = 3
+
+    // PH 0: PT_LOAD at vaddr 0x1000 (offset 0x100)
+    put32(64 + 0*56 + 0, 1);
+    put32(64 + 0*56 + 4, 5);
+    put64(64 + 0*56 + 8, 0x100);
+    put64(64 + 0*56 + 16, 0x1000);
+    put64(64 + 0*56 + 24, 0x1000);
+    put64(64 + 0*56 + 32, 0x100);
+    put64(64 + 0*56 + 40, 0x100);
+    put64(64 + 0*56 + 48, 0x100);
+
+    // PH 1: PT_LOAD at vaddr 0x1200 (offset 0x200)
+    put32(64 + 1*56 + 0, 1);
+    put32(64 + 1*56 + 4, 6);
+    put64(64 + 1*56 + 8, 0x200);
+    put64(64 + 1*56 + 16, 0x1200);
+    put64(64 + 1*56 + 24, 0x1200);
+    put64(64 + 1*56 + 32, 0x200);
+    put64(64 + 1*56 + 40, 0x200);
+    put64(64 + 1*56 + 48, 0x100);
+
+    // PH 2: PT_DYNAMIC at vaddr 0x1200 (offset 0x200)
+    put32(64 + 2*56 + 0, 2);
+    put32(64 + 2*56 + 4, 6);
+    put64(64 + 2*56 + 8, 0x200);
+    put64(64 + 2*56 + 16, 0x1200);
+    put64(64 + 2*56 + 24, 0x1200);
+    put64(64 + 2*56 + 32, 0xa0);
+    put64(64 + 2*56 + 40, 0xa0);
+    put64(64 + 2*56 + 48, 8);
+
+    // Put a ret instruction (0xc3) at offset 0x100 (vaddr 0x1000)
+    dummyElf[0x100] = 0xc3;
+
+    std::size_t dynOff = 0x200;
+    auto addTag = [&](std::uint64_t tag, std::uint64_t val) {
+        put64(dynOff, tag);
+        put64(dynOff + 8, val);
+        dynOff += 16;
+    };
+    addTag(5, 0x1250);  // DT_STRTAB
+    addTag(10, 12);     // DT_STRSZ
+    addTag(6, 0x1260);  // DT_SYMTAB
+    addTag(11, 24);     // DT_SYMENT
+    addTag(4, 0x1290);  // DT_HASH
+    addTag(0, 0);       // DT_NULL
+
+    // STRTAB at offset 0x250
+    std::memcpy(dummyElf.data() + 0x250, "\0myExport\0", 10);
+
+    // SYMTAB at offset 0x260 (Index 0: NULL, Index 1: myExport)
+    // Index 1 (offset 0x260 + 24):
+    put32(0x260 + 24 + 0, 1);      // st_name = 1
+    dummyElf[0x260 + 24 + 4] = 0x12; // st_info = STB_GLOBAL | STT_FUNC
+    dummyElf[0x260 + 24 + 5] = 0;    // st_other = 0
+    put16(0x260 + 24 + 6, 1);      // st_shndx = 1
+    put64(0x260 + 24 + 8, 0x1000); // st_value = 0x1000
+    put64(0x260 + 24 + 16, 8);     // st_size = 8
+
+    // DT_HASH at offset 0x290
+    put32(0x290, 1); // nbucket = 1
+    put32(0x294, 2); // nchain = 2
+
+    const auto inputExe = tempDir / "eboot.elf";
+    const auto outputExe = tempDir / "GTSport.exe";
+    const auto guestPrx = tempDir / "sce_module" / "libTest.prx";
+
+    {
+        std::ofstream f(inputExe, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(dummyElf.data()), static_cast<std::streamsize>(dummyElf.size()));
+    }
+    {
+        std::ofstream f(guestPrx, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(dummyElf.data()), static_cast<std::streamsize>(dummyElf.size()));
+    }
+
+    Domain::SysVDynamicSection dynamic;
+    const auto syscallScanner = Relinker::MakeNullSyscallScanner();
+    Relinker::GuestModuleBuilder builder;
+    const auto artifacts = builder.Build(inputExe, outputExe, dynamic, true, false, *syscallScanner, false, "$ORIGIN/libs", {});
+
+    assert(artifacts.size() == 1);
+    std::filesystem::create_directories(artifacts[0].Path.parent_path());
+    assert(std::filesystem::exists(artifacts[0].Path.parent_path()));
+
+    std::filesystem::remove_all(tempDir);
+    std::cout << "  -> PASSED!\n";
+}
+
 int main() {
     std::cout << "Starting Ryty Relinker Unit Tests...\n";
     TestCliArgs();
     TestPs4Detection();
     TestMacOsPatcher();
+    TestMetalBridge();
     TestByteIo();
+    TestGuestModulePath();
+    TestRytyNetBridge();
+    TestIntelCpuLowering();
     std::cout << "All Ryty Relinker Unit Tests Passed Successfully!\n";
     return 0;
 }

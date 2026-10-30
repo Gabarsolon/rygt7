@@ -62,11 +62,23 @@ void RytyMetalDestroyBuffer(RytyMetalBufferHandle _Nonnull handle);
 void RytyMetalSetViewport(double x, double y, double width, double height, double znear, double zfar);
 void RytyMetalSetScissorRect(unsigned int x, unsigned int y, unsigned int width, unsigned int height);
 void RytyMetalSetBlendMode(int blendMode);
+void RytyMetalSetCullMode(int cullMode);
+void RytyMetalSetTriangleFillMode(int fillMode);
+void RytyMetalSetFrontFacingWinding(int winding);
+void RytyMetalSetDepthBias(float depthBias, float slopeScale, float clamp);
+void RytyMetalSetStencilReferenceValue(unsigned int referenceValue);
+void RytyMetalSetRenderPipelineState(void* _Nullable pipelineState);
+void RytyMetalSetComputePipelineState(void* _Nullable computePipeline);
+void RytyMetalDispatchThreadgroups(unsigned int threadsX, unsigned int threadsY, unsigned int threadsZ, unsigned int tgX, unsigned int tgY, unsigned int tgZ);
+void RytyMetalSetSamplerState(int index, void* _Nullable sampler);
 void RytyMetalDrawPrimitives(int primitiveType, unsigned int start, unsigned int count);
 void RytyMetalDrawIndexedPrimitives(int primitiveType, unsigned int indexCount, int indexType, RytyMetalBufferHandle _Nonnull indexBuffer, unsigned int indexBufferOffset);
 
 unsigned long RytyMetalGetMaxThreadsPerThreadgroup(void);
 int RytyMetalSupportsFeatureSet(int featureSet);
+void RytyMetalSetSampleCount(int sampleCount);
+void RytyMetalSetRasterizerDiscardEnabled(int enabled);
+int RytyMetalGetDeviceCapabilities(void);
 
 void RytyMetalViewHostCreate(int w, int h, const char* _Nullable title);
 
