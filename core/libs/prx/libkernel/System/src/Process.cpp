@@ -15,6 +15,7 @@
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -338,6 +339,15 @@ int APS5_VABI sceKernelIsTrinityMode(void) {
 }
 
 int APS5_VABI sceKernelIsNeoMode(void) {
+    return 0;
+}
+
+int APS5_VABI sceKernelSetGameBudget(int budget) {
+    (void)budget;
+    return 0;
+}
+
+int APS5_VABI sceKernelIsDevelopmentKit(void) {
     return 0;
 }
 
