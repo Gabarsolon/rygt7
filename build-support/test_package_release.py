@@ -60,6 +60,9 @@ class ReleasePatchTests(unittest.TestCase):
                 manifest = json.loads(archive.read("release-test/manifest.json"))
                 records = {item["path"]: item for item in manifest["files"]}
                 self.assertIn("patches/CUSA24769.xml", records)
+                # Steering wheels: the launcher's wheel page runs this probe.
+                self.assertIn("tools/ryty-wheel-probe.exe", records)
+                self.assertIn("release-test/tools/ryty-wheel-probe.exe", names)
                 for name in ("CUSA24769.xml", "README.md", "Proper-Offline-Patch-README.txt"):
                     data = archive.read("release-test/patches/" + name)
                     record = records["patches/" + name]
