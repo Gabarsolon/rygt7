@@ -35,7 +35,11 @@ place after Set up: their files are linked, never patched or copied.
 State of this build ({date})
   - Menus, World Map, Music Rally and races run. Races are paced to an even 30 FPS by
     default; the launcher's Graphics page offers 60. Audio works.
-  - New in this build: the black car at the start of a race is fixed (the hull shaders now
+  - New in 2026-10-29b: GT7 always uses the native renderer; the launcher's settings are
+    read from any folder path; a "protect region as write-only" crash during play is fixed;
+    AMD GPUs get the BC6H textures they refused to create (they were missing); far less log
+    spam; Set up no longer leaves a startable GT7.exe in convert\runtime-*.
+  - New in 2026-10-29: the black car at the start of a race is fixed (the hull shaders now
     see the other patches' control points they read on PS4, and sample the occlusion
     pyramid's mip levels at their own size); the Upscaling page with an NVIDIA DLSS
     download button and quality list; cars' shaders compile first on a new shader cache.

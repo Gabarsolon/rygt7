@@ -2918,6 +2918,16 @@ namespace RyGT
             File.Copy(convertedExe, Exe, true);
             string registry = Path.ChangeExtension(convertedExe, ".registry.json");
             if (File.Exists(registry)) File.Copy(registry, Path.ChangeExtension(Exe, ".registry.json"), true);
+            // The converter's own GT7.exe (and those of earlier Set ups) stay as GT7.exe.converted: started
+            // from convert\runtime-*, GT7 found none of the launcher's settings next to it.
+            foreach (string runtimeDir in Directory.GetDirectories(work, "runtime-*"))
+            {
+                string leftover = Path.Combine(runtimeDir, "GT7.exe");
+                if (!File.Exists(leftover)) continue;
+                string kept = leftover + ".converted";
+                if (File.Exists(kept)) File.Delete(kept);
+                File.Move(leftover, kept);
+            }
 
             // 4. Fonts.
             SetStatus("Copying the fonts...");
