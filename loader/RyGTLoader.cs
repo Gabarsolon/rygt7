@@ -1630,6 +1630,7 @@ namespace RyGT
             AddOption(display, "Show the splash screen while the game starts", "General", "show_splash", false);
             AddOption(display, "Show the game on Discord (Rich Presence)", "General", "discord_rpc_enabled", true);
             AddMemorySetting(display);
+            AddVideoMemorySetting(display);
 
             // ---- Graphics
             var graphicsPage = NewPage("Graphics", "Graphics", "The renderer, upscaling and frame generation. Changes apply the next time you play.");
@@ -2626,6 +2627,72 @@ namespace RyGT
             };
             row.Controls.Add(label);
             row.Controls.Add(ram);
+            panel.Controls.Add(row);
+        }
+
+        /// The largest dedicated video memory of the display adapters, in GB (0 when unknown):
+        /// the drivers' HardwareInformation.qwMemorySize (64-bit, unlike WMI's AdapterRAM).
+        static int InstalledVramGb()
+        {
+            long best = 0;
+            try
+            {
+                using (var cls = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"))
+                {
+                    if (cls == null) return 0;
+                    foreach (var name in cls.GetSubKeyNames())
+                    {
+                        try
+                        {
+                            using (var adapter = cls.OpenSubKey(name))
+                            {
+                                object size = adapter == null ? null : adapter.GetValue("HardwareInformation.qwMemorySize");
+                                if (size is long) best = Math.Max(best, (long)size);
+                            }
+                        }
+                        catch { } // Properties and other keys can't be opened
+                    }
+                }
+            }
+            catch { }
+            return (int)Math.Round(best / (1024.0 * 1024 * 1024));
+        }
+
+        // Video memory (GPU.vram_budget_mb): how much of the graphics card's memory the renderer
+        // plans for. Auto (0) uses the driver's budget, as before. A smaller value makes the
+        // renderer free cached textures and render targets it hasn't used lately sooner, leaving
+        // the rest of the card to other programs (or a card that shares memory).
+        void AddVideoMemorySetting(TableLayoutPanel panel)
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
+            var label = new Label { Text = "Video memory (VRAM)", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
+            var vram = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, FlatStyle = FlatStyle.Flat };
+            int card = InstalledVramGb();
+            var sizes = new List<int> { 0 };
+            foreach (int gb in new[] { 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32, 48 })
+            {
+                if (card == 0 ? gb <= 24 : gb <= card) sizes.Add(gb);
+            }
+            foreach (int gb in sizes)
+            {
+                vram.Items.Add(gb == 0 ? (card > 0 ? "Auto (" + card + " GB card)" : "Auto")
+                                       : gb + " GB" + (gb == card ? " (all)" : ""));
+            }
+            int stored = ReadIntSetting("GPU", "vram_budget_mb", 0);
+            int index = 0;
+            for (int i = 1; i < sizes.Count; ++i)
+            {
+                if (sizes[i] * 1024 <= stored) index = i; // the largest choice not above the stored value
+            }
+            vram.SelectedIndex = index;
+            vram.SelectedIndexChanged += delegate
+            {
+                try { WriteSetting("GPU", "vram_budget_mb", sizes[vram.SelectedIndex] * 1024); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            row.Controls.Add(label);
+            row.Controls.Add(vram);
             panel.Controls.Add(row);
         }
 
