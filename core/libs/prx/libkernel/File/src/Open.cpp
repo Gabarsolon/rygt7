@@ -147,7 +147,17 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
 #ifdef _WIN32
     if (fd < 0 && errno != ENOENT) {
         std::error_code error;
-        if (std::filesystem::is_directory(native, error)) fd = File::OpenDirectoryDescriptor(native);
+        if (std::filesystem::is_directory(native, error)) {
+            // A directory opens for reading only, as on the console: EISDIR otherwise. GT7 opens
+            // its new style's folder for writing when a part is fitted in GT Auto; the descriptor
+            // it got made the write fail, and that failure ended the game.
+            const bool writes = (flags & SCE_KERNEL_O_ACCMODE) != SCE_KERNEL_O_RDONLY || (flags & SCE_KERNEL_O_TRUNC) != 0;
+            if (writes) {
+                errno = EISDIR;
+            } else {
+                fd = File::OpenDirectoryDescriptor(native);
+            }
+        }
     }
 #endif
     // Opens that may write are few; reporting them shows how a title uses the files it creates.
