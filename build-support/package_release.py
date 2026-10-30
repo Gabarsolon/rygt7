@@ -3,6 +3,7 @@
 Usage:
   python -I package_release.py --runtime <folder> --launcher <RyGT7.exe> --converter <ryty.exe>
       --out <folder> [--renderer-source <shadGT7 checkout>] [--name RyGT7-<date>-prerelease] [--zip]
+      [--server <RyGTServer.exe> [--shadnet <shadNet folder, default server/shadnet>]]
 
 Only these go in:
   - libs\\: the file names listed in runtime-files.txt, from <runtime>\\libs
@@ -11,6 +12,12 @@ Only these go in:
   - RyGT7.exe and launcher\\ (original background artwork and its note)
   - patches\\CUSA24769.xml and its provenance/credits from this repository
   - README.txt, LICENSE, licenses\\ and manifest.json (SHA-256 of every file, source commits)
+  - with --server and --shadnet, server\\ for hosting online play: RyGTServer.exe (server/build.cmd),
+    libzstd.dll, this repository's server/data (RyGTServer's own replies) as server-data, and
+    shadNet's program files from the given folder. shadNet's data (accounts, logs) is left out and
+    its shadnet.cfg goes in with its keys blank: the launcher makes them on the host's PC.
+    Polyphony's own files (client settings, texts, event lists) are not packaged: RyGTServer
+    fetches them from Polyphony's public servers when GT7 first asks.
 Nothing else of the runtime folder is read: no app0, convert, sys, _sd, user, shaders, logs,
 player patches, saves or settings. A missing expected file stops the packaging.
 """
@@ -39,6 +46,35 @@ PROVENANCE = (
     "libSceAppContentUtil.prx, libSceVideoRecording.prx and libMozaSDK-PS4.prx are copies of "
     "Ryty's empty placeholder module. The other libraries are ryGT's GT Sport build of "
     "2026-10-22 (RyGT commit 882312d, in this repository's history).")
+
+
+# shadNet: program files only. Its data (accounts database, logs, scores, trophies) and backups stay
+# behind; shadnet.cfg is rewritten with its keys blank.
+SHADNET_SKIP_DIRS = {"db", "score_data", "tss_data", "logs"}
+SHADNET_SKIP_SUFFIXES = (".log", ".running", ".db", ".db-shm", ".db-wal")
+SHADNET_KEYS = ("MemberApiKey", "AdminApiKey", "RegistrationSecretKey", "AdminsList")
+
+
+def put_server(package, args):
+    """server\\ for hosting online play (see the top of this file)."""
+    if not (args.server and args.shadnet):
+        raise SystemExit("--server needs a shadNet folder (--shadnet)")
+    package.put(args.server, "server\\RyGTServer.exe")
+    package.put(args.runtime_zstd, "server\\libzstd.dll")
+    package.put_tree(args.gcc_licenses / "zstd", "licenses\\zstd")
+    package.put(REPO / "server" / "README.md", "docs\\server.md")
+    package.put_tree(REPO / "server" / "data", "server\\server-data")
+    for path in sorted(args.shadnet.rglob("*")):
+        relative = path.relative_to(args.shadnet)
+        if (not path.is_file() or relative.parts[0] in SHADNET_SKIP_DIRS or path.name.endswith(SHADNET_SKIP_SUFFIXES)
+                or ".before" in path.name or path.name == "vc_redist.x64.exe"):
+            continue
+        if path.name == "shadnet.cfg":
+            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = [l.split("=", 1)[0] + "=" if l.split("=", 1)[0].strip() in SHADNET_KEYS else l for l in lines]
+            package.put_text("\n".join(lines) + "\n", "server\\shadnet\\shadnet.cfg")
+            continue
+        package.put(path, "server\\shadnet\\" + str(relative))
 
 
 def is_license(name):
@@ -124,6 +160,11 @@ def main():
                         help="checked-out 3rdparty folder of this repository")
     parser.add_argument("--gcc-licenses", type=Path,
                         default=Path(r"C:\msys64\ucrt64\share\licenses"))
+    parser.add_argument("--server", type=Path, help="RyGTServer.exe built with server/build.cmd")
+    parser.add_argument("--shadnet", type=Path, default=REPO / "server" / "shadnet",
+                        help="a shadNet server folder (shadnet.exe and its DLLs); default this repository's")
+    parser.add_argument("--runtime-zstd", type=Path, default=Path(r"C:\msys64\ucrt64\bin\libzstd.dll"),
+                        help="the libzstd.dll RyGTServer loads (MSYS2 UCRT64's)")
     parser.add_argument("--name")
     parser.add_argument("--zip", action="store_true")
     args = parser.parse_args()
@@ -148,6 +189,7 @@ def main():
     for n in ("CUSA24769.xml", "README.md", "Proper-Offline-Patch-README.txt"):
         package.put(REPO / "patches" / n, "patches\\" + n)
     package.put(REPO / "loader" / "launcher" / "background.png", "launcher\\background.png")
+    package.put(REPO / "loader" / "launcher" / "logo.png", "launcher\\logo.png")
     package.put(REPO / "loader" / "launcher" / "README.txt", "launcher\\README.txt")
     package.put(REPO / "LICENSE", "LICENSE")
     package.put(REPO / "LICENSE", "licenses\\RyGT7\\LICENSE")
@@ -168,6 +210,8 @@ def main():
         if not source.is_dir():
             raise SystemExit("GCC runtime license notices not found: %s" % source)
         package.put_tree(source, "licenses\\gcc-runtime\\" + n)
+    if args.server:
+        put_server(package, args)
     readme = (HERE / "release-readme.txt").read_text(encoding="utf-8")
     package.put_text(readme.replace("{name}", name).replace("{date}", today), "README.txt")
 

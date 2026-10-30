@@ -1,6 +1,10 @@
 add_library(libSceRtc SHARED EXCLUDE_FROM_ALL Export.cpp)
 target_include_directories(libSceRtc PRIVATE ${LIBS_INCLUDE_DIR})
 configure_windows_unwind(libSceRtc)
+if(WIN32)
+    target_link_libraries(libSceRtc PRIVATE ws2_32)
+    target_compile_definitions(libSceRtc PRIVATE _WIN32_WINNT=0x0602)
+endif()
 
 if(MINGW)
     foreach(runtimeLinkFlag IN ITEMS -static-libgcc -static-libstdc++ -static)

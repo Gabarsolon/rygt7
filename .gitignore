@@ -68,3 +68,7 @@ Thumbs.db
 /deps/
 /RyGT*.ini
 !/build-support/
+
+# The prebuilt shadNet server for hosting online play (server/shadnet/README.txt).
+!/server/shadnet/*.exe
+!/server/shadnet/**/*.dll

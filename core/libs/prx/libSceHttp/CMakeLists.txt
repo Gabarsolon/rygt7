@@ -1,4 +1,8 @@
-add_library(libSceHttp SHARED EXCLUDE_FROM_ALL Export.cpp src/Uri.cpp)
+add_library(libSceHttp SHARED EXCLUDE_FROM_ALL Export.cpp src/Bridge.cpp src/Uri.cpp)
+if(WIN32)
+    target_link_libraries(libSceHttp PRIVATE ws2_32)
+    target_compile_definitions(libSceHttp PRIVATE _WIN32_WINNT=0x0602)
+endif()
 target_include_directories(libSceHttp PRIVATE ${LIBS_INCLUDE_DIR})
 configure_windows_unwind(libSceHttp)
 
