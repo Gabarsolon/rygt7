@@ -159,6 +159,7 @@ namespace RyGT
         {
             try
             {
+                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
                 var request = (HttpWebRequest)WebRequest.Create("https://api.ipify.org");
                 request.Timeout = 8000;
                 using (var response = request.GetResponse())
@@ -301,7 +302,8 @@ namespace RyGT
             hostId = OnlineField(host, "Your online ID", savedId);
             host.Controls.Add(FieldLabel("Friends reach this PC at"));
             var addressRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent };
-            hostAddress = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420, Margin = new Padding(0, 0, 8, 0) };
+            // Editable: an internet address can be typed in when Find my internet address cannot get it.
+            hostAddress = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 420, Margin = new Padding(0, 0, 8, 0) };
             addresses = OnlinePlay.LocalAddresses();
             string savedAddress = OnlinePlay.Get(ini, "invite_address");
             if (savedAddress.Length > 0 && !addresses.Any(a => a.Key == savedAddress))
@@ -309,14 +311,16 @@ namespace RyGT
             foreach (var address in addresses) hostAddress.Items.Add(address.Key + "   (" + address.Value + ")");
             if (hostAddress.Items.Count > 0) hostAddress.SelectedIndex = Math.Max(0, addresses.FindIndex(a => a.Key == savedAddress));
             hostAddress.SelectedIndexChanged += delegate { ShowInviteCode(); };
+            hostAddress.TextChanged += delegate { ShowInviteCode(); };
             var findPublic = new Button { Text = "Find my internet address", AutoSize = true, Margin = new Padding(0) };
             findPublic.Click += delegate { FindPublicAddress(); };
             addressRow.Controls.Add(hostAddress);
             addressRow.Controls.Add(findPublic);
             host.Controls.Add(addressRow);
-            host.Controls.Add(Hint("For friends over the internet, forward these ports on your router to this PC: TCP " +
-                                   OnlinePlay.ServerPort + ", " + OnlinePlay.ShadNetPort + " and " + OnlinePlay.ShadNetWebApiPort +
-                                   " (the servers) and TCP and UDP " + OnlinePlay.P2PPort + " (the game), then use your internet address."));
+            host.Controls.Add(Hint("For friends over the internet, forward these ports on your router to this PC: TCP and UDP " +
+                                   OnlinePlay.ServerPort + " (RyGTServer and its relay for players who cannot reach each other), TCP " +
+                                   OnlinePlay.ShadNetPort + " and " + OnlinePlay.ShadNetWebApiPort +
+                                   " (shadNet) and TCP and UDP " + OnlinePlay.P2PPort + " (the game), then use your internet address."));
             var hostButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 10, 0, 0), BackColor = Color.Transparent };
             startHosting = new Button { Text = "Start hosting", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
             stopHosting = new Button { Text = "Stop hosting", AutoSize = true, Margin = new Padding(0, 0, 10, 0) };
@@ -422,7 +426,17 @@ namespace RyGT
             return token;
         }
 
-        string SelectedAddress { get { return hostAddress.SelectedIndex >= 0 ? addresses[hostAddress.SelectedIndex].Key : null; } }
+        /// The address in the box: a listed one, or one typed in (an IPv4 address).
+        string SelectedAddress
+        {
+            get
+            {
+                if (hostAddress.SelectedIndex >= 0) return addresses[hostAddress.SelectedIndex].Key;
+                string typed = hostAddress.Text.Trim().Split(' ')[0];
+                IPAddress parsed;
+                return IPAddress.TryParse(typed, out parsed) && parsed.AddressFamily == AddressFamily.InterNetwork ? typed : null;
+            }
+        }
 
         void ShowInviteCode()
         {
@@ -651,7 +665,8 @@ namespace RyGT
                 "netsh advfirewall firewall delete rule name=\"ryGT7 online\" >nul 2>&1 & " +
                 "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow program=\"" + Exe + "\" profile=any & " +
                 "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow protocol=TCP localport=" + OnlinePlay.ServerPort + "," +
-                OnlinePlay.ShadNetPort + "," + OnlinePlay.ShadNetWebApiPort + " profile=any";
+                OnlinePlay.ShadNetPort + "," + OnlinePlay.ShadNetWebApiPort + " profile=any & " +
+                "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow protocol=UDP localport=" + OnlinePlay.ServerPort + " profile=any";
             try
             {
                 using (var process = Process.Start(new ProcessStartInfo("cmd.exe", "/c " + rules) { Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden }))

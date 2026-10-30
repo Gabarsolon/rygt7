@@ -1019,6 +1019,98 @@ namespace RyGT.Server
     /// before connecting to them. The address handed out is the one the player was seen at, except
     /// that a player on this server's own PC (seen as 127.0.0.1) is given to remote players as the
     /// address they themselves reached this server at.
+    /// A UDP relay on the server's port for P2P traffic between players who cannot reach each other
+    /// directly (a router that does not forward the P2P port, or a carrier-grade NAT). Each game
+    /// sends from its P2P port:
+    ///   "RYK1" + its P2P port (2 bytes)          every 2 s, so the relay knows where it is;
+    ///   "RYR1" + flags + address (4) + port (2) + datagram, for the player at that address:port.
+    /// The relay passes the datagram on as "RYR1" + flags + the sender's address and P2P port +
+    /// datagram. A player is known by the address the others have for it: the address it calls
+    /// from, or for a player on this PC, this PC's public address.
+    class Relay
+    {
+        class Entry { public IPEndPoint EndPoint; public DateTime Seen; }
+
+        readonly int port;
+        readonly Func<IPAddress> publicAddress;
+        readonly Action<string> log;
+        readonly Dictionary<string, Entry> players = new Dictionary<string, Entry>();
+        readonly Dictionary<IPEndPoint, string> names = new Dictionary<IPEndPoint, string>();
+        long forwarded, dropped;
+
+        public Relay(int port, Func<IPAddress> publicAddress, Action<string> log)
+        {
+            this.port = port;
+            this.publicAddress = publicAddress;
+            this.log = log;
+        }
+
+        static string Key(IPAddress address, int port) { return address + ":" + port.ToString(CultureInfo.InvariantCulture); }
+
+        IPAddress Known(IPAddress address)
+        {
+            if (!IPAddress.IsLoopback(address)) return address;
+            return publicAddress() ?? address;
+        }
+
+        public void Run()
+        {
+            UdpClient udp;
+            try { udp = new UdpClient(new IPEndPoint(IPAddress.Any, port)); }
+            catch (SocketException e) { log("relay: cannot open UDP port " + port + ": " + e.Message); return; }
+            // SIO_UDP_CONNRESET off: an ICMP "port unreachable" from a player who left would
+            // otherwise fail the next receive.
+            try { udp.Client.IOControl(-1744830452, new byte[] { 0, 0, 0, 0 }, null); } catch (Exception) { }
+            log("relay: listening on UDP port " + port);
+            DateTime report = DateTime.UtcNow;
+            while (true)
+            {
+                IPEndPoint from = new IPEndPoint(IPAddress.Any, 0);
+                byte[] data;
+                try { data = udp.Receive(ref from); }
+                catch (SocketException) { continue; }
+                if (data.Length < 6 || data[0] != 'R' || data[1] != 'Y' || data[3] != '1') continue;
+                DateTime now = DateTime.UtcNow;
+                if (data[2] == 'K')
+                {
+                    int p2pPort = (data[4] << 8) | data[5];
+                    string key = Key(Known(from.Address), p2pPort);
+                    Entry entry;
+                    if (!players.TryGetValue(key, out entry) || !entry.EndPoint.Equals(from))
+                        log("relay: " + key + " is at " + from);
+                    players[key] = new Entry { EndPoint = from, Seen = now };
+                    names[from] = key;
+                }
+                else if (data[2] == 'R' && data.Length >= 11)
+                {
+                    string source;
+                    Entry target;
+                    string destination = Key(new IPAddress(new[] { data[5], data[6], data[7], data[8] }), (data[9] << 8) | data[10]);
+                    if (!names.TryGetValue(from, out source) || !players.TryGetValue(destination, out target) ||
+                        now - target.Seen > TimeSpan.FromSeconds(30))
+                    {
+                        dropped++;
+                        continue;
+                    }
+                    // The sender's address and P2P port in place of the destination's.
+                    int colon = source.LastIndexOf(':');
+                    byte[] address = IPAddress.Parse(source.Substring(0, colon)).GetAddressBytes();
+                    int sourcePort = int.Parse(source.Substring(colon + 1), CultureInfo.InvariantCulture);
+                    Array.Copy(address, 0, data, 5, 4);
+                    data[9] = (byte)(sourcePort >> 8);
+                    data[10] = (byte)sourcePort;
+                    try { udp.Send(data, data.Length, target.EndPoint); forwarded++; } catch (SocketException) { dropped++; }
+                }
+                if (now - report > TimeSpan.FromSeconds(30) && forwarded + dropped > 0)
+                {
+                    log(string.Format(CultureInfo.InvariantCulture, "relay: last 30 s: {0} datagrams passed on, {1} dropped", forwarded, dropped));
+                    forwarded = dropped = 0;
+                    report = now;
+                }
+            }
+        }
+    }
+
     class Peers
     {
         class Peer
@@ -1070,6 +1162,13 @@ namespace RyGT.Server
             return request.Local;
         }
 
+        /// This PC's address as the other players reach it (from the Host header of their requests):
+        /// players on this PC are known to the others by it.
+        public volatile IPAddress PublicAddress;
+
+        /// Called (under the registry's lock) when a player joins a session, again after leaving too.
+        public Action<string> Joined;
+
         /// The other players in the session a player is in now (the one it asked about last), in the
         /// order they joined.
         public List<string> OthersInSession(string onlineId)
@@ -1107,6 +1206,11 @@ namespace RyGT.Server
                 return HttpResponse.Text(400, "text/plain", "id, online and port are required");
             long account;
             accountOf.TryGetValue(onlineId, out account);
+            if (!IPAddress.IsLoopback(request.Remote))
+            {
+                IPAddress reached = AddressAsReached(request);
+                if (reached != null && !IPAddress.IsLoopback(reached)) PublicAddress = reached;
+            }
             Peer existing;
             if (!byOnlineId.TryGetValue(onlineId, out existing) || existing.Port != port || !existing.Address.Equals(request.Remote))
                 log(string.Format(CultureInfo.InvariantCulture, "p2p: {0} (account {1}) at {2}, port {3}", onlineId, account, request.Remote, port));
@@ -1117,6 +1221,7 @@ namespace RyGT.Server
             if (!members.ContainsKey(onlineId))
             {
                 log("p2p: " + onlineId + " is in session " + session);
+                if (Joined != null) Joined(onlineId);
                 Dictionary<string, DateTime> times;
                 if (!joined.TryGetValue(session, out times)) joined[session] = times = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
                 times[onlineId] = DateTime.UtcNow;
@@ -1526,6 +1631,7 @@ namespace RyGT.Server
         readonly Rankings rankings;
         readonly Lobby lobby;
         readonly Peers peers;
+        readonly Relay relay;
         readonly Invites invites;
         readonly Gt7 gt7;
         readonly Captures captures;
@@ -1547,6 +1653,8 @@ namespace RyGT.Server
             peers = new Peers(text => Log(ConsoleColor.Magenta, text));
             invites = new Invites(options, text => Log(ConsoleColor.Green, text));
             gt7 = new Gt7(options.DataDirectory, text => Log(ConsoleColor.Cyan, text), peers.OthersInSession);
+            peers.Joined = gt7.PlayerJoined;
+            relay = new Relay(options.Port, () => peers.PublicAddress, text => Log(ConsoleColor.Magenta, text));
             if (options.Capture) captures = new Captures(options.DataDirectory);
         }
 
@@ -1556,6 +1664,7 @@ namespace RyGT.Server
             listener.Server.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.IPv6Only, false);
             listener.Start();
             PrintBanner();
+            new Thread(relay.Run) { IsBackground = true, Name = "relay" }.Start();
             while (true)
             {
                 TcpClient client = listener.AcceptTcpClient();
@@ -1575,7 +1684,7 @@ namespace RyGT.Server
             {
                 Console.WriteLine("Friends use one of these, whichever their PC can reach:");
                 foreach (string address in addresses) Console.WriteLine("  online_server=" + address + ":" + options.Port);
-                Console.WriteLine("(Over the internet: forward TCP port " + options.Port + " to this PC, or share a VPN such as Tailscale.)");
+                Console.WriteLine("(Over the internet: forward TCP and UDP port " + options.Port + " to this PC, or share a VPN such as Tailscale.)");
             }
             Console.WriteLine("Status page: http://127.0.0.1:" + options.Port + "/");
             Console.WriteLine();

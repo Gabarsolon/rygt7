@@ -274,12 +274,91 @@ struct P2PTransport {
     NativeSocket relay = INVALID_NATIVE_SOCKET;    // sends into mailboxes
     std::uint16_t port = 0;                        // host byte order
     std::map<std::uint16_t, sockaddr_in> mailboxes;  // vport -> mailbox address
+    // The port each peer's datagrams arrive from (address -> port, network order). A router that
+    // does not forward the P2P port maps the peer's port to another one, and only answers sent
+    // back to that port get through.
+    std::map<std::uint32_t, std::uint16_t> seen_ports;
+    // RyGTServer's UDP relay (online_server in RyGT.ini), for players who cannot reach each other
+    // directly, and what is known of each peer (by address, network order).
+    struct Peer {
+        std::chrono::steady_clock::time_point heard_direct{};   // last datagram straight from it
+        std::chrono::steady_clock::time_point not_heard_us{};   // last relayed one saying it has not heard us
+        std::chrono::steady_clock::time_point probed{};         // last copy sent straight while relaying
+        bool relaying = false;
+    };
+    sockaddr_in relay_server{};
+    bool relay_enabled = false;
+    std::map<std::uint32_t, Peer> peers;
     bool running = false;
 };
+
+constexpr std::size_t P2P_RELAY_HEADER = 11;  // "RYR1", flags, address, port
+constexpr auto P2P_DIRECT_TIMEOUT = std::chrono::seconds(3);
 
 P2PTransport& p2p_transport() {
     static P2PTransport* transport = new P2PTransport();
     return *transport;
+}
+
+// Where to send to a peer: the port its datagrams come from when it is known and the game asked
+// for the P2P port (the peer's router rewrote it).
+void p2p_reply_port(sockaddr_in& destination) {
+    P2PTransport& transport = p2p_transport();
+    std::lock_guard<std::mutex> lk(transport.mutex);
+    if (destination.sin_port != htons(transport.port)) return;
+    auto it = transport.seen_ports.find(destination.sin_addr.s_addr);
+    if (it != transport.seen_ports.end()) destination.sin_port = it->second;
+}
+
+bool p2p_is_relay(const sockaddr_in& from) {
+    P2PTransport& transport = p2p_transport();
+    std::lock_guard<std::mutex> lk(transport.mutex);
+    return transport.relay_enabled && from.sin_addr.s_addr == transport.relay_server.sin_addr.s_addr &&
+           from.sin_port == transport.relay_server.sin_port;
+}
+
+// Sends a datagram to a peer known as address:port (what signaling gave the game): straight to it
+// while datagrams come straight from it and it has not said it hears nothing from us, else through
+// the relay, with a copy straight to it twice a second to find out when the direct way works.
+int p2p_send(const sockaddr_in& peer, const char* data, std::size_t length) {
+    P2PTransport& transport = p2p_transport();
+    sockaddr_in direct = peer;
+    p2p_reply_port(direct);
+    bool relay = false, probe = false, heard = false;
+    sockaddr_in server{};
+    {
+        std::lock_guard<std::mutex> lk(transport.mutex);
+        if (transport.relay_enabled) {
+            const auto now = std::chrono::steady_clock::now();
+            auto& state = transport.peers[peer.sin_addr.s_addr];
+            heard = now - state.heard_direct < P2P_DIRECT_TIMEOUT;
+            relay = !heard || now - state.not_heard_us < P2P_DIRECT_TIMEOUT;
+            if (relay != state.relaying) {
+                state.relaying = relay;
+                p2p_trace("%s: %s", p2p_text(&peer.sin_addr, peer.sin_port, 0).c_str(),
+                          relay ? "not reachable straight: sending through RyGTServer's relay" : "reachable straight again");
+            }
+            if (relay && now - state.probed > std::chrono::milliseconds(500)) {
+                probe = true;
+                state.probed = now;
+            }
+            server = transport.relay_server;
+        }
+    }
+    if (!relay)
+        return ::sendto(transport.socket, data, static_cast<int>(length), 0, reinterpret_cast<const sockaddr*>(&direct), sizeof(direct));
+    std::vector<char> wrapped(P2P_RELAY_HEADER + length);
+    std::memcpy(wrapped.data(), "RYR1", 4);
+    wrapped[4] = heard ? 1 : 0;
+    std::memcpy(wrapped.data() + 5, &peer.sin_addr, 4);
+    std::memcpy(wrapped.data() + 9, &peer.sin_port, 2);
+    if (length) std::memcpy(wrapped.data() + P2P_RELAY_HEADER, data, length);
+    const int sent = ::sendto(transport.socket, wrapped.data(), static_cast<int>(wrapped.size()), 0,
+                              reinterpret_cast<const sockaddr*>(&server), sizeof(server));
+    if (probe)
+        ::sendto(transport.socket, data, static_cast<int>(length), 0, reinterpret_cast<const sockaddr*>(&direct), sizeof(direct));
+    p2p_count("UDP out to " + p2p_text(&peer.sin_addr, peer.sin_port, 0) + " through the relay", length);
+    return sent < 0 ? sent : static_cast<int>(length);
 }
 
 void disable_udp_connreset(NativeSocket socket) {
@@ -310,7 +389,7 @@ void p2p_receive_loop() {
         // Receive just far enough in that the payload ends up right after the mailbox header, which
         // then overwrites the wire header in place.
         char* receive_at = buffer.data() + (P2P_MAILBOX_HEADER - P2P_WIRE_HEADER);
-        const int received = ::recvfrom(transport.socket, receive_at, static_cast<int>(P2P_MAX_DATAGRAM + P2P_WIRE_HEADER),
+        int received = ::recvfrom(transport.socket, receive_at, static_cast<int>(P2P_MAX_DATAGRAM + P2P_WIRE_HEADER),
             0, reinterpret_cast<sockaddr*>(&from), &from_length);
         if (received < 0) {
 #ifdef _WIN32
@@ -320,6 +399,30 @@ void p2p_receive_loop() {
             std::lock_guard<std::mutex> lk(transport.mutex);
             if (!transport.running) return;
             continue;
+        }
+        if (p2p_is_relay(from)) {
+            // From another player through the relay: unwrap it and take it as coming from that player.
+            if (received < static_cast<int>(P2P_RELAY_HEADER) || std::memcmp(receive_at, "RYR1", 4) != 0) continue;
+            const bool hears_us = (receive_at[4] & 1) != 0;
+            std::memcpy(&from.sin_addr, receive_at + 5, 4);
+            std::memcpy(&from.sin_port, receive_at + 9, 2);
+            received -= static_cast<int>(P2P_RELAY_HEADER);
+            std::memmove(receive_at, receive_at + P2P_RELAY_HEADER, static_cast<std::size_t>(received));
+            p2p_count("UDP in  from " + p2p_text(&from.sin_addr, from.sin_port, 0) + " through the relay", static_cast<std::size_t>(received));
+            if (!hears_us) {
+                std::lock_guard<std::mutex> lk(transport.mutex);
+                transport.peers[from.sin_addr.s_addr].not_heard_us = std::chrono::steady_clock::now();
+            }
+        } else {
+            std::lock_guard<std::mutex> lk(transport.mutex);
+            transport.peers[from.sin_addr.s_addr].heard_direct = std::chrono::steady_clock::now();
+            auto& seen = transport.seen_ports[from.sin_addr.s_addr];
+            if (seen != from.sin_port) {
+                if (from.sin_port != htons(transport.port))
+                    p2p_trace("UDP from %s arrives from port %u, not %u (its router rewrites the port): answering there",
+                              p2p_text(&from.sin_addr, from.sin_port, 0).c_str(), ntohs(from.sin_port), transport.port);
+                seen = from.sin_port;
+            }
         }
         if (static_cast<std::size_t>(received) < P2P_WIRE_HEADER ||
             receive_at[0] != static_cast<char>(P2P_MAGIC[0]) || receive_at[1] != static_cast<char>(P2P_MAGIC[1])) {
@@ -379,6 +482,58 @@ void p2p_receive_loop() {
     }
 }
 
+// RyGTServer's address from RyGT.ini (online_server=host:port), for its UDP relay.
+bool p2p_relay_address(sockaddr_in& address) {
+    std::string value;
+    if (std::FILE* ini = std::fopen("RyGT.ini", "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), ini))
+            if (std::strncmp(line, "online_server=", 14) == 0) value = line + 14;
+        std::fclose(ini);
+    }
+    value.erase(value.find_last_not_of(" \r\n") + 1);
+    if (value.empty()) return false;
+    std::string host = value, port = "7890";
+    const auto colon = value.rfind(':');
+    if (colon != std::string::npos) {
+        host = value.substr(0, colon);
+        port = value.substr(colon + 1);
+    }
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    addrinfo* found = nullptr;
+    if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &found) != 0 || !found) return false;
+    std::memcpy(&address, found->ai_addr, sizeof(address));
+    ::freeaddrinfo(found);
+    return true;
+}
+
+// Tells the relay where this game's P2P port is (through the router, as the relay sees it) every
+// 2 s, which also keeps the router's mapping open for the datagrams the relay passes on.
+void p2p_relay_loop() {
+    P2PTransport& transport = p2p_transport();
+    sockaddr_in server{};
+    if (!p2p_relay_address(server)) return;
+    std::uint16_t port;
+    {
+        std::lock_guard<std::mutex> lk(transport.mutex);
+        transport.relay_server = server;
+        transport.relay_enabled = true;
+        port = transport.port;
+    }
+    p2p_trace("relay at %s", p2p_text(&server.sin_addr, server.sin_port, 0).c_str());
+    const char hello[6] = {'R', 'Y', 'K', '1', static_cast<char>(port >> 8), static_cast<char>(port & 0xFF)};
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(transport.mutex);
+            if (!transport.running) return;
+        }
+        ::sendto(transport.socket, hello, sizeof(hello), 0, reinterpret_cast<const sockaddr*>(&server), sizeof(server));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+}
+
 // Opens the shared P2P port the first time a P2P socket is bound. Returns 0 or a NET_E* code.
 int p2p_start_transport(std::uint16_t requested_port) {
     P2PTransport& transport = p2p_transport();
@@ -414,6 +569,7 @@ int p2p_start_transport(std::uint16_t requested_port) {
     transport.port = port;
     transport.running = true;
     std::thread(p2p_receive_loop).detach();
+    std::thread(p2p_relay_loop).detach();
     std::fprintf(stderr, "[online] P2P: listening on UDP port %u\n", port);
     std::fflush(stderr);
     return 0;
@@ -1509,8 +1665,7 @@ int64_t APS5_VABI sceNetSendto(int s, const void* buf, size_t len, int flags, co
             destination.sin_family = AF_INET;
             std::memcpy(&destination.sin_port, address + 2, 2);
             std::memcpy(&destination.sin_addr, address + 4, 4);
-            const int sent = ::sendto(p2p_transport().socket, static_cast<const char*>(buf), static_cast<int>(len), 0,
-                                      reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+            const int sent = p2p_send(destination, static_cast<const char*>(buf), len);
             p2p_count("UDP out to " + p2p_text(&destination.sin_addr, destination.sin_port, 0) + " raw (signaling)" + (sent >= 0 ? "" : " FAILED"), len);
             return sent >= 0 ? static_cast<int64_t>(len) : fail(native_error());
         }
@@ -1526,9 +1681,7 @@ int64_t APS5_VABI sceNetSendto(int s, const void* buf, size_t len, int flags, co
         std::memcpy(&destination.sin_port, address + 2, 2);
         std::memcpy(&destination.sin_addr, address + 4, 4);
         if (destination.sin_port == 0) destination.sin_port = htons(p2p_configured_port(0));
-        P2PTransport& transport = p2p_transport();
-        const int sent = ::sendto(transport.socket, datagram.data(), static_cast<int>(datagram.size()), 0,
-                                  reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+        const int sent = p2p_send(destination, datagram.data(), datagram.size());
         p2p_count("UDP out from vport " + std::to_string(socket.vport) + " to " +
                   p2p_text(&destination.sin_addr, destination.sin_port, *reinterpret_cast<const std::uint16_t*>(address + 8)) +
                   (sent >= 0 ? "" : " FAILED"), len);
