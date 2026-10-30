@@ -611,6 +611,9 @@ namespace RyGT
         readonly Label label;
         readonly Control control;
 
+        /// The row's line goes elsewhere (under a hint that belongs to the setting).
+        public bool NoLine;
+
         public SettingRow(string text, Control control)
         {
             this.control = control;
@@ -653,6 +656,7 @@ namespace RyGT
         protected override void OnPaintBackground(PaintEventArgs e)
         {
             Dark.PaintUnder(this, e.Graphics);
+            if (NoLine) return;
             using (var line = new Pen(Dark.Line)) e.Graphics.DrawLine(line, 0, Height - 1, Width, Height - 1);
         }
     }
@@ -1920,6 +1924,28 @@ namespace RyGT
             fpsRow.Controls.Add(fpsLock);
             graphics.Controls.Add(fpsRow);
             fpsLock.SelectedIndex = ReadIntSetting("GPU", "race_fps_lock", 30) == 60 ? 1 : 0;
+            // Texture sharpness (GPU.texture_lod_bias, the game gets it as RYGT_TEXTURE_LOD_BIAS):
+            // textures are read at finer detail levels than GT7 asks for. Two levels were far too
+            // strong in testing, so the list stops at one.
+            var sharpnessValues = new[] { "0", "-0.5", "-1" };
+            var sharpness = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230, FlatStyle = FlatStyle.Flat };
+            sharpness.Items.AddRange(new object[] { "Game default", "Sharper (half a level)", "Sharpest (one level)" });
+            graphics.Controls.Add(new SettingRow("Texture sharpness", sharpness) { NoLine = true });
+            // The setting's line goes under its hint.
+            var sharpnessHint = Hint("Sharper textures cost some GPU time and can shimmer in the distance.");
+            sharpnessHint.AutoSize = false;
+            sharpnessHint.MaximumSize = Size.Empty;
+            sharpnessHint.Dock = DockStyle.Fill;
+            sharpnessHint.Height = 28;
+            sharpnessHint.Margin = new Padding(0);
+            sharpnessHint.Paint += (sender, e) => { using (var line = new Pen(Dark.Line)) e.Graphics.DrawLine(line, 0, sharpnessHint.Height - 1, sharpnessHint.Width, sharpnessHint.Height - 1); };
+            graphics.Controls.Add(sharpnessHint);
+            sharpness.SelectedIndex = Math.Max(0, Array.IndexOf(sharpnessValues, ReadStringSetting("GPU", "texture_lod_bias", "0")));
+            sharpness.SelectedIndexChanged += delegate
+            {
+                try { WriteSetting("GPU", "texture_lod_bias", sharpnessValues[sharpness.SelectedIndex]); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
             // Shader cache size (GPU.driver_cache_gb, GPU.driver_cache_unlimited; the game gets it as
             // RYGT_DRIVER_CACHE_MAX_MB): the renderer's saved GPU shader cache, like NVIDIA's own
             // setting. 0 turns it off; a bigger cache keeps more cars and tracks compiled, and is saved
@@ -3348,6 +3374,8 @@ namespace RyGT
                         start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
                         // Upscaling quality from the Graphics page (the size DLSS and FSR 3.1 scale to).
                         start.EnvironmentVariables["RYGT_UPSCALE_QUALITY"] = GpuSetting(root, "upscale_quality") as string ?? "auto";
+                        // Texture sharpness from the Graphics page (detail levels added to every sampler's bias).
+                        start.EnvironmentVariables["RYGT_TEXTURE_LOD_BIAS"] = GpuSetting(root, "texture_lod_bias") as string ?? "0";
                         started = Process.Start(start);
                     }
                     catch (Exception e)
