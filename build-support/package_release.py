@@ -168,6 +168,11 @@ def main():
                         help="a shadNet server folder (shadnet.exe and its DLLs); default this repository's")
     parser.add_argument("--runtime-zstd", type=Path, default=Path(r"C:\msys64\ucrt64\bin\libzstd.dll"),
                         help="the libzstd.dll RyGTServer loads (MSYS2 UCRT64's)")
+    parser.add_argument("--wheel-probe", type=Path,
+                        default=REPO / "build" / "core" / "libs" / "prx" / "libScePad" / "ryty-wheel-probe.exe",
+                        help="ryty-wheel-probe.exe built from core/libs/prx/libScePad/tools/WheelProbe.cpp "
+                             "(the launcher's steering wheel setup reads wheels through it); default this "
+                             "repository's build, else the prebuilt tools/ryty-wheel-probe.exe")
     parser.add_argument("--name")
     parser.add_argument("--zip", action="store_true")
     args = parser.parse_args()
@@ -189,6 +194,12 @@ def main():
     for n in GCC_DLLS:
         package.put(args.runtime / n, "converter\\" + n)
     package.put(args.launcher, "RyGT7.exe")
+    # Steering wheels: every release ships the wheel probe the launcher's wheel page runs.
+    wheel_probe = args.wheel_probe if args.wheel_probe.is_file() else REPO / "tools" / "ryty-wheel-probe.exe"
+    if not wheel_probe.is_file():
+        raise SystemExit("ryty-wheel-probe.exe not found (build the ryty-wheel-probe target): %s"
+                         % args.wheel_probe)
+    package.put(wheel_probe, "tools\\ryty-wheel-probe.exe")
     for n in ("CUSA24769.xml", "README.md", "Proper-Offline-Patch-README.txt"):
         package.put(REPO / "patches" / n, "patches\\" + n)
     package.put(REPO / "loader" / "launcher" / "background.png", "launcher\\background.png")
@@ -218,6 +229,8 @@ def main():
     readme = (HERE / "release-readme.txt").read_text(encoding="utf-8")
     package.put_text(readme.replace("{name}", name).replace("{date}", today), "README.txt")
 
+    if not any(f["path"] == "tools/ryty-wheel-probe.exe" for f in package.files):
+        raise SystemExit("the package has no tools/ryty-wheel-probe.exe (steering wheels need it)")
     manifest = {"name": name, "built": datetime.datetime.now().astimezone().isoformat(),
                 "sources": sources, "runtime_provenance": PROVENANCE,
                 "files": sorted(package.files, key=lambda f: f["path"])}

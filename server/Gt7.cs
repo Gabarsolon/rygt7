@@ -360,6 +360,18 @@ namespace RyGT.Server
         /// so it asks for "" both for itself and for each player who connects to it. An empty ID is
         /// therefore the next player in the asker's PSN session that it has not been sent yet, in
         /// the order they joined, and once it has them all, the asker itself.
+        /// A player joined a PSN session (or joined again after a failed try): every game is sent it
+        /// again as a new player, and its own game starts over (otherwise a player sent on a failed try
+        /// is skipped, and the asker's own profile is sent in its place).
+        public void PlayerJoined(string onlineId)
+        {
+            lock (sportUsersSent)
+            {
+                foreach (var sent in sportUsersSent.Values) sent.Remove(onlineId);
+                sportUsersSent.Remove(onlineId);
+            }
+        }
+
         object[] SportUsers(object[] ids, Dictionary<string, object> asking)
         {
             var list = new List<object>();
