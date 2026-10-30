@@ -159,6 +159,7 @@ namespace RyGT
         {
             try
             {
+                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
                 var request = (HttpWebRequest)WebRequest.Create("https://api.ipify.org");
                 request.Timeout = 8000;
                 using (var response = request.GetResponse())
@@ -202,8 +203,8 @@ namespace RyGT
         /// the file before the first change is kept as users.json.before-online).
         public static void SetAccount(string root, string onlineId, string password)
         {
-            if (!File.Exists(UsersPath(root)))
-                throw new InvalidOperationException("user\\users.json is missing: start GT7 once with Play, then try again.");
+            // Before GT7's first start: made here, the way GT7 makes it, so the first start is online too.
+            if (!File.Exists(UsersPath(root))) WriteDefaultUsers(root);
             var serializer = new JavaScriptSerializer();
             var users = serializer.DeserializeObject(File.ReadAllText(UsersPath(root))) as Dictionary<string, object>;
             var player = users == null ? null : FirstPlayer(users);
@@ -216,6 +217,18 @@ namespace RyGT
             player["shadnet_password"] = password;
             player["shadnet_token"] = "";
             File.WriteAllText(UsersPath(root), serializer.Serialize(users), new UTF8Encoding(false));
+        }
+
+        static void WriteDefaultUsers(string root)
+        {
+            var list = Enumerable.Range(1, 4).Select(i => new Dictionary<string, object> {
+                { "np_age", 30 }, { "np_country", "us" }, { "np_date_of_birth", "1994-01-01" }, { "np_language", "en" },
+                { "player_index", i }, { "shadnet_email", "" }, { "shadnet_enabled", false }, { "shadnet_npid", "" },
+                { "shadnet_password", "" }, { "shadnet_token", "" }, { "user_color", i }, { "user_id", 999 + i },
+                { "user_name", i == 1 ? "shadGT" : "shadGT-" + i } }).ToArray();
+            var users = new Dictionary<string, object> { { "Users", new Dictionary<string, object> { { "commit_hash", "" }, { "user", list } } } };
+            Directory.CreateDirectory(Path.GetDirectoryName(UsersPath(root)));
+            File.WriteAllText(UsersPath(root), new JavaScriptSerializer().Serialize(users), new UTF8Encoding(false));
         }
 
         /// GET on a RyGTServer; the JSON reply, also for errors it answers with a message.
@@ -277,6 +290,9 @@ namespace RyGT
         ComboBox hostAddress;
         Label hostState, inviteCode, joinState, onlineState;
         Button startHosting, stopHosting;
+        bool preparingServer;
+        GlowButton modeOnline, modeOffline;
+        System.Windows.Forms.Timer modeTimer;
         List<KeyValuePair<string, string>> addresses = new List<KeyValuePair<string, string>>();
 
         string ServerFolder { get { return Path.Combine(root, "server"); } }
@@ -301,7 +317,8 @@ namespace RyGT
             hostId = OnlineField(host, "Your online ID", savedId);
             host.Controls.Add(FieldLabel("Friends reach this PC at"));
             var addressRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent };
-            hostAddress = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420, Margin = new Padding(0, 0, 8, 0) };
+            // Editable: an internet address can be typed in when Find my internet address cannot get it.
+            hostAddress = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 420, Margin = new Padding(0, 0, 8, 0) };
             addresses = OnlinePlay.LocalAddresses();
             string savedAddress = OnlinePlay.Get(ini, "invite_address");
             if (savedAddress.Length > 0 && !addresses.Any(a => a.Key == savedAddress))
@@ -309,14 +326,16 @@ namespace RyGT
             foreach (var address in addresses) hostAddress.Items.Add(address.Key + "   (" + address.Value + ")");
             if (hostAddress.Items.Count > 0) hostAddress.SelectedIndex = Math.Max(0, addresses.FindIndex(a => a.Key == savedAddress));
             hostAddress.SelectedIndexChanged += delegate { ShowInviteCode(); };
+            hostAddress.TextChanged += delegate { ShowInviteCode(); };
             var findPublic = new Button { Text = "Find my internet address", AutoSize = true, Margin = new Padding(0) };
             findPublic.Click += delegate { FindPublicAddress(); };
             addressRow.Controls.Add(hostAddress);
             addressRow.Controls.Add(findPublic);
             host.Controls.Add(addressRow);
-            host.Controls.Add(Hint("For friends over the internet, forward these ports on your router to this PC: TCP " +
-                                   OnlinePlay.ServerPort + ", " + OnlinePlay.ShadNetPort + " and " + OnlinePlay.ShadNetWebApiPort +
-                                   " (the servers) and TCP and UDP " + OnlinePlay.P2PPort + " (the game), then use your internet address."));
+            host.Controls.Add(Hint("For friends over the internet, forward these ports on your router to this PC: TCP and UDP " +
+                                   OnlinePlay.ServerPort + " (RyGTServer and its relay for players who cannot reach each other), TCP " +
+                                   OnlinePlay.ShadNetPort + " and " + OnlinePlay.ShadNetWebApiPort +
+                                   " (shadNet) and TCP and UDP " + OnlinePlay.P2PPort + " (the game), then use your internet address."));
             var hostButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 10, 0, 0), BackColor = Color.Transparent };
             startHosting = new Button { Text = "Start hosting", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
             stopHosting = new Button { Text = "Stop hosting", AutoSize = true, Margin = new Padding(0, 0, 10, 0) };
@@ -365,9 +384,9 @@ namespace RyGT
                 if (OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_server").Length == 0) { MessageBox.Show(this, "Start hosting or join a friend first."); return; }
                 OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online", "1" } });
                 RefreshOnline();
-                Play();
+                PlayWithServer();
             };
-            offline.Click += delegate { OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online", "0" } }); RefreshOnline(); };
+            offline.Click += delegate { GoOffline(); };
             firewall.Click += delegate { AllowThroughFirewall(); };
             playButtons.Controls.AddRange(new Control[] { playOnline, offline, firewall });
             play.Controls.Add(playButtons);
@@ -422,7 +441,17 @@ namespace RyGT
             return token;
         }
 
-        string SelectedAddress { get { return hostAddress.SelectedIndex >= 0 ? addresses[hostAddress.SelectedIndex].Key : null; } }
+        /// The address in the box: a listed one, or one typed in (an IPv4 address).
+        string SelectedAddress
+        {
+            get
+            {
+                if (hostAddress.SelectedIndex >= 0) return addresses[hostAddress.SelectedIndex].Key;
+                string typed = hostAddress.Text.Trim().Split(' ')[0];
+                IPAddress parsed;
+                return IPAddress.TryParse(typed, out parsed) && parsed.AddressFamily == AddressFamily.InterNetwork ? typed : null;
+            }
+        }
 
         void ShowInviteCode()
         {
@@ -498,7 +527,7 @@ namespace RyGT
 
         /// Starts shadNet and RyGTServer (with the invite token), makes this player's account and
         /// points the game at this PC.
-        void StartHosting()
+        void StartHosting(Action done = null)
         {
             string id = hostId.Text.Trim();
             if (!ValidOnlineId(id)) { MessageBox.Show(this, "An online ID is 3-16 letters, digits, - or _."); return; }
@@ -554,8 +583,15 @@ namespace RyGT
                     startHosting.Enabled = true;
                     RefreshOnline();
                     ShowInviteCode();
-                    if (problem != null) { hostState.Text = "Could not start hosting: " + problem; return; }
+                    preparingServer = false;
+                    if (problem != null)
+                    {
+                        hostState.Text = "Could not start hosting: " + problem;
+                        if (done != null) MessageBox.Show(this, hostState.Text);
+                        return;
+                    }
                     SetStatus("Hosting. Send friends the invite code, then press Play online.");
+                    if (done != null) done();
                 }));
             });
             thread.IsBackground = true;
@@ -604,7 +640,7 @@ namespace RyGT
             WriteSetting("General", "shadnet_webapi_server", "http://" + host + ":" + OnlinePlay.ShadNetWebApiPort);
         }
 
-        void Join()
+        void Join(Action done = null)
         {
             string id = joinId.Text.Trim(), host, token;
             int port;
@@ -622,6 +658,7 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 string result;
+                bool joined = false;
                 try
                 {
                     var reply = OnlinePlay.Get("http://" + host + ":" + port + "/rygt/invite/join?token=" + token + "&online=" + Uri.EscapeDataString(id), 15000);
@@ -630,6 +667,7 @@ namespace RyGT
                     UseShadNet(host);
                     UseServer(id, host + ":" + port, vpnAddress);
                     result = "Joined " + host + " as " + id + ". Press Play online.";
+                    joined = true;
                 }
                 catch (WebException e)
                 {
@@ -637,7 +675,154 @@ namespace RyGT
                              "forwarded or on the same VPN as you?";
                 }
                 catch (Exception e) { result = "Could not join: " + e.Message; }
-                BeginInvoke(new Action(delegate { joinState.Text = result; RefreshOnline(); SetStatus(result); }));
+                BeginInvoke(new Action(delegate
+                {
+                    joinState.Text = result;
+                    RefreshOnline();
+                    SetStatus(result);
+                    if (done == null) return;
+                    if (joined) done(); else MessageBox.Show(this, result);
+                }));
+            });
+            thread.IsBackground = true;
+            thread.Start();
+        }
+
+        /// Offline needs no account or server: GT7.exe has the Offline mode patch either way, and
+        /// without a network GT7 does not wait for a sign-in.
+        void GoOffline()
+        {
+            OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online", "0" } });
+            WriteSetting("General", "shad_net_enabled", false);
+            WriteSetting("General", "connected_to_network", false);
+            RefreshOnline();
+        }
+
+        /// A player who chose offline is never asked; a new one is, and so is one going online.
+        bool NeedsAccount { get { return OnlinePlay.Get(OnlinePlay.ReadIni(root), "online") != "0" && !HasAccount; } }
+
+        bool HasAccount
+        {
+            get
+            {
+                var ini = OnlinePlay.ReadIni(root);
+                string id = OnlinePlay.Get(ini, "online_id");
+                return id.Length > 0 && OnlinePlay.Get(ini, "online_server").Length > 0 && OnlinePlay.StoredPassword(root, id) != null;
+            }
+        }
+
+        /// The first-start window: every player makes an account, on a friend's server or their own.
+        void AskForAccount(Action done)
+        {
+            using (var form = new Form { Text = "Create your ryGT7 account", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                                         StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 270), BackColor = Dark.Panel })
+            {
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(16), BackColor = Color.Transparent };
+                var intro = Hint("Your account is made on the server you play on. Join a friend with their invite code, or host your own server.");
+                intro.AutoSize = true;
+                intro.MaximumSize = new Size(420, 0);
+                layout.Controls.Add(intro);
+                var id = OnlineField(layout, "Your online ID", OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_id"));
+                var code = OnlineField(layout, "Invite code (to join a friend)", "");
+                var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 0), BackColor = Color.Transparent };
+                var joinFriend = new Button { Text = "Join friend", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0), DialogResult = DialogResult.Yes };
+                var hostOwn = new Button { Text = "Host my own server", AutoSize = true, Margin = new Padding(0, 0, 10, 0), DialogResult = DialogResult.No };
+                var playOffline = new Button { Text = "Play offline", AutoSize = true, Margin = new Padding(0), DialogResult = DialogResult.Ignore };
+                buttons.Controls.AddRange(new Control[] { joinFriend, hostOwn, playOffline });
+                layout.Controls.Add(buttons);
+                form.Controls.Add(layout);
+                Dark.Apply(form);
+                var choice = form.ShowDialog(this);
+                if (choice == DialogResult.Yes)
+                {
+                    joinId.Text = id.Text;
+                    joinCode.Text = code.Text;
+                    Join(done);
+                }
+                else if (choice == DialogResult.No)
+                {
+                    hostId.Text = id.Text;
+                    StartHosting(done);
+                }
+                else if (choice == DialogResult.Ignore)
+                {
+                    GoOffline();
+                    done();
+                }
+            }
+        }
+
+        /// The Play button: it opens into Online and Offline in its own place, and closes again
+        /// by itself if neither is picked.
+        void ChooseMode()
+        {
+            if (preparingServer) return;
+            if (modeOnline == null)
+            {
+                modeOnline = new GlowButton { Text = "Online", Font = play.Font, Visible = false };
+                modeOffline = new GlowButton { Text = "Offline", Font = play.Font, Visible = false };
+                modeOnline.Click += delegate
+                {
+                    CloseModes();
+                    OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online", "1" } });
+                    RefreshOnline();
+                    PlayWithServer();
+                };
+                modeOffline.Click += delegate { CloseModes(); GoOffline(); Play(); };
+                play.Parent.Controls.Add(modeOnline);
+                play.Parent.Controls.Add(modeOffline);
+                play.Parent.Resize += delegate { CloseModes(); };
+                modeTimer = new System.Windows.Forms.Timer { Interval = 8000 };
+                modeTimer.Tick += delegate { CloseModes(); };
+            }
+            const int gap = 8;
+            int width = (play.Width - gap) / 2;
+            modeOnline.SetBounds(play.Left, play.Top, width, play.Height);
+            modeOffline.SetBounds(play.Right - width, play.Top, width, play.Height);
+            play.Visible = false;
+            modeOnline.Visible = modeOffline.Visible = true;
+            modeOnline.BringToFront();
+            modeOffline.BringToFront();
+            modeOnline.Focus();
+            modeTimer.Start();
+        }
+
+        void CloseModes()
+        {
+            modeTimer.Stop();
+            modeOnline.Visible = modeOffline.Visible = false;
+            play.Visible = true;
+        }
+
+        /// Play: asks for an account first, starts this PC's server if the game uses it, and warns
+        /// when a friend's server cannot be reached (GT7 takes ages to load without one).
+        void PlayWithServer()
+        {
+            if (preparingServer) return;
+            if (NeedsAccount) { AskForAccount(PlayWithServer); return; }
+            string server = OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_server");
+            if (!OnlinePlay.Enabled(root)) { Play(); return; }
+            UseShadNet(server.Substring(0, Math.Max(0, server.LastIndexOf(':'))));
+            if (server.StartsWith("127.0.0.1"))
+            {
+                if (Hosting) { Play(); return; }
+                preparingServer = true;
+                SetStatus("Starting your server...");
+                StartHosting(Play);
+                return;
+            }
+            preparingServer = true;
+            SetStatus("Checking the server at " + server + "...");
+            var thread = new Thread(delegate ()
+            {
+                int colon = server.LastIndexOf(':'), port;
+                bool open = colon > 0 && int.TryParse(server.Substring(colon + 1), out port) && OnlinePlay.PortOpen(server.Substring(0, colon), port);
+                BeginInvoke(new Action(delegate
+                {
+                    preparingServer = false;
+                    if (open || MessageBox.Show(this, "The server at " + server + " is not answering, so GT7 will take a long time to load. Play anyway?",
+                                                "ryGT7", MessageBoxButtons.YesNo) == DialogResult.Yes) Play();
+                }));
             });
             thread.IsBackground = true;
             thread.Start();
@@ -651,7 +836,8 @@ namespace RyGT
                 "netsh advfirewall firewall delete rule name=\"ryGT7 online\" >nul 2>&1 & " +
                 "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow program=\"" + Exe + "\" profile=any & " +
                 "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow protocol=TCP localport=" + OnlinePlay.ServerPort + "," +
-                OnlinePlay.ShadNetPort + "," + OnlinePlay.ShadNetWebApiPort + " profile=any";
+                OnlinePlay.ShadNetPort + "," + OnlinePlay.ShadNetWebApiPort + " profile=any & " +
+                "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow protocol=UDP localport=" + OnlinePlay.ServerPort + " profile=any";
             try
             {
                 using (var process = Process.Start(new ProcessStartInfo("cmd.exe", "/c " + rules) { Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden }))
