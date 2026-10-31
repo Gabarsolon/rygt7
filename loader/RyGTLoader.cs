@@ -1555,7 +1555,7 @@ namespace RyGT
 
             // ---- Home: the pictures, the logo (launcher\logo.png) or the title, Play and the settings button
             play = new GlowButton { Text = "Play", Size = new Size(236, 46), Font = Dark.Caps(11f) };
-            play.Click += delegate { ChooseMode(); };
+            play.Click += delegate { PlayFromSwitch(); };
             var gear = new GlowButton { Text = ((char)0xE713).ToString(), Glyph = true, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f) };
             gear.Click += delegate { ShowSettings(lastPage); };
             var logoImage = LoadLogo();
