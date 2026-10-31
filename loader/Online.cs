@@ -304,7 +304,7 @@ namespace RyGT
         void BuildOnlinePage()
         {
             var page = NewPage("Online", "Online",
-                "Host GT7's online service on this PC and invite friends with a code, or join a friend with theirs. " +
+                "Host GT7's online service on this PC and invite friends with a code (joining a friend is in Settings > Account). " +
                 "Room races are peer to peer, so every player needs to reach the others: the same network, a VPN " +
                 "(Radmin VPN, Tailscale), or the internet with port 3658 forwarded on every player's router.");
             var ini = OnlinePlay.ReadIni(root);
@@ -356,17 +356,6 @@ namespace RyGT
             codeRow.Controls.AddRange(new Control[] { copyCode, newCode });
             host.Controls.Add(codeRow);
             host.Controls.Add(Hint("A new code stops older ones working for friends who have not joined yet."));
-
-            // Join.
-            var join = Section(page, "Join a friend");
-            join.Controls.Add(Hint("Enter the invite code your friend's ryGT7 shows. It makes your account on their server and " +
-                                   "points GT7 at it, with the online ID from Settings > Account."));
-            joinCode = OnlineField(join, "Invite code", "");
-            var joinButton = new Button { Text = "Join", AutoSize = true, Tag = "accent", Margin = new Padding(0, 10, 0, 0) };
-            joinButton.Click += delegate { Join(); };
-            join.Controls.Add(joinButton);
-            joinState = Hint("");
-            join.Controls.Add(joinState);
 
             // Play.
             var play = Section(page, "Play");
@@ -751,13 +740,15 @@ namespace RyGT
             var intro = Hint("Your account is made on the server you play on. Join a friend with their invite code, or host your own server.");
             create.Controls.Add(intro);
             accountId = OnlineField(create, "Your online ID", OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_id"));
-            var code = OnlineField(create, "Invite code (to join a friend)", "");
+            // Joining a friend lives here only (it was the Online page's "Join a friend").
+            create.Controls.Add(Hint("Enter the invite code your friend's ryGT7 shows. It makes your account on their server and " +
+                                     "points GT7 at it."));
+            joinCode = OnlineField(create, "Invite code (to join a friend)", "");
             var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 0), BackColor = Color.Transparent };
             var joinFriend = new Button { Text = "Join friend", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
             var hostOwn = new Button { Text = "Host my own server", AutoSize = true, Margin = new Padding(0) };
             joinFriend.Click += delegate
             {
-                joinCode.Text = code.Text;
                 Join(RefreshOnline);
             };
             hostOwn.Click += delegate
@@ -766,6 +757,8 @@ namespace RyGT
             };
             buttons.Controls.AddRange(new Control[] { joinFriend, hostOwn });
             create.Controls.Add(buttons);
+            joinState = Hint("");
+            create.Controls.Add(joinState);
             create.Controls.Add(Hint("Hosting, invite codes and the firewall are on the Online page."));
             RefreshOnline();
         }
