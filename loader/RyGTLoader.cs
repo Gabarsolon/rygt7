@@ -2810,14 +2810,15 @@ namespace RyGT
         // Launcher updates: the check at start, a check now, and a roll back of the last update.
         void AddUpdateSettings(TableLayoutPanel panel)
         {
-            AddOption(panel, "Check for launcher updates when it starts", "Launcher", "check_updates", true);
+            // The question asked in the settings: whether the launcher looks for a newer release at start.
+            AddOption(panel, "Check for updates", "Launcher", "check_updates", true);
             var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
             var label = new Label
             {
                 Text = "Launcher " + (Updater.InstalledVersion(root) ?? "(not from a release)"), AutoSize = false, Width = 196, Height = 20,
                 BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0)
             };
-            var check = new Button { Text = "Check for updates", AutoSize = true, Margin = new Padding(0, 0, 6, 0) };
+            var check = new Button { Text = "Check now", AutoSize = true, Margin = new Padding(0, 0, 6, 0) };
             check.Click += delegate { CheckForUpdate(true); };
             var last = Updater.LastUpdate(root);
             var rollBack = new Button { Text = last == null ? "Roll back" : "Roll back to " + last.Item2, AutoSize = true, Enabled = last != null, Margin = new Padding(0) };
