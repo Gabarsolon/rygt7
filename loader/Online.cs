@@ -286,7 +286,7 @@ namespace RyGT
 
     partial class LoaderForm
     {
-        TextBox hostId, joinId, joinCode;
+        TextBox joinCode, accountId; // the online ID is only on the Account page
         ComboBox hostAddress;
         Label hostState, inviteCode, joinState, onlineState;
         Button startHosting, stopHosting;
@@ -308,13 +308,11 @@ namespace RyGT
                 "Room races are peer to peer, so every player needs to reach the others: the same network, a VPN " +
                 "(Radmin VPN, Tailscale), or the internet with port 3658 forwarded on every player's router.");
             var ini = OnlinePlay.ReadIni(root);
-            string savedId = OnlinePlay.Get(ini, "online_id");
 
             // Host.
             var host = Section(page, "Host");
             host.Controls.Add(Hint("Runs GT7's online service here (RyGTServer and shadNet, in the server folder). " +
-                                   "Friends join with the invite code below; you play too."));
-            hostId = OnlineField(host, "Your online ID", savedId);
+                                   "Friends join with the invite code below; you play too, with the online ID from Settings > Account."));
             host.Controls.Add(FieldLabel("Friends reach this PC at"));
             var addressRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent };
             // Editable: an internet address can be typed in when Find my internet address cannot get it.
@@ -362,8 +360,7 @@ namespace RyGT
             // Join.
             var join = Section(page, "Join a friend");
             join.Controls.Add(Hint("Enter the invite code your friend's ryGT7 shows. It makes your account on their server and " +
-                                   "points GT7 at it."));
-            joinId = OnlineField(join, "Your online ID", savedId);
+                                   "points GT7 at it, with the online ID from Settings > Account."));
             joinCode = OnlineField(join, "Invite code", "");
             var joinButton = new Button { Text = "Join", AutoSize = true, Tag = "accent", Margin = new Padding(0, 10, 0, 0) };
             joinButton.Click += delegate { Join(); };
@@ -514,6 +511,13 @@ namespace RyGT
                 onlineState.Text = "Online as " + id + " on this PC's server" + (hosting ? "." : " - start hosting first, or GT7 finds no server.");
             else
                 onlineState.Text = "Online as " + id + " on the server at " + server + ".";
+            if (accountState != null)
+            {
+                accountState.Text = HasAccount
+                    ? "Signed in as " + id + (server.StartsWith("127.0.0.1") ? " on this PC's server." : " on the server at " + server + ".")
+                    : "No account yet. You can play offline without one.";
+                signOut.Enabled = HasAccount;
+            }
         }
 
         /// RyGT.ini's online settings. game_log=1 turns on the GT7 hooks that also sign GT7 in to
@@ -529,8 +533,8 @@ namespace RyGT
         /// points the game at this PC.
         void StartHosting(Action done = null)
         {
-            string id = hostId.Text.Trim();
-            if (!ValidOnlineId(id)) { MessageBox.Show(this, "An online ID is 3-16 letters, digits, - or _."); return; }
+            string id = accountId.Text.Trim();
+            if (!ValidOnlineId(id)) { AskForOnlineId(); return; }
             string shadnetExe = Path.Combine(ShadNetFolder, "shadnet.exe"), serverExe = Path.Combine(ServerFolder, "RyGTServer.exe");
             if (!File.Exists(shadnetExe) || !File.Exists(serverExe))
             {
@@ -642,9 +646,9 @@ namespace RyGT
 
         void Join(Action done = null)
         {
-            string id = joinId.Text.Trim(), host, token;
+            string id = accountId.Text.Trim(), host, token;
             int port;
-            if (!ValidOnlineId(id)) { MessageBox.Show(this, "An online ID is 3-16 letters, digits, - or _."); return; }
+            if (!ValidOnlineId(id)) { AskForOnlineId(); return; }
             if (!OnlinePlay.ReadCode(joinCode.Text, out host, out port, out token))
             {
                 MessageBox.Show(this, "That is not an invite code. It looks like RYGT-XXXXX-XXXXX-XXXXX-XXXXX.");
@@ -698,7 +702,7 @@ namespace RyGT
             RefreshOnline();
         }
 
-        /// A player who chose offline is never asked; a new one is, and so is one going online.
+        /// Going online without an account: Play points to the Account page.
         bool NeedsAccount { get { return OnlinePlay.Get(OnlinePlay.ReadIni(root), "online") != "0" && !HasAccount; } }
 
         bool HasAccount
@@ -711,45 +715,59 @@ namespace RyGT
             }
         }
 
-        /// The first-start window: every player makes an account, on a friend's server or their own.
-        void AskForAccount(Action done)
+        /// Hosting and joining use the Account page's online ID.
+        void AskForOnlineId()
         {
-            using (var form = new Form { Text = "Create your ryGT7 account", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
-                                         StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 270), BackColor = Dark.Panel })
+            MessageBox.Show(this, "Set your online ID in Settings > Account first (3-16 letters, digits, - or _).", "ryGT7");
+            ShowSettings("Account");
+            accountId.Focus();
+        }
+
+        Label accountState;
+        Button signOut;
+
+        /// The Account page: makes the player's online account (on a friend's server with their
+        /// invite code, or on this PC's own server), shows it and signs out. Nothing asks for an
+        /// account at start: offline needs none, and Online on Play points here when there is none.
+        void BuildAccountPage()
+        {
+            var page = NewPage("Account", "Account",
+                "Your online account for playing with friends. Offline play needs no account.");
+            var status = Section(page, "Status");
+            accountState = Hint("");
+            status.Controls.Add(accountState);
+            signOut = new Button { Text = "Sign out", AutoSize = true, Margin = new Padding(0, 10, 0, 0) };
+            signOut.Click += delegate
             {
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(16), BackColor = Color.Transparent };
-                var intro = Hint("Your account is made on the server you play on. Join a friend with their invite code, or host your own server.");
-                intro.AutoSize = true;
-                intro.MaximumSize = new Size(420, 0);
-                layout.Controls.Add(intro);
-                var id = OnlineField(layout, "Your online ID", OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_id"));
-                var code = OnlineField(layout, "Invite code (to join a friend)", "");
-                var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 0), BackColor = Color.Transparent };
-                var joinFriend = new Button { Text = "Join friend", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0), DialogResult = DialogResult.Yes };
-                var hostOwn = new Button { Text = "Host my own server", AutoSize = true, Margin = new Padding(0, 0, 10, 0), DialogResult = DialogResult.No };
-                var playOffline = new Button { Text = "Play offline", AutoSize = true, Margin = new Padding(0), DialogResult = DialogResult.Ignore };
-                buttons.Controls.AddRange(new Control[] { joinFriend, hostOwn, playOffline });
-                layout.Controls.Add(buttons);
-                form.Controls.Add(layout);
-                Dark.Apply(form);
-                var choice = form.ShowDialog(this);
-                if (choice == DialogResult.Yes)
-                {
-                    joinId.Text = id.Text;
-                    joinCode.Text = code.Text;
-                    Join(done);
-                }
-                else if (choice == DialogResult.No)
-                {
-                    hostId.Text = id.Text;
-                    StartHosting(done);
-                }
-                else if (choice == DialogResult.Ignore)
-                {
-                    GoOffline();
-                    done();
-                }
-            }
+                if (MessageBox.Show(this, "Sign out? Play then starts GT7 offline. Your account stays on its server; join or host again to use it.",
+                                    "Sign out", MessageBoxButtons.OKCancel) != DialogResult.OK)
+                    return;
+                OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online_server", "" } });
+                GoOffline();
+            };
+            status.Controls.Add(signOut);
+
+            var create = Section(page, "Create an account or sign in");
+            var intro = Hint("Your account is made on the server you play on. Join a friend with their invite code, or host your own server.");
+            create.Controls.Add(intro);
+            accountId = OnlineField(create, "Your online ID", OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_id"));
+            var code = OnlineField(create, "Invite code (to join a friend)", "");
+            var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 0), BackColor = Color.Transparent };
+            var joinFriend = new Button { Text = "Join friend", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
+            var hostOwn = new Button { Text = "Host my own server", AutoSize = true, Margin = new Padding(0) };
+            joinFriend.Click += delegate
+            {
+                joinCode.Text = code.Text;
+                Join(RefreshOnline);
+            };
+            hostOwn.Click += delegate
+            {
+                StartHosting(RefreshOnline);
+            };
+            buttons.Controls.AddRange(new Control[] { joinFriend, hostOwn });
+            create.Controls.Add(buttons);
+            create.Controls.Add(Hint("Hosting, invite codes and the firewall are on the Online page."));
+            RefreshOnline();
         }
 
         /// The Play button: it opens into Online and Offline in its own place, and closes again
@@ -794,12 +812,18 @@ namespace RyGT
             play.Visible = true;
         }
 
-        /// Play: asks for an account first, starts this PC's server if the game uses it, and warns
+        /// Play: needs an account (see the Account page), starts this PC's server if the game uses it, and warns
         /// when a friend's server cannot be reached (GT7 takes ages to load without one).
         void PlayWithServer()
         {
             if (preparingServer) return;
-            if (NeedsAccount) { AskForAccount(PlayWithServer); return; }
+            if (NeedsAccount)
+            {
+                MessageBox.Show(this, "Online play needs an account. Make one in Settings > Account (join a friend or host your own server), or pick Offline.",
+                                "ryGT7");
+                ShowSettings("Account");
+                return;
+            }
             string server = OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_server");
             if (!OnlinePlay.Enabled(root)) { Play(); return; }
             UseShadNet(server.Substring(0, Math.Max(0, server.LastIndexOf(':'))));
