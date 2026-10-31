@@ -1,4 +1,4 @@
-// RyGT loader: sets up Gran Turismo 7 from the player's own dump, firmware modules and fonts,
+﻿// RyGT loader: sets up Gran Turismo 7 from the player's own dump, firmware modules and fonts,
 // then starts it. Built with build.cmd (C# for .NET Framework 4.x, which Windows includes).
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -927,6 +927,9 @@ namespace RyGT
         readonly GlowButton[] buttons;
         public Image Logo;
         public string Title = "", Accent = "", Caption = "", Status = "", Version = "";
+        /// The updater's notice (a newer release) at the top right, above its Update button.
+        public string Notice = "";
+        public GlowButton UpdateButton;
         readonly Dictionary<int, Bitmap> scaled = new Dictionary<int, Bitmap>();
         Size scaledFor;
         Bitmap overlay, frame;
@@ -1077,6 +1080,18 @@ namespace RyGT
                 button.Location = new Point(x, ButtonsTop);
                 x += button.Width + Gap;
             }
+            if (UpdateButton != null)
+                UpdateButton.Location = new Point(Width - UpdateButton.Width - 30, 30 + NoticeHeight + 14);
+        }
+
+        const int NoticeWidth = 420;
+        int NoticeHeight
+        {
+            get
+            {
+                return Notice.Length == 0 ? 0 : TextRenderer.MeasureText(Notice, Font, new Size(NoticeWidth, 400),
+                                                                         TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height;
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1120,6 +1135,14 @@ namespace RyGT
             // The status under the buttons, the version at the bottom right.
             TextRenderer.DrawText(g, Status, Font, new Rectangle(Left_ + 2, top + buttons[0].Height + 12, Math.Max(100, Width - Left_ - 260), 40),
                                   Color.FromArgb(200, 204, 212), TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+            if (Notice.Length > 0)
+            {
+                var box = new Rectangle(Width - NoticeWidth - 30, 30, NoticeWidth, NoticeHeight);
+                using (var shade = new SolidBrush(Color.FromArgb(150, 10, 11, 14)))
+                    g.FillRectangle(shade, Rectangle.Inflate(box, 12, 10));
+                TextRenderer.DrawText(g, Notice, Font, box, Color.FromArgb(226, 230, 238),
+                                      TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.Right);
+            }
             var versionFont = Dark.Caps(9f);
             var versionSize = TextRenderer.MeasureText(Version, versionFont);
             TextRenderer.DrawText(g, Version, versionFont, new Point(Width - versionSize.Width - 30, Height - versionSize.Height - 24),
@@ -1494,6 +1517,8 @@ namespace RyGT
         // Home: the picture over the whole window with the title, Play and the settings button.
         // Settings: a sidebar of categories and their pages.
         readonly HomeView home;
+        readonly GlowButton updateButton;
+        ReleaseInfo pendingUpdate;
         ControlsPage controls;
         readonly Panel settingsView, pagesHost;
         readonly Curtain curtain;
@@ -1538,8 +1563,14 @@ namespace RyGT
             {
                 Dock = DockStyle.Fill, Logo = logoImage, Title = "GRAN TURISMO", Accent = "7",
                 Caption = Dark.Spaced("CUSA24769   " + (char)183 + "   PS4   " + (char)183 + "   RYGT7 FOR WINDOWS"),
-                Version = "ryGT7  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769"
+                Version = "ryGT7 " + (Updater.InstalledVersion(root) ?? "") + "  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769"
             };
+            // The updater: a newer release shows a notice and an Update button at the top right.
+            Updater.CleanUp(root);
+            updateButton = new GlowButton { Text = "Update", Size = new Size(230, 40), Font = Dark.Caps(10f), Visible = false };
+            updateButton.Click += delegate { InstallUpdate(); };
+            home.UpdateButton = updateButton;
+            home.Controls.Add(updateButton);
             curtain = new Curtain { Dock = DockStyle.Fill, Visible = false };
             Controls.Add(curtain);
             Controls.Add(settingsView);
@@ -1631,6 +1662,7 @@ namespace RyGT
             AddOption(display, "Show the game on Discord (Rich Presence)", "General", "discord_rpc_enabled", true);
             AddMemorySetting(display);
             AddVideoMemorySetting(display);
+            AddUpdateSettings(display);
 
             // ---- Graphics
             var graphicsPage = NewPage("Graphics", "Graphics", "The renderer, upscaling and frame generation. Changes apply the next time you play.");
@@ -2075,6 +2107,8 @@ namespace RyGT
             Shown += delegate
             {
                 ActiveControl = play.Enabled ? (Control)play : gear;
+                // Before the account question, which waits for an answer.
+                if (ReadSetting("Launcher", "check_updates", true)) CheckForUpdate(false);
                 if (NeedsAccount) AskForAccount(delegate { });
             };
             RefreshState();
@@ -2693,6 +2727,112 @@ namespace RyGT
             };
             row.Controls.Add(label);
             row.Controls.Add(vram);
+            panel.Controls.Add(row);
+        }
+
+        /// Asks GitLab for the newest release in the background; never holds up Play.
+        void CheckForUpdate(bool manual)
+        {
+            string installed = Updater.InstalledVersion(root);
+            if (installed == null)
+            {
+                if (manual) MessageBox.Show(this, "This launcher didn't come from a release package (it has no manifest.json), so it can't update itself.");
+                return;
+            }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                ReleaseInfo latest = null;
+                Exception error = null;
+                try { latest = Updater.Latest(); }
+                catch (Exception e) { error = e; }
+                try { BeginInvoke((Action)delegate { ShowUpdate(installed, latest, error, manual); }); }
+                catch (InvalidOperationException) { } // closed meanwhile
+            });
+        }
+
+        void ShowUpdate(string installed, ReleaseInfo latest, Exception error, bool manual)
+        {
+            if (latest != null && Updater.IsNewer(latest.Version, installed))
+            {
+                pendingUpdate = latest;
+                home.Notice = "ryGT7 " + latest.Version + " is available (you have " + installed + ")." + Environment.NewLine + latest.Summary(240);
+                updateButton.Text = "Update to " + latest.Version;
+                updateButton.Visible = true;
+                home.PerformLayout();
+                home.Invalidate(true);
+            }
+            else if (manual)
+            {
+                MessageBox.Show(this, error != null ? "Could not check for updates: " + error.Message
+                                                    : "ryGT7 " + installed + " is the newest release.");
+            }
+        }
+
+        /// Downloads and installs the pending release, then restarts the launcher.
+        void InstallUpdate()
+        {
+            var release = pendingUpdate;
+            if (release == null || busy) return;
+            if (MessageBox.Show(this, "Update ryGT7 to " + release.Version + "?" + Environment.NewLine + Environment.NewLine +
+                                "The launcher downloads " + release.ZipName + ", checks it, replaces its own program files and restarts. " +
+                                "Your game, saves, settings and shader caches stay as they are. The old files are kept, so you can " +
+                                "roll back from Settings > Display.", "Update ryGT7", MessageBoxButtons.OKCancel) != DialogResult.OK)
+                return;
+            busy = true;
+            updateButton.Enabled = false;
+            play.Enabled = false;
+            string last = null;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Exception error = null;
+                try
+                {
+                    Updater.Install(root, release, (text, fraction) =>
+                    {
+                        if (text == last) return;
+                        last = text;
+                        BeginInvoke((Action)delegate { status.Text = text; });
+                    });
+                }
+                catch (Exception e) { error = e; }
+                BeginInvoke((Action)delegate
+                {
+                    busy = false;
+                    if (error == null) { Updater.Restart(root); return; }
+                    updateButton.Enabled = true;
+                    RefreshState();
+                    status.Text = "The update failed: " + error.Message;
+                    MessageBox.Show(this, "The update failed, and the launcher's files are as they were." + Environment.NewLine + error.Message);
+                });
+            });
+        }
+
+        // Launcher updates: the check at start, a check now, and a roll back of the last update.
+        void AddUpdateSettings(TableLayoutPanel panel)
+        {
+            AddOption(panel, "Check for launcher updates when it starts", "Launcher", "check_updates", true);
+            var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
+            var label = new Label
+            {
+                Text = "Launcher " + (Updater.InstalledVersion(root) ?? "(not from a release)"), AutoSize = false, Width = 196, Height = 20,
+                BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0)
+            };
+            var check = new Button { Text = "Check for updates", AutoSize = true, Margin = new Padding(0, 0, 6, 0) };
+            check.Click += delegate { CheckForUpdate(true); };
+            var last = Updater.LastUpdate(root);
+            var rollBack = new Button { Text = last == null ? "Roll back" : "Roll back to " + last.Item2, AutoSize = true, Enabled = last != null, Margin = new Padding(0) };
+            rollBack.Click += delegate
+            {
+                if (busy) return;
+                if (MessageBox.Show(this, "Put back ryGT7 " + last.Item2 + " (as before the update to " + last.Item3 + ") and restart the launcher?",
+                                    "Roll back", MessageBoxButtons.OKCancel) != DialogResult.OK)
+                    return;
+                try { Updater.RollBack(root); Updater.Restart(root); }
+                catch (Exception e) { MessageBox.Show(this, "Could not roll back: " + e.Message); }
+            };
+            row.Controls.Add(label);
+            row.Controls.Add(check);
+            row.Controls.Add(rollBack);
             panel.Controls.Add(row);
         }
 

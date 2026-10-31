@@ -72,6 +72,8 @@ configuration alias; this is unrelated to the required game title ID.
 
 The **Online** page hosts GT7's online service on this PC or joins a friend's (code in `Online.cs`).
 
+At start the launcher asks GitLab for the newest rygt-team/rygt7 release (in the background; Settings > Display turns the check off). A newer one shows a notice and an **Update** button at the top right of the home view: it downloads the release zip, checks its SHA-256 (from the release notes) and every file against the package's manifest.json, moves the files it replaces to `update\backup-<old version>` and copies the new ones in, then restarts. Only files the package lists are written; `user\`, `shaders\`, the converted game and the .ini files never are. Settings > Display can roll the last update back (code in `Updater.cs`).
+
 - **Host:** pick your online ID and the address friends reach you at, then **Start hosting**. It starts
   `server\shadnet\shadnet.exe` (PSN sign-in) and `server\RyGTServer.exe` (GT7's online service and
   rooms), makes your account, and shows an invite code (`RYGT-...`: your address, the server's port
