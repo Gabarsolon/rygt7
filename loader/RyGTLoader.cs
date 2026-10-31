@@ -1555,7 +1555,7 @@ namespace RyGT
 
             // ---- Home: the pictures, the logo (launcher\logo.png) or the title, Play and the settings button
             play = new GlowButton { Text = "Play", Size = new Size(236, 46), Font = Dark.Caps(11f) };
-            play.Click += delegate { ChooseMode(); };
+            play.Click += delegate { PlayFromSwitch(); };
             var gear = new GlowButton { Text = ((char)0xE713).ToString(), Glyph = true, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f) };
             gear.Click += delegate { ShowSettings(lastPage); };
             var logoImage = LoadLogo();
@@ -1612,7 +1612,7 @@ namespace RyGT
             var sideVersion = new Label { Text = "ryGT7 for Windows", AutoSize = true, ForeColor = Color.FromArgb(96, 102, 114), Tag = "heading" };
             sidebar.Controls.Add(sideVersion);
             sidebar.Layout += delegate { sideVersion.Location = new Point(28, sidebar.ClientSize.Height - sideVersion.Height - 24); };
-            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Online", "About" };
+            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Account", "Online", "About" };
             for (int i = 0; i < pageNames.Length; ++i)
             {
                 string page = pageNames[i];
@@ -2068,6 +2068,8 @@ namespace RyGT
             // ---- About: what ryGT is, its folders and logging
             // ---- Online: hosting, joining a friend (Online.cs)
             BuildOnlinePage();
+            // ---- Account: the online account (Online.cs); nothing asks for one at start
+            BuildAccountPage();
 
             var aboutPage = NewPage("About", "About", "ryGT7 for Windows " + (char)183 + " Gran Turismo 7 (CUSA24769)");
             aboutPage.Controls.Add(new Label
@@ -2107,9 +2109,7 @@ namespace RyGT
             Shown += delegate
             {
                 ActiveControl = play.Enabled ? (Control)play : gear;
-                // Before the account question, which waits for an answer.
                 if (ReadSetting("Launcher", "check_updates", true)) CheckForUpdate(false);
-                if (NeedsAccount) AskForAccount(delegate { });
             };
             RefreshState();
             var stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
