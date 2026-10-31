@@ -285,6 +285,10 @@ struct P2PTransport {
         std::chrono::steady_clock::time_point not_heard_us{};   // last relayed one saying it has not heard us
         std::chrono::steady_clock::time_point probed{};         // last copy sent straight while relaying
         bool relaying = false;
+        std::chrono::steady_clock::time_point active{};         // last datagram the game sent it
+        // Ping since the last report.
+        std::uint32_t pings = 0, pongs = 0;
+        double rtt_total = 0, rtt_low = 0, rtt_high = 0;
     };
     sockaddr_in relay_server{};
     bool relay_enabled = false;
@@ -292,6 +296,7 @@ struct P2PTransport {
     bool running = false;
 };
 
+constexpr std::size_t P2P_PING_SIZE = 12;  // "RYPG" or "RYPO", the sender's clock
 constexpr std::size_t P2P_RELAY_HEADER = 11;  // "RYR1", flags, address, port
 constexpr auto P2P_DIRECT_TIMEOUT = std::chrono::seconds(3);
 
@@ -331,6 +336,7 @@ int p2p_send(const sockaddr_in& peer, const char* data, std::size_t length) {
         if (transport.relay_enabled) {
             const auto now = std::chrono::steady_clock::now();
             auto& state = transport.peers[peer.sin_addr.s_addr];
+            state.active = now;
             heard = now - state.heard_direct < P2P_DIRECT_TIMEOUT;
             relay = !heard || now - state.not_heard_us < P2P_DIRECT_TIMEOUT;
             if (relay != state.relaying) {
@@ -359,6 +365,62 @@ int p2p_send(const sockaddr_in& peer, const char* data, std::size_t length) {
         ::sendto(transport.socket, data, static_cast<int>(length), 0, reinterpret_cast<const sockaddr*>(&direct), sizeof(direct));
     p2p_count("UDP out to " + p2p_text(&peer.sin_addr, peer.sin_port, 0) + " through the relay", length);
     return sent < 0 ? sent : static_cast<int>(length);
+}
+
+std::int64_t p2p_clock_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Pings every player the game is talking to once a second, by the way its datagrams go, and writes
+// what it measured to the log every 5 s.
+void p2p_ping_loop() {
+    P2PTransport& transport = p2p_transport();
+    for (int tick = 1;; ++tick) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::vector<std::uint32_t> targets;
+        std::uint16_t port;
+        {
+            std::lock_guard<std::mutex> lk(transport.mutex);
+            if (!transport.running) return;
+            port = transport.port;
+            const auto now = std::chrono::steady_clock::now();
+            for (auto& entry : transport.peers) {
+                if (now - entry.second.active > std::chrono::seconds(10)) continue;
+                ++entry.second.pings;
+                targets.push_back(entry.first);
+            }
+        }
+        for (const std::uint32_t address : targets) {
+            sockaddr_in peer{};
+            peer.sin_family = AF_INET;
+            peer.sin_addr.s_addr = address;
+            peer.sin_port = htons(port);
+            char ping[P2P_PING_SIZE];
+            std::memcpy(ping, "RYPG", 4);
+            const std::int64_t sent = p2p_clock_us();
+            std::memcpy(ping + 4, &sent, sizeof(sent));
+            p2p_send(peer, ping, sizeof(ping));
+        }
+        if (tick % 5 != 0) continue;
+        std::lock_guard<std::mutex> lk(transport.mutex);
+        for (auto& entry : transport.peers) {
+            P2PTransport::Peer& state = entry.second;
+            if (state.pings == 0) continue;
+            sockaddr_in peer{};
+            peer.sin_addr.s_addr = entry.first;
+            const std::string name = p2p_text(&peer.sin_addr, 0, 0);
+            if (state.pongs == 0)
+                std::fprintf(stderr, "[online] P2P ping %s: no answer to %u pings (%s)\n", name.c_str(), state.pings,
+                             state.relaying ? "relay" : "direct");
+            else
+                std::fprintf(stderr, "[online] P2P ping %s: %.0f ms (%.0f-%.0f), %u of %u answered (%s)\n", name.c_str(),
+                             state.rtt_total / state.pongs, state.rtt_low, state.rtt_high, state.pongs, state.pings,
+                             state.relaying ? "relay" : "direct");
+            state.pings = state.pongs = 0;
+            state.rtt_total = 0;
+        }
+        std::fflush(stderr);
+    }
 }
 
 void disable_udp_connreset(NativeSocket socket) {
@@ -423,6 +485,26 @@ void p2p_receive_loop() {
                               p2p_text(&from.sin_addr, from.sin_port, 0).c_str(), ntohs(from.sin_port), transport.port);
                 seen = from.sin_port;
             }
+        }
+        // Ping between players: answered here, never shown to the game.
+        if (received == static_cast<int>(P2P_PING_SIZE) && std::memcmp(receive_at, "RYPG", 4) == 0) {
+            sockaddr_in peer = from;
+            peer.sin_port = htons(transport.port);
+            std::memcpy(receive_at, "RYPO", 4);
+            p2p_send(peer, receive_at, P2P_PING_SIZE);
+            continue;
+        }
+        if (received == static_cast<int>(P2P_PING_SIZE) && std::memcmp(receive_at, "RYPO", 4) == 0) {
+            std::int64_t sent = 0;
+            std::memcpy(&sent, receive_at + 4, sizeof(sent));
+            const double ms = static_cast<double>(p2p_clock_us() - sent) / 1000.0;
+            std::lock_guard<std::mutex> lk(transport.mutex);
+            auto& state = transport.peers[from.sin_addr.s_addr];
+            state.rtt_low = state.pongs == 0 ? ms : std::min(state.rtt_low, ms);
+            state.rtt_high = state.pongs == 0 ? ms : std::max(state.rtt_high, ms);
+            state.rtt_total += ms;
+            ++state.pongs;
+            continue;
         }
         if (static_cast<std::size_t>(received) < P2P_WIRE_HEADER ||
             receive_at[0] != static_cast<char>(P2P_MAGIC[0]) || receive_at[1] != static_cast<char>(P2P_MAGIC[1])) {
@@ -570,6 +652,7 @@ int p2p_start_transport(std::uint16_t requested_port) {
     transport.running = true;
     std::thread(p2p_receive_loop).detach();
     std::thread(p2p_relay_loop).detach();
+    std::thread(p2p_ping_loop).detach();
     std::fprintf(stderr, "[online] P2P: listening on UDP port %u\n", port);
     std::fflush(stderr);
     return 0;

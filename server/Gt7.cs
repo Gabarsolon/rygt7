@@ -251,7 +251,9 @@ namespace RyGT.Server
                     result = sport;
                     break;
                 case "/user/get_sport_users":
-                    result = SportUsers(Field(body, "user_ids") as object[], user);
+                    object headers = call != null && call.ContainsKey("headers") ? call["headers"] : null;
+                    result = SportUsers(Field(body, "user_ids") as object[], user, Convert.ToString(Field(headers, "sequence_no"), CultureInfo.InvariantCulture),
+                        Convert.ToString(Field(headers, "window_name"), CultureInfo.InvariantCulture));
                     break;
                 case "/room/create":
                     result = user == null ? null : CreateRoom(body as Dictionary<string, object>, user);
@@ -357,9 +359,9 @@ namespace RyGT.Server
         /// user/get_sport_users {"user_ids": [...]}: an array with each player's sport fields, all
         /// required; an unknown ID gets a beginner's values.
         /// GT7 here never learns any Vegas user ID (its own login step does not run; RyGT signs it in),
-        /// so it asks for "" both for itself and for each player who connects to it. An empty ID is
-        /// therefore the next player in the asker's PSN session that it has not been sent yet, in
-        /// the order they joined, and once it has them all, the asker itself.
+        /// so it asks for "" both for itself and for each player who connects to it, and a joining
+        /// game asks for itself and the others in one burst, over connections that can arrive in any
+        /// order. See EmptyId for how each request is told apart.
         /// A player joined a PSN session (or joined again after a failed try): every game is sent it
         /// again as a new player, and its own game starts over (otherwise a player sent on a failed try
         /// is skipped, and the asker's own profile is sent in its place).
@@ -369,10 +371,72 @@ namespace RyGT.Server
             {
                 foreach (var sent in sportUsersSent.Values) sent.Remove(onlineId);
                 sportUsersSent.Remove(onlineId);
+                emptyIdBursts.Remove(onlineId);
             }
         }
 
-        object[] SportUsers(object[] ids, Dictionary<string, object> asking)
+        class EmptyIdBurst
+        {
+            public DateTime Started;
+            public readonly List<long> Sequences = new List<long>();
+            public readonly Dictionary<long, string> Answers = new Dictionary<long, string>();
+        }
+
+        readonly Dictionary<string, EmptyIdBurst> emptyIdBursts = new Dictionary<string, EmptyIdBurst>(StringComparer.OrdinalIgnoreCase);
+        const int EmptyIdBurstMs = 250;
+
+        /// Who an empty ID means, as an online ID. Alone, it is the asker. From the race screen it is
+        /// another player, never the asker, who only asks for itself from the room list. From the
+        /// room list with others in the session, the requests of one burst are held for a moment
+        /// and go by sequence number: the first is the asker, then the others in the order they
+        /// joined. A request sent again keeps its answer.
+        string EmptyId(string askingId, List<string> others, string sequence, string window)
+        {
+            if (askingId.Length == 0) return askingId;
+            long number;
+            bool ranked = long.TryParse(sequence, NumberStyles.None, CultureInfo.InvariantCulture, out number);
+            EmptyIdBurst burst;
+            lock (sportUsersSent)
+            {
+                HashSet<string> sent;
+                if (!sportUsersSent.TryGetValue(askingId, out sent)) sportUsersSent[askingId] = sent = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (others.Count == 0)
+                {
+                    sent.Clear();
+                    return askingId;
+                }
+                if ((window ?? "").IndexOf("RoomSelection", StringComparison.Ordinal) < 0 || !ranked)
+                {
+                    string next = others.FirstOrDefault(o => !sent.Contains(o)) ?? others[0];
+                    sent.Add(next);
+                    return next;
+                }
+                if (!emptyIdBursts.TryGetValue(askingId, out burst) || DateTime.UtcNow - burst.Started > TimeSpan.FromSeconds(30))
+                    emptyIdBursts[askingId] = burst = new EmptyIdBurst { Started = DateTime.UtcNow };
+                string known;
+                if (burst.Answers.TryGetValue(number, out known)) return known;
+                if (!burst.Sequences.Contains(number)) burst.Sequences.Add(number);
+            }
+            System.Threading.Thread.Sleep(EmptyIdBurstMs);
+            lock (sportUsersSent)
+            {
+                string known;
+                if (burst.Answers.TryGetValue(number, out known)) return known;
+                // The first of a burst is the asker. Requests that came too late for it continue with
+                // the players it has not been sent yet.
+                var waiting = burst.Sequences.Where(s => !burst.Answers.ContainsKey(s)).OrderBy(s => s).ToList();
+                HashSet<string> sent = sportUsersSent[askingId];
+                foreach (long sequenceNumber in waiting)
+                {
+                    string answer = burst.Answers.Count == 0 ? askingId : others.FirstOrDefault(o => !sent.Contains(o)) ?? askingId;
+                    if (answer != askingId) sent.Add(answer);
+                    burst.Answers[sequenceNumber] = answer;
+                }
+                return burst.Answers[number];
+            }
+        }
+
+        object[] SportUsers(object[] ids, Dictionary<string, object> asking, string sequence, string window)
         {
             var list = new List<object>();
             string askingId = asking == null ? "" : asking["np_online_id"] as string ?? "";
@@ -384,19 +448,10 @@ namespace RyGT.Server
                 {
                     player = asking;
                     List<string> others = askingId.Length > 0 ? othersInSession(askingId) : new List<string>();
-                    lock (sportUsersSent)
-                    {
-                        HashSet<string> sent;
-                        if (!sportUsersSent.TryGetValue(askingId, out sent)) sportUsersSent[askingId] = sent = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        if (others.Count == 0) sent.Clear();
-                        string next = others.FirstOrDefault(o => !sent.Contains(o));
-                        if (next != null)
-                        {
-                            sent.Add(next);
-                            lock (usersLock) users.TryGetValue(next, out player);
-                            log("GT7: get_sport_users(\"\") from " + askingId + " answered with " + next);
-                        }
-                    }
+                    string answer = EmptyId(askingId, others, sequence, window);
+                    if (!string.Equals(answer, askingId, StringComparison.OrdinalIgnoreCase))
+                        lock (usersLock) users.TryGetValue(answer, out player);
+                    if (others.Count > 0) log("GT7: get_sport_users(\"\") from " + askingId + " (sequence " + sequence + ") answered with " + answer);
                 }
                 else
                 {
