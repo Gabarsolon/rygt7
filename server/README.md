@@ -74,6 +74,19 @@ RyGTServer [--port 7890] [--data <folder>] [--default-status 404] [--no-capture]
 - Status page: `http://<server>:7890/` shows who is connected and the latest requests. The same
   information is available as JSON at `/rygt/status`.
 
+## Accounts
+
+ryGT7 accounts live in the list worker's `Accounts` object on Cloudflare (`server/list-worker`), so
+they work with every host and need no server of their own. Signing in gives the launcher a pass, valid
+for 30 days, that proves the online ID. A host started with `--require-pass` (the launcher does this)
+checks the pass and then makes that player's shadNet account on its own PC, as for any invite.
+
+- The signing key is the worker secret `PASS_KEY`. Its public half is in `AccountPass` in
+  `RyGTServer.cs`, so changing the key needs a new RyGTServer too. The private key is kept nowhere else.
+- Passwords never leave the player's PC or browser: both send a key made from them (`AccountKey` in
+  `loader\Online.cs`, and the same in `site\index.html`).
+- There is no password reset yet. Cloudflare's dashboard shows the worker's `Accounts` object.
+
 ## What the server answers itself
 
 - **Online save** (`save2.*`, `savef.*`): kept per player in `server-data\players\<online id>\`,

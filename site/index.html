@@ -32,6 +32,8 @@ table { width:100%; border-collapse:collapse; } td { padding:7px 0; border-top:1
 .server { display:flex; justify-content:space-between; padding:12px 16px; margin-bottom:6px; background:var(--field); border-radius:3px; }
 .server span { color:var(--dim); font-size:14px; }
 code { background:var(--field); padding:1px 6px; border-radius:3px; }
+.form { display:grid; gap:14px; max-width:420px; margin:18px 0; } .form label { display:grid; gap:4px; color:var(--dim); font-size:14px; }
+.form input { padding:10px 12px; border:1px solid var(--line); border-radius:3px; background:var(--field); color:var(--text); font:inherit; } .form button { cursor:pointer; }
 details { padding:11px 0; border-top:1px solid var(--line); } summary { cursor:pointer; font-weight:600; } details p { margin:8px 0 0; color:#c4c7cf; }
 .socials { display:flex; gap:10px; margin:0 0 14px; } .socials a { padding:8px 16px; border:1px solid var(--line); border-radius:3px; color:var(--text); text-decoration:none; } .socials a:hover { border-color:#d5d7dc; }
 footer { max-width:860px; margin:0 auto; padding:24px; color:var(--dim); font-size:13px; }
@@ -39,7 +41,7 @@ footer { max-width:860px; margin:0 auto; padding:24px; color:var(--dim); font-si
 </style>
 </head>
 <body>
-<nav><a href="#home">Home</a><a href="#install">GT7 Guide</a><a href="#sport">GT Sport Guide</a><a href="#docs">GT7 Docs</a><a href="#servers">Servers</a><a href="#faq">FAQ</a><a href="#issues">Issues</a></nav>
+<nav><a href="#home">Home</a><a href="#install">GT7 Guide</a><a href="#sport">GT Sport Guide</a><a href="#docs">GT7 Docs</a><a href="#servers">Servers</a><a href="#account">Account</a><a href="#faq">FAQ</a><a href="#issues">Issues</a></nav>
 <header class="hero">
   <img src="logo.png" alt="ryGT7" width="430" height="192">
   <p class="caption">Fan-made PC launchers for GT7 and GT Sport</p>
@@ -50,6 +52,19 @@ footer { max-width:860px; margin:0 auto; padding:24px; color:var(--dim); font-si
   <p class="note">You need the game files from your own PS4, plus its system modules and fonts. None of these are provided here.</p>
 </header>
 <main>
+  <section id="account">
+    <h2>Create your account</h2>
+    <p>One account for every ryGT7 server. Sign in with it in the launcher's Online page.</p>
+    <form id="signup" class="form">
+      <label>Online ID<input name="online" required minlength="3" maxlength="16" pattern="[A-Za-z0-9_\-]+" autocomplete="username"></label>
+      <label>Email<input name="email" type="email" required autocomplete="email"></label>
+      <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+      <label>Confirm password<input name="confirm" type="password" required minlength="8" autocomplete="new-password"></label>
+      <button class="button" type="submit">Create account</button>
+      <p id="signup-state" class="note" role="status"></p>
+    </form>
+    <p class="note">Online IDs are 3-16 letters, digits, - or _. Your password is scrambled in this page before it is sent.</p>
+  </section>
   <section id="install">
     <h2>Gran Turismo 7 setup</h2>
     <ol>
@@ -128,6 +143,30 @@ function show() {
 }
 addEventListener("hashchange", show);
 show();
+// The same key as OnlinePlay.AccountKey in the launcher: the password itself never leaves this page.
+async function accountKey(online, password) {
+  const text = new TextEncoder();
+  const base = await crypto.subtle.importKey("raw", text.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: text.encode("ryGT7:" + online.toLowerCase()), iterations: 100000 }, base, 128);
+  return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+document.getElementById("signup").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.target, state = document.getElementById("signup-state");
+  if (form.password.value !== form.confirm.value) { state.textContent = "The passwords do not match."; return; }
+  form.querySelector("button").disabled = true;
+  state.textContent = "Creating your account...";
+  try {
+    const online = form.online.value.trim();
+    const reply = await fetch("https://rygt-server-list.rygt7.workers.dev/account/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ online, email: form.email.value.trim(), password: await accountKey(online, form.password.value) }),
+    }).then(r => r.json());
+    state.textContent = reply.result ? "Account made. Sign in with it in the launcher." : reply.message;
+    if (reply.result) form.reset();
+  } catch { state.textContent = "The account server could not be reached."; }
+  form.querySelector("button").disabled = false;
+});
 fetch("https://rygt-server-list.rygt7.workers.dev/names").then(r => r.json()).then(names => {
   const list = document.getElementById("list");
   if (!names.length) { list.innerHTML = '<p class="note">No public servers right now.</p>'; return; }

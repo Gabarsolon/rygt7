@@ -31,6 +31,7 @@ namespace RyGT.Server
         public string InviteToken = "";   // --invite: what friends' invite codes carry
         public string ListName = "";      // --list: the name to show in the public server list
         public string ShadNetDirectory;   // --shadnet: the shadNet folder, for creating accounts
+        public bool RequirePass;          // --require-pass: joining needs a ryGT7 account's pass
 
         public static Options Parse(string[] args)
         {
@@ -46,6 +47,7 @@ namespace RyGT.Server
                 else if (arg == "--invite" && next != null) { options.InviteToken = next; i++; }
                 else if (arg == "--list" && next != null) { options.ListName = next; i++; }
                 else if (arg == "--shadnet" && next != null) { options.ShadNetDirectory = Path.GetFullPath(next); i++; }
+                else if (arg == "--require-pass") options.RequirePass = true;
                 else if (arg == "--help" || arg == "-h" || arg == "/?") return null;
                 else throw new ArgumentException("Unknown option " + arg);
             }
@@ -54,14 +56,15 @@ namespace RyGT.Server
 
         public const string Usage =
             "RyGTServer [--port 7890] [--data <folder>] [--default-status 404] [--no-capture]\n" +
-            "           [--invite <token> --shadnet <folder>]\n" +
+            "           [--invite <token> --shadnet <folder> [--require-pass]]\n" +
             "  --port            TCP port to listen on (all network interfaces).\n" +
             "  --data            Folder for responses\\ and captures\\ (default: server-data next to RyGTServer.exe).\n" +
             "  --default-status  Status for requests with no response file (default 404).\n" +
             "  --no-capture      Do not save each request and response under captures\\.\n" +
             "  --invite          Lets players with this token join: RyGT's launcher sends it from an invite\n" +
             "                    code, and the server creates their shadNet account (needs --shadnet).\n" +
-            "  --shadnet         The folder of the shadNet server running on this PC (its shadnet.cfg).";
+            "  --shadnet         The folder of the shadNet server running on this PC (its shadnet.cfg).\n" +
+            "  --require-pass    Players must prove their online ID with a pass from their ryGT7 account.";
     }
 
     class HttpRequest
@@ -862,6 +865,48 @@ namespace RyGT.Server
         }
     }
 
+    /// A pass proves an online ID: it is signed by the account service (server\list-worker) when a
+    /// player signs in, and this is the public half of its key. base64url(JSON {"online", "exp"}),
+    /// a dot, then base64url of the P-256 signature.
+    static class AccountPass
+    {
+        const string X = "FmP_GOznfVgWtE7v4hQ96f-ZuY4NB0D-_vvg5bxt3ME", Y = "Yt17yQ7AbZ2mv2ODvkbA609kHnYC2igAoaE0oaH7XSk";
+
+        static byte[] Decode(string text)
+        {
+            text = text.Replace('-', '+').Replace('_', '/');
+            return Convert.FromBase64String(text + new string('=', (4 - text.Length % 4) % 4));
+        }
+
+        /// The online ID a pass proves, or null when it is forged or out of date.
+        public static string Verify(string pass)
+        {
+            try
+            {
+                string[] parts = (pass ?? "").Split('.');
+                if (parts.Length != 2) return null;
+                byte[] body = Decode(parts[0]);
+                // BCRYPT_ECCPUBLIC_BLOB: "ECS1", the key size, X, Y.
+                var blob = new List<byte>(BitConverter.GetBytes(0x31534345));
+                blob.AddRange(BitConverter.GetBytes(32));
+                blob.AddRange(Decode(X));
+                blob.AddRange(Decode(Y));
+                using (var key = System.Security.Cryptography.CngKey.Import(blob.ToArray(), System.Security.Cryptography.CngKeyBlobFormat.EccPublicBlob))
+                using (var ecdsa = new System.Security.Cryptography.ECDsaCng(key) { HashAlgorithm = System.Security.Cryptography.CngAlgorithm.Sha256 })
+                    if (!ecdsa.VerifyData(body, Decode(parts[1]))) return null;
+                var claims = new JavaScriptSerializer().DeserializeObject(Encoding.UTF8.GetString(body)) as Dictionary<string, object>;
+                if (claims == null || Convert.ToInt64(claims["exp"], CultureInfo.InvariantCulture) < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return null;
+                return claims["online"] as string;
+            }
+            catch (Exception e)
+            {
+                if (e is FormatException || e is ArgumentException || e is KeyNotFoundException || e is InvalidCastException ||
+                    e is System.Security.Cryptography.CryptographicException) return null;
+                throw;
+            }
+        }
+    }
+
     /// Joining by invite code. A host's launcher starts this server with an invite token and puts the
     /// token in the invite code it shows; a player's launcher sends the token and the online ID they
     /// want (GET /rygt/invite/join?token=...&online=...), and gets back the password of a shadNet
@@ -971,6 +1016,10 @@ namespace RyGT.Server
                 return Reply(403, false, "That invite code is not this server's current one. Ask the host for a new code.");
             if (onlineId.Length < 3 || onlineId.Length > 16 || onlineId.Any(c => !(char.IsLetterOrDigit(c) && c < 128) && c != '-' && c != '_'))
                 return Reply(400, false, "An online ID is 3-16 letters, digits, - or _.");
+            // The pass already proves whose name this is, whichever PC it comes from.
+            bool proven = options.RequirePass && AccountPass.Verify(Query(request, "pass")) == onlineId;
+            if (options.RequirePass && !proven)
+                return Reply(403, false, "This server needs a ryGT7 account. Sign in again, or update ryGT7.");
 
             lock (gate)
             {
@@ -982,7 +1031,7 @@ namespace RyGT.Server
                 if (accounts.TryGetValue(onlineId, out known) && known is string)
                 {
                     bool owned = accounts.TryGetValue(ownerKey, out owner);
-                    if (owned && !string.Equals(owner as string, secret, StringComparison.Ordinal) && !IPAddress.IsLoopback(request.Remote))
+                    if (owned && !proven && !string.Equals(owner as string, secret, StringComparison.Ordinal) && !IPAddress.IsLoopback(request.Remote))
                         return Reply(403, false, "The name '" + onlineId + "' is taken. Pick another online ID.");
                     if (!owned && secret.Length > 0)
                     {

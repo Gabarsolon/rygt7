@@ -60,7 +60,8 @@ removed from its interface. DLSS's separate plugin and NVIDIA files are not bund
 GT7's own online servers are replaced by **RyGTServer** (GT7's online service: sign-in, profiles and
 lobby rooms) and **shadNet** (PSN sign-in), which one player hosts on their PC from the launcher.
 Everyone else joins with an invite code. Lobby races are peer to peer: every player's game connects
-straight to the others, as on a PS4.
+straight to the others, as on a PS4. Online play needs one free [ryGT7 account](server/README.md#accounts),
+which works with every host: make it in the launcher or on the website's Account page.
 
 ### What works
 
