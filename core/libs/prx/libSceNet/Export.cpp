@@ -1174,6 +1174,42 @@ __attribute__((sysv_abi)) void* probe_apply_auth(void* client, void* call, void*
         result = g_apply_auth(client, call, requirement, d, e, f);
         code = static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(result));
         game_log_line("after forced sign-in: auth -> %#x", code);
+        // GT7's login would take its server record from the portal, which needs a token this setup
+        // does not have. Sport mode needs the record (static_file_uri for its agreement), so one is
+        // built here the way vegas::portal::ServerInfo's constructor (0x4611e0) does, with its
+        // url_variables left empty, and handed to Client::Impl::setServer (0x2d56de0).
+        {
+            auto* const image = reinterpret_cast<unsigned char*>(GetModuleHandleA(nullptr)) + 0x10000;
+            const auto guest = [image](std::uintptr_t offset) { return reinterpret_cast<Sysv6>(image + offset); };
+            const auto allocate = [&](std::uintptr_t size) { return static_cast<unsigned char*>(guest(0x3d55240)(reinterpret_cast<void*>(size), nullptr, nullptr, nullptr, nullptr, nullptr)); };
+            const auto call = [&](std::uintptr_t offset, void* a, void* b = nullptr) { guest(offset)(a, b, nullptr, nullptr, nullptr, nullptr); };
+            const auto put = [](unsigned char* at, std::uint64_t value) { std::memcpy(at, &value, sizeof(value)); };
+            auto* const info = allocate(0x110);
+            std::memset(info, 0, 0x110);
+            put(info, reinterpret_cast<std::uint64_t>(image + 0x4611f8 + 0x5059820 + 0x10));
+            put(info + 8, reinterpret_cast<std::uint64_t>(image + 0x4611ff + 0x50622d1 + 0x10));
+            for (const int capacity : {0x30, 0x58, 0xa0, 0xc8}) put(info + capacity, 0xf);
+            for (const int uri : {0x60, 0x70, 0xd0, 0xe0}) call(0x312d0e0, info + uri);
+            put(info + 0xf0, reinterpret_cast<std::uint64_t>(image + 0x4612a5 + 0x5059713 + 0x10));
+            auto* const head = allocate(0x70);
+            for (const int link : {0, 8, 0x10}) put(head + link, reinterpret_cast<std::uint64_t>(head));
+            head[0x18] = 1;
+            head[0x19] = 1;
+            put(info + 0x100, reinterpret_cast<std::uint64_t>(head));
+            char site[] = "https://www.gran-turismo.com";
+            char assets[] = "https://asset.gt7.game.gran-turismo.com";
+            const std::pair<int, char*> addresses[] = {{0x60, site}, {0x70, site}, {0xd0, assets}, {0xe0, assets}};
+            for (const auto& [field, text] : addresses) {
+                void* uri = allocate(0x120);
+                call(0x312b430, uri);
+                call(0x312bb70, uri, text);
+                call(0x312d640, info + field, &uri);
+                call(0x312d190, uri);
+            }
+            game_log_line("setting the Vegas server record");
+            call(0x2d56de0, client, info);
+            game_log_line("server record set");
+        }
     }
     return result;
 }

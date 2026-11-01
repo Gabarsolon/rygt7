@@ -205,6 +205,8 @@ namespace RyGT.Server
             if (host.StartsWith("static.", StringComparison.Ordinal) && request.Path == "/server/config/all.json") return ServerConfig();
             if (host.StartsWith("asset.", StringComparison.Ordinal) && request.Path.StartsWith("/delivery/data/", StringComparison.Ordinal))
                 return DeliveryFile(request.Path.Substring("/delivery/data/".Length));
+            if (host.StartsWith("asset.", StringComparison.Ordinal) && request.Path.StartsWith("/delivery/raw/", StringComparison.Ordinal))
+                return RawFile(request.Path);
             return null;
         }
 
@@ -246,10 +248,20 @@ namespace RyGT.Server
                     // The required fields (from api\user\get_sport_profile.json) with the player's own values.
                     var sport = ApiFile(request.Path) as Dictionary<string, object> ?? new Dictionary<string, object>();
                     if (user != null)
-                        foreach (string key in new[] { "user_id", "driver_rating", "sportsmanship_rating", "dr_point", "sr_point", "manufacturer_id", "is_star_player" })
+                        foreach (string key in new[] { "user_id", "driver_rating", "sportsmanship_rating", "dr_point", "sr_point", "manufacturer_id", "is_star_player", "main_area", "secondary_area" })
                             if (user.ContainsKey(key)) sport[key] = user[key];
                     result = sport;
                     break;
+                case "/user/update_sport_profile":
+                    // Sport mode's first start: the player's home region.
+                    if (user != null)
+                        lock (usersLock)
+                        {
+                            foreach (string key in new[] { "main_area", "secondary_area" })
+                                if (Field(body, key) != null) user[key] = Field(body, key);
+                            File.WriteAllText(Path.Combine(directory, "users.json"), json.Serialize(users));
+                        }
+                    return Reply(new Dictionary<string, object>(), request);
                 case "/user/get_sport_users":
                     object headers = call != null && call.ContainsKey("headers") ? call["headers"] : null;
                     result = SportUsers(Field(body, "user_ids") as object[], user, Convert.ToString(Field(headers, "sequence_no"), CultureInfo.InvariantCulture),
@@ -810,6 +822,20 @@ namespace RyGT.Server
             if (original != null)
                 return FileReply(original, path.EndsWith(".json") ? "application/json" : "binary/octet-stream", "pdi-" + original.Length);
             return null;
+        }
+
+        /// /delivery/raw/: Polyphony's files as they are, without Vegas' encoding (Sport mode's
+        /// agreement, event pictures).
+        HttpResponse RawFile(string path)
+        {
+            byte[] original = FromPolyphony(AssetHost, path);
+            if (original == null) return null;
+            string type = path.EndsWith(".json") ? "application/json" : path.EndsWith(".html") ? "text/html; charset=utf-8"
+                : path.EndsWith(".png") ? "image/png" : "application/octet-stream";
+            var response = new HttpResponse { Body = original, Source = "GT7" };
+            response.Headers.Add(new KeyValuePair<string, string>("Content-Type", type));
+            response.Headers.Add(new KeyValuePair<string, string>("ETag", "\"pdi-" + original.Length + "\""));
+            return response;
         }
 
         static Dictionary<string, object> EmptyCars() { return new Dictionary<string, object> { { "cars", new object[0] } }; }
