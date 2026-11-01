@@ -15,6 +15,10 @@
 #include <windows.h>
 #endif
 
+namespace LaunchDefaults {
+void Apply(); // LaunchDefaults.cpp
+}
+
 namespace GuestArena {
 namespace {
 
@@ -31,6 +35,7 @@ constexpr std::uintptr_t InteropSize = 0x0000001000000000ull;
 // 0xb000000000.
 std::uintptr_t InteropBase() {
     static const std::uintptr_t base = [] {
+        LaunchDefaults::Apply(); // GT7.exe started without the launcher
         constexpr std::uintptr_t Default = 0x000000E000000000ull;
         const char* text = std::getenv("RYTY_INTEROP_BASE");
         if (text == nullptr || *text == '\0') return Default;

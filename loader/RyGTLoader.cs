@@ -930,6 +930,10 @@ namespace RyGT
         /// The updater's notice (a newer release) at the top right, above its Update button.
         public string Notice = "";
         public GlowButton UpdateButton;
+        /// The signed-in online ID and the ryGT7 logo beside it, at the top right; the notice goes under them.
+        public string Player = "";
+        public Image PlayerLogo;
+        int NoticeTop { get { return Player.Length > 0 ? 92 : 30; } }
         readonly Dictionary<int, Bitmap> scaled = new Dictionary<int, Bitmap>();
         Size scaledFor;
         Bitmap overlay, frame;
@@ -1081,7 +1085,7 @@ namespace RyGT
                 x += button.Width + Gap;
             }
             if (UpdateButton != null)
-                UpdateButton.Location = new Point(Width - UpdateButton.Width - 30, 30 + NoticeHeight + 14);
+                UpdateButton.Location = new Point(Width - UpdateButton.Width - 30, NoticeTop + NoticeHeight + 14);
         }
 
         const int NoticeWidth = 420;
@@ -1135,9 +1139,25 @@ namespace RyGT
             // The status under the buttons, the version at the bottom right.
             TextRenderer.DrawText(g, Status, Font, new Rectangle(Left_ + 2, top + buttons[0].Height + 12, Math.Max(100, Width - Left_ - 260), 40),
                                   Color.FromArgb(200, 204, 212), TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+            if (Player.Length > 0)
+            {
+                const int logoSize = 36, pad = 8;
+                var nameFont = Dark.Caps(10f);
+                var nameSize = TextRenderer.MeasureText(Player, nameFont, Size.Empty, TextFormatFlags.NoPrefix);
+                int width = nameSize.Width + logoSize + pad * 3, x = Width - width - 30;
+                using (var path = Dark.RoundedRect(new RectangleF(x, 24, width, logoSize + pad * 2), 4))
+                using (var shade = new SolidBrush(Color.FromArgb(150, 10, 11, 14)))
+                    g.FillPath(shade, path);
+                TextRenderer.DrawText(g, Player, nameFont, new Point(x + pad, 24 + pad + (logoSize - nameSize.Height) / 2), Color.White, TextFormatFlags.NoPrefix);
+                if (PlayerLogo != null)
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(PlayerLogo, new Rectangle(x + width - pad - logoSize, 24 + pad, logoSize, logoSize));
+                }
+            }
             if (Notice.Length > 0)
             {
-                var box = new Rectangle(Width - NoticeWidth - 30, 30, NoticeWidth, NoticeHeight);
+                var box = new Rectangle(Width - NoticeWidth - 30, NoticeTop, NoticeWidth, NoticeHeight);
                 using (var shade = new SolidBrush(Color.FromArgb(150, 10, 11, 14)))
                     g.FillRectangle(shade, Rectangle.Inflate(box, 12, 10));
                 TextRenderer.DrawText(g, Notice, Font, box, Color.FromArgb(226, 230, 238),
@@ -1555,7 +1575,7 @@ namespace RyGT
 
             // ---- Home: the pictures, the logo (launcher\logo.png) or the title, Play and the settings button
             play = new GlowButton { Text = "Play", Size = new Size(236, 46), Font = Dark.Caps(11f) };
-            play.Click += delegate { ChooseMode(); };
+            play.Click += delegate { PlayFromSwitch(); };
             var gear = new GlowButton { Text = ((char)0xE713).ToString(), Glyph = true, Size = new Size(46, 46), Font = new Font("Segoe MDL2 Assets", 13f) };
             gear.Click += delegate { ShowSettings(lastPage); };
             var logoImage = LoadLogo();
@@ -1570,6 +1590,7 @@ namespace RyGT
             updateButton = new GlowButton { Text = "Update", Size = new Size(230, 40), Font = Dark.Caps(10f), Visible = false };
             updateButton.Click += delegate { InstallUpdate(); };
             home.UpdateButton = updateButton;
+            try { home.PlayerLogo = Icon.ToBitmap(); } catch { }
             home.Controls.Add(updateButton);
             curtain = new Curtain { Dock = DockStyle.Fill, Visible = false };
             Controls.Add(curtain);
@@ -1612,7 +1633,7 @@ namespace RyGT
             var sideVersion = new Label { Text = "ryGT7 for Windows", AutoSize = true, ForeColor = Color.FromArgb(96, 102, 114), Tag = "heading" };
             sidebar.Controls.Add(sideVersion);
             sidebar.Layout += delegate { sideVersion.Location = new Point(28, sidebar.ClientSize.Height - sideVersion.Height - 24); };
-            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Online", "About" };
+            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Account", "Online", "About" };
             for (int i = 0; i < pageNames.Length; ++i)
             {
                 string page = pageNames[i];
@@ -2068,6 +2089,8 @@ namespace RyGT
             // ---- About: what ryGT is, its folders and logging
             // ---- Online: hosting, joining a friend (Online.cs)
             BuildOnlinePage();
+            // ---- Account: the online account (Online.cs); nothing asks for one at start
+            BuildAccountPage();
 
             var aboutPage = NewPage("About", "About", "ryGT7 for Windows " + (char)183 + " Gran Turismo 7 (CUSA24769)");
             aboutPage.Controls.Add(new Label
@@ -2107,9 +2130,7 @@ namespace RyGT
             Shown += delegate
             {
                 ActiveControl = play.Enabled ? (Control)play : gear;
-                // Before the account question, which waits for an answer.
                 if (ReadSetting("Launcher", "check_updates", true)) CheckForUpdate(false);
-                if (NeedsAccount) AskForAccount(delegate { });
             };
             RefreshState();
             var stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };

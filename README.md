@@ -76,8 +76,8 @@ friends lists and messages.
 
 ### Host
 
-1. Open the launcher's **Online** page.
-2. Under **Host**, enter your online ID (3-16 letters, digits, `-` or `_`).
+1. Sign in, or make your account, under **Settings > Account**, then open the **Online** page.
+2. Your online ID comes from your account (3-16 letters, digits, `-` or `_`).
 3. Pick the address friends reach your PC at. For friends over the internet, press
    **Find my internet address** and forward these ports on your router to your PC:
 
@@ -99,9 +99,9 @@ friends lists and messages.
 
 ### Join
 
-1. Open the launcher's **Online** page.
-2. Under **Join a friend**, enter your online ID and the host's invite code, and press **Join**.
-   It makes your account on the host's server and points GT7 at it.
+1. Sign in, or make your account, under **Settings > Account**.
+2. On the same page, enter the host's invite code and press **Join friend**. It points GT7 at the
+   host's server.
 3. Forward **TCP and UDP 3658** on your own router to your PC too, so the other players' games
    can reach yours.
 4. Press **Play online**, open the **Lobby** and pick the host's room.
