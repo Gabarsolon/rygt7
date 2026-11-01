@@ -1128,9 +1128,19 @@ namespace RyGT
         void PlayWithServer()
         {
             if (preparingServer) return;
+            // Signed in, but this account has not used this PC's server yet: hosting makes its login.
+            if (NeedsAccount && OnlinePlay.SignedIn(root) && OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_server").StartsWith("127.0.0.1"))
+            {
+                preparingServer = true;
+                SetStatus("Starting your server...");
+                StartHosting(Play);
+                return;
+            }
             if (NeedsAccount)
             {
-                MessageBox.Show(this, "Online play needs an account. Make one in Settings > Account (join a friend or host your own server), or turn Online play off in Settings > Online.",
+                MessageBox.Show(this, OnlinePlay.SignedIn(root)
+                                    ? "You're signed in. Join a friend or host your own server in Settings > Account, or turn Online play off in Settings > Online."
+                                    : "Online play needs an account. Sign in or make one in Settings > Account, or turn Online play off in Settings > Online.",
                                 "ryGT7");
                 ShowSettings("Account");
                 return;
