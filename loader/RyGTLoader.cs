@@ -1983,10 +1983,11 @@ namespace RyGT
             // RYGT_DRIVER_CACHE_MAX_MB): the renderer's saved GPU shader cache, like NVIDIA's own
             // setting. 0 turns it off; a bigger cache keeps more cars and tracks compiled, and is saved
             // less often as it grows (each save copies it whole).
+            // The driver keeps it in RAM, a little more than the file; a file over the limit is not loaded.
             var cacheRow = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
             cacheRow.Controls.Add(new Label { Text = "Shader cache size (GB, 0 = off)", AutoSize = false, Width = 196, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
             var cacheSize = new NumericUpDown { Minimum = 0, Maximum = 100, DecimalPlaces = 0, Increment = 1, Width = 70,
-                                                Value = Math.Max(0, Math.Min(100, ReadIntSetting("GPU", "driver_cache_gb", 5))) };
+                                                Value = Math.Max(0, Math.Min(100, ReadIntSetting("GPU", "driver_cache_gb", 2))) };
             var cacheUnlimited = new DarkCheckBox { Text = "Unlimited", AutoSize = true, Checked = ReadSetting("GPU", "driver_cache_unlimited", false), Margin = new Padding(10, 4, 0, 0) };
             cacheSize.Enabled = !cacheUnlimited.Checked;
             cacheRow.Controls.Add(cacheSize);
@@ -2872,12 +2873,12 @@ namespace RyGT
             return null;
         }
 
-        /// The shader cache limit in MB for RYGT_DRIVER_CACHE_MAX_MB: -1 unlimited, 0 off, 5 GB unless set.
+        /// The shader cache limit in MB for RYGT_DRIVER_CACHE_MAX_MB: -1 unlimited, 0 off, 2 GB unless set.
         static long DriverCacheMaxMb(string root)
         {
             if (GpuSetting(root, "driver_cache_unlimited") is bool && (bool)GpuSetting(root, "driver_cache_unlimited")) return -1;
             object gb = GpuSetting(root, "driver_cache_gb");
-            int size = gb is int ? Math.Max(0, Math.Min(100, (int)gb)) : 5;
+            int size = gb is int ? Math.Max(0, Math.Min(100, (int)gb)) : 2;
             return size * 1024L;
         }
 
