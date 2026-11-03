@@ -78,6 +78,105 @@ namespace RyGT
         // in Crockford base 32: RYGT-XXXXX-XXXXX-XXXXX-XXXXX (the same codes as ryGT's).
         const string Base32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+        /// RyGTServers on this PC's networks (or at `address` when one is given), as invite code
+        /// and PC name. Each network is asked separately: a broadcast from one socket leaves
+        /// through a VPN adapter as easily as the home network.
+        public static List<KeyValuePair<string, string>> FindServers(string address)
+        {
+            var found = new Dictionary<string, KeyValuePair<string, string>>();
+            var sockets = new List<UdpClient>();
+            byte[] ask = Encoding.ASCII.GetBytes("RYD1");
+            var sources = LocalAddresses().Select(a => a.Key).Concat(new[] { "127.0.0.1" });
+            foreach (string source in sources)
+            {
+                try
+                {
+                    var udp = new UdpClient(new IPEndPoint(IPAddress.Parse(source), 0)) { EnableBroadcast = true };
+                    sockets.Add(udp);
+                    udp.Send(ask, ask.Length, new IPEndPoint(address != null ? IPAddress.Parse(address) : source == "127.0.0.1" ? IPAddress.Loopback : IPAddress.Broadcast, ServerPort));
+                }
+                catch (Exception) { }
+            }
+            DateTime end = DateTime.UtcNow.AddMilliseconds(1500);
+            while (DateTime.UtcNow < end)
+            {
+                foreach (var udp in sockets.Where(u => u.Available > 0))
+                {
+                    try
+                    {
+                        var from = new IPEndPoint(IPAddress.Any, 0);
+                        string reply = Encoding.UTF8.GetString(udp.Receive(ref from));
+                        if (!reply.StartsWith("RYS1") || reply.Length < 16) continue;
+                        string where = IPAddress.IsLoopback(from.Address) ? ((IPEndPoint)udp.Client.LocalEndPoint).Address.ToString() : from.Address.ToString();
+                        if (where == "127.0.0.1" && sockets.Count > 1) continue;  // this PC answers on its network address too
+                        found[where] = new KeyValuePair<string, string>(MakeCode(IPAddress.Parse(where), ServerPort, reply.Substring(4, 12)),
+                                                                        reply.Substring(16) + " (" + where + ")");
+                    }
+                    catch (Exception) { }
+                }
+                Thread.Sleep(50);
+            }
+            foreach (var udp in sockets) udp.Close();
+            return found.Values.ToList();
+        }
+
+        /// The round trip to a RyGTServer in milliseconds, the best of three; -1 without an answer.
+        public static int Ping(string host, int port)
+        {
+            int best = -1;
+            try
+            {
+                using (var udp = new UdpClient())
+                {
+                    udp.Client.ReceiveTimeout = 800;
+                    udp.Connect(host, port);
+                    byte[] ask = Encoding.ASCII.GetBytes("RYP1");
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        var clock = Stopwatch.StartNew();
+                        udp.Send(ask, ask.Length);
+                        var from = new IPEndPoint(IPAddress.Any, 0);
+                        try { udp.Receive(ref from); } catch (SocketException) { continue; }
+                        int ms = (int)clock.ElapsedMilliseconds;
+                        if (best < 0 || ms < best) best = ms;
+                    }
+                }
+            }
+            catch (Exception) { }
+            return best;
+        }
+
+        /// The servers hosts chose to list publicly, as invite code and name.
+        public static List<KeyValuePair<string, string>> PublicServers()
+        {
+            var found = new List<KeyValuePair<string, string>>();
+            try
+            {
+                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+                using (var client = new WebClient())
+                {
+                    var servers = new JavaScriptSerializer().DeserializeObject(client.DownloadString("https://rygt-server-list.rygt7.workers.dev/servers")) as object[];
+                    foreach (var server in (servers ?? new object[0]).OfType<Dictionary<string, object>>())
+                    {
+                        try { found.Add(new KeyValuePair<string, string>(MakeCode(IPAddress.Parse(Text(server, "address")), Convert.ToInt32(server["port"]), Text(server, "token")), Text(server, "name") + " (public)")); }
+                        catch (Exception) { }  // one bad entry does not hide the others
+                    }
+                }
+            }
+            catch (Exception) { }
+            return found;
+        }
+
+        /// What says this PC owns its online IDs on the servers it joins (kept in RyGT.ini).
+        public static string Secret(string root)
+        {
+            string secret = Get(ReadIni(root), "online_secret");
+            if (secret.Length > 0) return secret;
+            secret = NewToken();
+            WriteIni(root, new Dictionary<string, string> { { "online_secret", secret } });
+            return secret;
+        }
+
         public static string MakeCode(IPAddress address, int port, string token)
         {
             var bytes = new List<byte>(address.GetAddressBytes());
@@ -254,6 +353,80 @@ namespace RyGT
             }
         }
 
+        public const string AccountService = "https://rygt-server-list.rygt7.workers.dev/account/";
+
+        /// POST of JSON to the account service; the JSON reply, also for errors it answers with a message.
+        public static Dictionary<string, object> Post(string url, Dictionary<string, object> values, int timeoutMs)
+        {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            var request = (HttpWebRequest)WebRequest.Create(url);
+            request.Method = "POST";
+            request.ContentType = "application/json";
+            request.Timeout = timeoutMs;
+            request.ReadWriteTimeout = timeoutMs;
+            byte[] body = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(values));
+            try
+            {
+                using (var stream = request.GetRequestStream()) stream.Write(body, 0, body.Length);
+                using (var response = request.GetResponse())
+                using (var reader = new StreamReader(response.GetResponseStream()))
+                    return new JavaScriptSerializer().DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
+            }
+            catch (WebException e)
+            {
+                if (e.Response == null) throw;
+                using (var reader = new StreamReader(e.Response.GetResponseStream()))
+                {
+                    try { return new JavaScriptSerializer().DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>; }
+                    catch (ArgumentException) { throw e; }
+                }
+            }
+        }
+
+        /// Whether a ryGT7 account is signed in (account_key and account_pass in RyGT.ini).
+        public static bool SignedIn(string root)
+        {
+            var ini = ReadIni(root);
+            return Get(ini, "online_id").Length > 0 && Get(ini, "account_key").Length > 0 && Get(ini, "account_pass").Length > 0;
+        }
+
+        /// A pass for hosts to check: a new one from the account service, or the saved one when the
+        /// service cannot be reached (it lasts 30 days).
+        public static string FreshPass(string root)
+        {
+            var ini = ReadIni(root);
+            try
+            {
+                var reply = Post(AccountService + "check", new Dictionary<string, object> {
+                    { "online", Get(ini, "online_id") }, { "password", Get(ini, "account_key") } }, 10000);
+                if (Text(reply, "result") == "True")
+                {
+                    WriteIni(root, new Dictionary<string, string> { { "account_pass", Text(reply, "pass") } });
+                    return Text(reply, "pass");
+                }
+            }
+            catch (WebException) { }
+            return Get(ini, "account_pass");
+        }
+
+        /// What goes to the account service instead of the password a player types, so it never
+        /// leaves their PC. PBKDF2-HMAC-SHA256, 100000 rounds, salted with the online ID; the website
+        /// does the same.
+        public static string AccountKey(string onlineId, string password)
+        {
+            byte[] salt = Encoding.UTF8.GetBytes("ryGT7:" + onlineId.ToLowerInvariant() + "\0\0\0\u0001");
+            using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(password)))
+            {
+                byte[] round = hmac.ComputeHash(salt), key = (byte[])round.Clone();
+                for (int i = 1; i < 100000; ++i)
+                {
+                    round = hmac.ComputeHash(round);
+                    for (int b = 0; b < key.Length; ++b) key[b] ^= round[b];
+                }
+                return string.Concat(key.Take(16).Select(b => b.ToString("x2")));
+            }
+        }
+
         public static string Text(Dictionary<string, object> json, string key)
         {
             object value;
@@ -293,6 +466,9 @@ namespace RyGT
         bool refreshingOnline;
         Button startHosting, stopHosting;
         bool preparingServer;
+        CheckBox listPublicly;
+        FlowLayoutPanel serverList;
+        TextBox serverAddress;
         List<KeyValuePair<string, string>> addresses = new List<KeyValuePair<string, string>>();
 
         string ServerFolder { get { return Path.Combine(root, "server"); } }
@@ -343,6 +519,10 @@ namespace RyGT
             serverStatus.Click += delegate { try { Process.Start("http://127.0.0.1:" + OnlinePlay.ServerPort + "/"); } catch (Exception) { } };
             hostButtons.Controls.AddRange(new Control[] { startHosting, stopHosting, serverStatus });
             host.Controls.Add(hostButtons);
+            listPublicly = new CheckBox { Text = "List my server publicly (anyone can join, and everyone can see this PC's internet address)", AutoSize = true,
+                                          Checked = OnlinePlay.Get(ini, "public_server") == "1", Margin = new Padding(0, 8, 0, 0) };
+            listPublicly.CheckedChanged += delegate { OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "public_server", listPublicly.Checked ? "1" : "0" } }); };
+            host.Controls.Add(listPublicly);
             hostState = Hint("");
             host.Controls.Add(hostState);
             host.Controls.Add(FieldLabel("Invite code"));
@@ -356,6 +536,18 @@ namespace RyGT
             codeRow.Controls.AddRange(new Control[] { copyCode, newCode });
             host.Controls.Add(codeRow);
             host.Controls.Add(Hint("A new code stops older ones working for friends who have not joined yet."));
+
+            // Servers on this network.
+            var servers = Section(page, "Servers");
+            servers.Controls.Add(Hint("Finds public servers and servers on your home network, or type a local address. No code needed."));
+            serverList = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0, 6, 0, 0), BackColor = Color.Transparent };
+            servers.Controls.Add(serverList);
+            serverAddress = OnlineField(servers, "Server address (optional)", "");
+            var serverButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 10, 0, 0), BackColor = Color.Transparent };
+            var findServers = new Button { Text = "Find servers", AutoSize = true, Margin = new Padding(0, 0, 10, 0) };
+            findServers.Click += delegate { FindServers(null); };
+            serverButtons.Controls.AddRange(new Control[] { findServers });
+            servers.Controls.Add(serverButtons);
 
             // Play.
             var play = Section(page, "Play");
@@ -504,14 +696,35 @@ namespace RyGT
             else if (server.StartsWith("127.0.0.1"))
                 onlineState.Text = "Online as " + id + " on this PC's server" + (hosting ? "." : " - start hosting first, or GT7 finds no server.");
             else
-                onlineState.Text = "Online as " + id + " on the server at " + server + ".";
+            {
+                string text = "Online as " + id + " on the server at " + server + ".";
+                onlineState.Text = text;
+                int colon = server.LastIndexOf(':'), port;
+                if (colon > 0 && int.TryParse(server.Substring(colon + 1), out port))
+                {
+                    var thread = new Thread(delegate ()
+                    {
+                        int ms = OnlinePlay.Ping(server.Substring(0, colon), port);
+                        BeginInvoke(new Action(delegate
+                        {
+                            if (onlineState.Text == text) onlineState.Text = text + (ms < 0 ? " Ping: no answer." : " Ping: " + ms + " ms.");
+                        }));
+                    });
+                    thread.IsBackground = true;
+                    thread.Start();
+                }
+            }
             onlineState.Visible = onlineState.Text.Length > 0;
+            home.Player = OnlinePlay.SignedIn(root) ? id : "";
+            home.PerformLayout();
+            home.Invalidate(false);
             if (accountState != null)
             {
-                accountState.Text = HasAccount
-                    ? "Signed in as " + id + (server.StartsWith("127.0.0.1") ? " on this PC's server." : " on the server at " + server + ".")
-                    : "No account yet. You can play offline without one.";
-                signOut.Enabled = HasAccount;
+                accountState.Text = !OnlinePlay.SignedIn(root) ? "Not signed in. You can play offline without an account."
+                    : "Signed in as " + id + (!HasAccount ? ". Join a friend or host your own server to play online." :
+                                              server.StartsWith("127.0.0.1") ? " on this PC's server." : " on the server at " + server + ".");
+                signOut.Enabled = OnlinePlay.SignedIn(root);
+                accountId.Text = OnlinePlay.SignedIn(root) ? id : "";
             }
         }
 
@@ -528,6 +741,7 @@ namespace RyGT
         /// points the game at this PC.
         void StartHosting(Action done = null)
         {
+            if (!OnlinePlay.SignedIn(root)) { AskForSignIn(delegate { RefreshOnline(); StartHosting(done); }); return; }
             string id = accountId.Text.Trim();
             if (!ValidOnlineId(id)) { AskForOnlineId(); return; }
             string shadnetExe = Path.Combine(ShadNetFolder, "shadnet.exe"), serverExe = Path.Combine(ServerFolder, "RyGTServer.exe");
@@ -560,7 +774,8 @@ namespace RyGT
                     // RyGTServer: restarted so it has the current invite token (rooms are kept in
                     // server-data\gt7\rooms.json across the restart).
                     foreach (var old in Running("RyGTServer", ServerFolder)) { try { old.Kill(); old.WaitForExit(3000); } catch (Exception) { } }
-                    Process.Start(new ProcessStartInfo(serverExe, "--data \"" + ServerData + "\" --invite " + InviteToken() + " --shadnet \"" + ShadNetFolder + "\"")
+                    Process.Start(new ProcessStartInfo(serverExe, "--data \"" + ServerData + "\" --invite " + InviteToken() + " --shadnet \"" + ShadNetFolder + "\" --require-pass" +
+                                                                  (listPublicly.Checked ? " --list \"" + id + "\"" : ""))
                     { WorkingDirectory = ServerFolder, WindowStyle = ProcessWindowStyle.Minimized });
                     if (!OnlinePlay.WaitForPort(OnlinePlay.ServerPort, 15)) throw new InvalidOperationException("RyGTServer did not start (see its window).");
 
@@ -569,7 +784,7 @@ namespace RyGT
                     // has a password, so that password is offered for it.
                     string stored = OnlinePlay.StoredPassword(root, id);
                     var reply = OnlinePlay.Get("http://127.0.0.1:" + OnlinePlay.ServerPort + "/rygt/invite/join?token=" + InviteToken() +
-                                               "&online=" + Uri.EscapeDataString(id) +
+                                               "&online=" + Uri.EscapeDataString(id) + "&secret=" + OnlinePlay.Secret(root) + "&pass=" + OnlinePlay.FreshPass(root) +
                                                (stored != null ? "&password=" + Uri.EscapeDataString(stored) : ""), 15000);
                     if (OnlinePlay.Text(reply, "result") != "True") throw new InvalidOperationException(OnlinePlay.Text(reply, "message"));
                     OnlinePlay.SetAccount(root, id, OnlinePlay.Text(reply, "password"));
@@ -639,8 +854,67 @@ namespace RyGT
             WriteSetting("General", "shadnet_webapi_server", "http://" + host + ":" + OnlinePlay.ShadNetWebApiPort);
         }
 
+        /// A server in the list: its name and a Join button, which joins it and starts the game.
+        Control ServerRow(string code, string name)
+        {
+            var row = new Card(Dark.Field) { AutoSize = false, Size = new Size(520, 52), Radius = 3, Edge = Color.Empty, Padding = new Padding(14, 8, 8, 8), Margin = new Padding(0, 0, 0, 6) };
+            var title = new Label { Text = name, AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI Semibold", 10f) };
+            var join = new Button { Text = "Join", Tag = "accent", Dock = DockStyle.Right, Width = 96 };
+            var ping = new Label { Text = "...", Dock = DockStyle.Right, Width = 90, TextAlign = ContentAlignment.MiddleRight, ForeColor = Dark.DimText };
+            string host, token;
+            int port;
+            if (OnlinePlay.ReadCode(code, out host, out port, out token))
+            {
+                var pinging = new Thread(delegate ()
+                {
+                    int ms = OnlinePlay.Ping(host, port);
+                    if (ping.IsHandleCreated) ping.BeginInvoke(new Action(delegate { ping.Text = ms < 0 ? "no answer" : ms + " ms"; }));
+                });
+                pinging.IsBackground = true;
+                pinging.Start();
+            }
+            join.Click += delegate
+            {
+                joinCode.Text = code;
+                Join(PlayWithServer);
+            };
+            row.Controls.Add(title);
+            row.Controls.Add(ping);
+            row.Controls.Add(join);
+            return row;
+        }
+
+        /// Lists the servers found; `then`, when given, joins the first one.
+        void FindServers(Action then)
+        {
+            string typed = serverAddress.Text.Trim();
+            IPAddress parsed;
+            string address = IPAddress.TryParse(typed, out parsed) ? typed : null;
+            if (typed.Length > 0 && address == null) { MessageBox.Show(this, "A server address looks like 192.168.1.20."); return; }
+            SetStatus("Looking for servers...");
+            var thread = new Thread(delegate ()
+            {
+                var found = OnlinePlay.FindServers(address);
+                if (then == null) found.AddRange(OnlinePlay.PublicServers());
+                BeginInvoke(new Action(delegate
+                {
+                    serverList.Controls.Clear();
+                    foreach (var server in found) serverList.Controls.Add(ServerRow(server.Key, server.Value));
+                    Dark.Apply(serverList);
+                    SetStatus(found.Count == 0 ? "No servers found on your network." : found.Count + " server(s) found.");
+                    if (then == null) return;
+                    if (found.Count == 0) { MessageBox.Show(this, "No servers found. Is the host's server running, on the same network, and allowed through their firewall?"); return; }
+                    joinCode.Text = found[0].Key;
+                    Join(then);
+                }));
+            });
+            thread.IsBackground = true;
+            thread.Start();
+        }
+
         void Join(Action done = null)
         {
+            if (!OnlinePlay.SignedIn(root)) { AskForSignIn(delegate { RefreshOnline(); Join(done); }); return; }
             string id = accountId.Text.Trim(), host, token;
             int port;
             if (!ValidOnlineId(id)) { AskForOnlineId(); return; }
@@ -660,7 +934,7 @@ namespace RyGT
                 bool joined = false;
                 try
                 {
-                    var reply = OnlinePlay.Get("http://" + host + ":" + port + "/rygt/invite/join?token=" + token + "&online=" + Uri.EscapeDataString(id), 15000);
+                    var reply = OnlinePlay.Get("http://" + host + ":" + port + "/rygt/invite/join?token=" + token + "&online=" + Uri.EscapeDataString(id) + "&secret=" + OnlinePlay.Secret(root) + "&pass=" + OnlinePlay.FreshPass(root), 15000);
                     if (OnlinePlay.Text(reply, "result") != "True") throw new InvalidOperationException(OnlinePlay.Text(reply, "message"));
                     OnlinePlay.SetAccount(root, id, OnlinePlay.Text(reply, "password"));
                     UseShadNet(host);
@@ -706,7 +980,74 @@ namespace RyGT
             {
                 var ini = OnlinePlay.ReadIni(root);
                 string id = OnlinePlay.Get(ini, "online_id");
-                return id.Length > 0 && OnlinePlay.Get(ini, "online_server").Length > 0 && OnlinePlay.StoredPassword(root, id) != null;
+                return OnlinePlay.SignedIn(root) && OnlinePlay.Get(ini, "online_server").Length > 0 && OnlinePlay.StoredPassword(root, id) != null;
+            }
+        }
+
+        /// The ryGT7 account window: sign in, or make an account (the website's form does the same).
+        /// `done` runs once signed in; Cancel leaves everything as it was.
+        void AskForSignIn(Action done)
+        {
+            using (var form = new Form { Text = "Your ryGT7 account", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                                         StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(470, 400), BackColor = Dark.Panel })
+            {
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(16), BackColor = Color.Transparent };
+                layout.Controls.Add(Hint("One account for every ryGT7 server. New here? Fill in everything and press Create account."));
+                var id = OnlineField(layout, "Online ID", OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_id"));
+                var password = OnlineField(layout, "Password (at least 8 characters)", "");
+                password.UseSystemPasswordChar = true;
+                var email = OnlineField(layout, "Email (new accounts only)", "");
+                var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 0), BackColor = Color.Transparent };
+                var signIn = new Button { Text = "Sign in", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
+                var create = new Button { Text = "Create account", AutoSize = true, Margin = new Padding(0, 0, 10, 0) };
+                var cancel = new Button { Text = "Cancel", AutoSize = true, Margin = new Padding(0), DialogResult = DialogResult.Cancel };
+                buttons.Controls.AddRange(new Control[] { signIn, create, cancel });
+                layout.Controls.Add(buttons);
+                var state = Hint("");
+                layout.Controls.Add(state);
+                form.Controls.Add(layout);
+                form.CancelButton = cancel;
+                Action<bool> send = delegate (bool making)
+                {
+                    string name = id.Text.Trim(), mail = email.Text.Trim();
+                    if (!ValidOnlineId(name)) { state.Text = "An online ID is 3-16 letters, digits, - or _."; return; }
+                    if (password.Text.Length < 8) { state.Text = "A password is at least 8 characters."; return; }
+                    if (making && mail.IndexOf('@') <= 0) { state.Text = "New accounts need an email."; return; }
+                    state.Text = "Contacting the account service...";
+                    form.Update();
+                    form.UseWaitCursor = true;
+                    try
+                    {
+                        string key = OnlinePlay.AccountKey(name, password.Text);
+                        var values = new Dictionary<string, object> { { "online", name }, { "password", key } };
+                        if (making) values["email"] = mail;
+                        var reply = OnlinePlay.Post(OnlinePlay.AccountService + (making ? "register" : "check"), values, 15000);
+                        if (OnlinePlay.Text(reply, "result") != "True") { state.Text = OnlinePlay.Text(reply, "message"); return; }
+                        OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online_id", OnlinePlay.Text(reply, "online") },
+                            { "account_key", key }, { "account_pass", OnlinePlay.Text(reply, "pass") } });
+                        form.DialogResult = DialogResult.OK;
+                    }
+                    catch (Exception e) { state.Text = e is WebException ? "Could not reach the account service. Check your internet." : e.Message; }
+                    finally { form.UseWaitCursor = false; }
+                };
+                signIn.Click += delegate { send(false); };
+                create.Click += delegate { send(true); };
+                Dark.Apply(form);
+                if (form.ShowDialog(this) == DialogResult.OK) done();
+            }
+        }
+
+        /// community.txt next to RyGT7.exe holds the invite code of a shared server: players then
+        /// only pick a name. Without the file the window offers joining and hosting.
+        string CommunityCode
+        {
+            get
+            {
+                string path = Path.Combine(root, "community.txt");
+                if (!File.Exists(path)) return null;
+                string code = File.ReadAllText(path).Trim(), host, token;
+                int port;
+                return OnlinePlay.ReadCode(code, out host, out port, out token) ? code : null;
             }
         }
 
@@ -734,22 +1075,26 @@ namespace RyGT
             signOut = new Button { Text = "Sign out", AutoSize = true, Margin = new Padding(0, 10, 0, 0) };
             signOut.Click += delegate
             {
-                if (MessageBox.Show(this, "Sign out? Play then starts GT7 offline. Your account stays on its server; join or host again to use it.",
+                if (MessageBox.Show(this, "Sign out? Play then starts GT7 offline. Your account stays yours; sign in again to use it.",
                                     "Sign out", MessageBoxButtons.OKCancel) != DialogResult.OK)
                     return;
-                OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online_server", "" } });
+                OnlinePlay.WriteIni(root, new Dictionary<string, string> { { "online_server", "" }, { "account_key", null }, { "account_pass", null } });
                 GoOffline();
             };
-            status.Controls.Add(signOut);
+            var signInButton = new Button { Text = "Sign in or create account", AutoSize = true, Tag = "accent", Margin = new Padding(0, 10, 10, 0) };
+            signInButton.Click += delegate { AskForSignIn(RefreshOnline); };
+            var statusButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent };
+            statusButtons.Controls.AddRange(new Control[] { signInButton, signOut });
+            status.Controls.Add(statusButtons);
 
-            var create = Section(page, "Create an account or sign in");
-            var intro = Hint("Your account is made on the server you play on. Join a friend with their invite code, or host your own server.");
+            var create = Section(page, "Join or host");
+            var intro = Hint("Your account works on every server. Join a friend with their invite code, or host your own server.");
             create.Controls.Add(intro);
             accountId = OnlineField(create, "Your online ID", OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_id"));
+            accountId.ReadOnly = true;  // the signed-in account's
             // Joining a friend lives here only (it was the Online page's "Join a friend").
-            create.Controls.Add(Hint("Enter the invite code your friend's ryGT7 shows. It makes your account on their server and " +
-                                     "points GT7 at it."));
-            joinCode = OnlineField(create, "Invite code (to join a friend)", "");
+            create.Controls.Add(Hint("Enter the invite code your friend's ryGT7 shows. It points GT7 at their server."));
+            joinCode = OnlineField(create, "Invite code (to join a friend)", CommunityCode ?? "");
             var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 0), BackColor = Color.Transparent };
             var joinFriend = new Button { Text = "Join friend", AutoSize = true, Tag = "accent", Margin = new Padding(0, 0, 10, 0) };
             var hostOwn = new Button { Text = "Host my own server", AutoSize = true, Margin = new Padding(0) };
@@ -783,9 +1128,19 @@ namespace RyGT
         void PlayWithServer()
         {
             if (preparingServer) return;
+            // Signed in, but this account has not used this PC's server yet: hosting makes its login.
+            if (NeedsAccount && OnlinePlay.SignedIn(root) && OnlinePlay.Get(OnlinePlay.ReadIni(root), "online_server").StartsWith("127.0.0.1"))
+            {
+                preparingServer = true;
+                SetStatus("Starting your server...");
+                StartHosting(Play);
+                return;
+            }
             if (NeedsAccount)
             {
-                MessageBox.Show(this, "Online play needs an account. Make one in Settings > Account (join a friend or host your own server), or turn Online play off in Settings > Online.",
+                MessageBox.Show(this, OnlinePlay.SignedIn(root)
+                                    ? "You're signed in. Join a friend or host your own server in Settings > Account, or turn Online play off in Settings > Online."
+                                    : "Online play needs an account. Sign in or make one in Settings > Account, or turn Online play off in Settings > Online.",
                                 "ryGT7");
                 ShowSettings("Account");
                 return;

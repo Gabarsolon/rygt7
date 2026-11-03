@@ -29,7 +29,9 @@ namespace RyGT.Server
         public int DefaultStatus = 404;
         public bool Capture = true;
         public string InviteToken = "";   // --invite: what friends' invite codes carry
+        public string ListName = "";      // --list: the name to show in the public server list
         public string ShadNetDirectory;   // --shadnet: the shadNet folder, for creating accounts
+        public bool RequirePass;          // --require-pass: joining needs a ryGT7 account's pass
 
         public static Options Parse(string[] args)
         {
@@ -43,7 +45,9 @@ namespace RyGT.Server
                 else if (arg == "--default-status" && next != null) { options.DefaultStatus = int.Parse(next, CultureInfo.InvariantCulture); i++; }
                 else if (arg == "--no-capture") options.Capture = false;
                 else if (arg == "--invite" && next != null) { options.InviteToken = next; i++; }
+                else if (arg == "--list" && next != null) { options.ListName = next; i++; }
                 else if (arg == "--shadnet" && next != null) { options.ShadNetDirectory = Path.GetFullPath(next); i++; }
+                else if (arg == "--require-pass") options.RequirePass = true;
                 else if (arg == "--help" || arg == "-h" || arg == "/?") return null;
                 else throw new ArgumentException("Unknown option " + arg);
             }
@@ -52,14 +56,15 @@ namespace RyGT.Server
 
         public const string Usage =
             "RyGTServer [--port 7890] [--data <folder>] [--default-status 404] [--no-capture]\n" +
-            "           [--invite <token> --shadnet <folder>]\n" +
+            "           [--invite <token> --shadnet <folder> [--require-pass]]\n" +
             "  --port            TCP port to listen on (all network interfaces).\n" +
             "  --data            Folder for responses\\ and captures\\ (default: server-data next to RyGTServer.exe).\n" +
             "  --default-status  Status for requests with no response file (default 404).\n" +
             "  --no-capture      Do not save each request and response under captures\\.\n" +
             "  --invite          Lets players with this token join: RyGT's launcher sends it from an invite\n" +
             "                    code, and the server creates their shadNet account (needs --shadnet).\n" +
-            "  --shadnet         The folder of the shadNet server running on this PC (its shadnet.cfg).";
+            "  --shadnet         The folder of the shadNet server running on this PC (its shadnet.cfg).\n" +
+            "  --require-pass    Players must prove their online ID with a pass from their ryGT7 account.";
     }
 
     class HttpRequest
@@ -860,6 +865,48 @@ namespace RyGT.Server
         }
     }
 
+    /// A pass proves an online ID: it is signed by the account service (server\list-worker) when a
+    /// player signs in, and this is the public half of its key. base64url(JSON {"online", "exp"}),
+    /// a dot, then base64url of the P-256 signature.
+    static class AccountPass
+    {
+        const string X = "FmP_GOznfVgWtE7v4hQ96f-ZuY4NB0D-_vvg5bxt3ME", Y = "Yt17yQ7AbZ2mv2ODvkbA609kHnYC2igAoaE0oaH7XSk";
+
+        static byte[] Decode(string text)
+        {
+            text = text.Replace('-', '+').Replace('_', '/');
+            return Convert.FromBase64String(text + new string('=', (4 - text.Length % 4) % 4));
+        }
+
+        /// The online ID a pass proves, or null when it is forged or out of date.
+        public static string Verify(string pass)
+        {
+            try
+            {
+                string[] parts = (pass ?? "").Split('.');
+                if (parts.Length != 2) return null;
+                byte[] body = Decode(parts[0]);
+                // BCRYPT_ECCPUBLIC_BLOB: "ECS1", the key size, X, Y.
+                var blob = new List<byte>(BitConverter.GetBytes(0x31534345));
+                blob.AddRange(BitConverter.GetBytes(32));
+                blob.AddRange(Decode(X));
+                blob.AddRange(Decode(Y));
+                using (var key = System.Security.Cryptography.CngKey.Import(blob.ToArray(), System.Security.Cryptography.CngKeyBlobFormat.EccPublicBlob))
+                using (var ecdsa = new System.Security.Cryptography.ECDsaCng(key) { HashAlgorithm = System.Security.Cryptography.CngAlgorithm.Sha256 })
+                    if (!ecdsa.VerifyData(body, Decode(parts[1]))) return null;
+                var claims = new JavaScriptSerializer().DeserializeObject(Encoding.UTF8.GetString(body)) as Dictionary<string, object>;
+                if (claims == null || Convert.ToInt64(claims["exp"], CultureInfo.InvariantCulture) < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return null;
+                return claims["online"] as string;
+            }
+            catch (Exception e)
+            {
+                if (e is FormatException || e is ArgumentException || e is KeyNotFoundException || e is InvalidCastException ||
+                    e is System.Security.Cryptography.CryptographicException) return null;
+                throw;
+            }
+        }
+    }
+
     /// Joining by invite code. A host's launcher starts this server with an invite token and puts the
     /// token in the invite code it shows; a player's launcher sends the token and the online ID they
     /// want (GET /rygt/invite/join?token=...&online=...), and gets back the password of a shadNet
@@ -969,13 +1016,28 @@ namespace RyGT.Server
                 return Reply(403, false, "That invite code is not this server's current one. Ask the host for a new code.");
             if (onlineId.Length < 3 || onlineId.Length > 16 || onlineId.Any(c => !(char.IsLetterOrDigit(c) && c < 128) && c != '-' && c != '_'))
                 return Reply(400, false, "An online ID is 3-16 letters, digits, - or _.");
+            // The pass already proves whose name this is, whichever PC it comes from.
+            bool proven = options.RequirePass && AccountPass.Verify(Query(request, "pass")) == onlineId;
+            if (options.RequirePass && !proven)
+                return Reply(403, false, "This server needs a ryGT7 account. Sign in again, or update ryGT7.");
 
             lock (gate)
             {
                 var accounts = LoadAccounts();
-                object known;
+                object known, owner;
+                // A name belongs to the PC that made it: its launcher sends the same secret each time.
+                string secret = Query(request, "secret") ?? "";
+                string ownerKey = "#owner:" + onlineId;
                 if (accounts.TryGetValue(onlineId, out known) && known is string)
                 {
+                    bool owned = accounts.TryGetValue(ownerKey, out owner);
+                    if (owned && !proven && !string.Equals(owner as string, secret, StringComparison.Ordinal) && !IPAddress.IsLoopback(request.Remote))
+                        return Reply(403, false, "The name '" + onlineId + "' is taken. Pick another online ID.");
+                    if (!owned && secret.Length > 0)
+                    {
+                        accounts[ownerKey] = secret;
+                        OnlineSave.WriteAtomically(accountsPath, Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(accounts)));
+                    }
                     log("invite: " + onlineId + " joined again from " + request.Remote);
                     return Reply(200, true, "Welcome back.", new Dictionary<string, object> { { "onlineId", onlineId }, { "password", known } });
                 }
@@ -992,6 +1054,7 @@ namespace RyGT.Server
                                              (problem.IndexOf("exist", StringComparison.OrdinalIgnoreCase) >= 0 || problem.IndexOf("taken", StringComparison.OrdinalIgnoreCase) >= 0
                                                  ? " Pick another online ID." : ""));
                 accounts[onlineId] = password;
+                if (secret.Length > 0) accounts[ownerKey] = secret;
                 Directory.CreateDirectory(options.DataDirectory);
                 OnlineSave.WriteAtomically(accountsPath, Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(accounts)));
                 log("invite: account " + onlineId + " made for " + request.Remote);
@@ -1029,6 +1092,11 @@ namespace RyGT.Server
     /// The relay passes the datagram on as "RYR1" + flags + the sender's address and P2P port +
     /// datagram. A player is known by the address the others have for it: the address it calls
     /// from, or for a player on this PC, this PC's public address.
+    static class PublicList
+    {
+        public const string Url = "https://rygt-server-list.rygt7.workers.dev";
+    }
+
     class Relay
     {
         class Entry { public IPEndPoint EndPoint; public DateTime Seen; }
@@ -1036,15 +1104,26 @@ namespace RyGT.Server
         readonly int port;
         readonly Func<IPAddress> publicAddress;
         readonly Action<string> log;
+        readonly string inviteToken;
         readonly Dictionary<string, Entry> players = new Dictionary<string, Entry>();
         readonly Dictionary<IPEndPoint, string> names = new Dictionary<IPEndPoint, string>();
         long forwarded, dropped;
 
-        public Relay(int port, Func<IPAddress> publicAddress, Action<string> log)
+        public Relay(int port, Func<IPAddress> publicAddress, string inviteToken, Action<string> log)
         {
             this.port = port;
             this.publicAddress = publicAddress;
+            this.inviteToken = inviteToken;
             this.log = log;
+        }
+
+        // Launchers looking for servers on their network ("RYD1"). Only a private address is told
+        // the invite token: this port is open to the internet on a host who forwarded it.
+        static bool Private(IPAddress address)
+        {
+            if (IPAddress.IsLoopback(address)) return true;
+            byte[] b = address.GetAddressBytes();
+            return b.Length == 4 && (b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] < 32) || (b[0] == 192 && b[1] == 168));
         }
 
         static string Key(IPAddress address, int port) { return address + ":" + port.ToString(CultureInfo.InvariantCulture); }
@@ -1071,7 +1150,20 @@ namespace RyGT.Server
                 byte[] data;
                 try { data = udp.Receive(ref from); }
                 catch (SocketException) { continue; }
-                if (data.Length < 6 || data[0] != 'R' || data[1] != 'Y' || data[3] != '1') continue;
+                if (data.Length < 4 || data[0] != 'R' || data[1] != 'Y' || data[3] != '1') continue;
+                if (data[2] == 'D')
+                {
+                    if (inviteToken.Length == 0 || !Private(from.Address)) continue;
+                    byte[] reply = Encoding.UTF8.GetBytes("RYS1" + inviteToken + Environment.MachineName);
+                    try { udp.Send(reply, reply.Length, from); } catch (SocketException) { }
+                    continue;
+                }
+                if (data[2] == 'P')  // a launcher measuring its ping: sent back as it came
+                {
+                    try { udp.Send(data, data.Length, from); } catch (SocketException) { }
+                    continue;
+                }
+                if (data.Length < 6) continue;
                 DateTime now = DateTime.UtcNow;
                 if (data[2] == 'K')
                 {
@@ -1656,7 +1748,7 @@ namespace RyGT.Server
             invites = new Invites(options, text => Log(ConsoleColor.Green, text));
             gt7 = new Gt7(options.DataDirectory, text => Log(ConsoleColor.Cyan, text), peers.OthersInSession);
             peers.Joined = gt7.PlayerJoined;
-            relay = new Relay(options.Port, () => peers.PublicAddress, text => Log(ConsoleColor.Magenta, text));
+            relay = new Relay(options.Port, () => peers.PublicAddress, options.InviteToken, text => Log(ConsoleColor.Magenta, text));
             if (options.Capture) captures = new Captures(options.DataDirectory);
         }
 
@@ -1667,10 +1759,40 @@ namespace RyGT.Server
             listener.Start();
             PrintBanner();
             new Thread(relay.Run) { IsBackground = true, Name = "relay" }.Start();
+            if (options.ListName.Length > 0) new Thread(AnnounceLoop) { IsBackground = true, Name = "list" }.Start();
             while (true)
             {
                 TcpClient client = listener.AcceptTcpClient();
                 ThreadPool.QueueUserWorkItem(_ => Handle(client));
+            }
+        }
+
+        /// Keeps this server in the public server list (only with --list).
+        void AnnounceLoop()
+        {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            byte[] body = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
+                { "name", options.ListName }, { "port", options.Port }, { "token", options.InviteToken } }));
+            bool listed = false;
+            while (true)
+            {
+                try
+                {
+                    var request = (HttpWebRequest)WebRequest.Create(PublicList.Url + "/announce");
+                    request.Method = "POST";
+                    request.ContentType = "application/json";
+                    request.Timeout = 10000;
+                    using (var stream = request.GetRequestStream()) stream.Write(body, 0, body.Length);
+                    using (request.GetResponse()) { }
+                    if (!listed) Log(ConsoleColor.Magenta, "list: this server is in the public server list");
+                    listed = true;
+                }
+                catch (WebException e)
+                {
+                    if (listed) Log(ConsoleColor.Magenta, "list: could not reach the public server list: " + e.Message);
+                    listed = false;
+                }
+                Thread.Sleep(60000);
             }
         }
 

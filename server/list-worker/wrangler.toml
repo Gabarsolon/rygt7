@@ -1,0 +1,19 @@
+name = "rygt-server-list"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[durable_objects.bindings]]
+name = "LIST"
+class_name = "ServerList"
+
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "Accounts"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ServerList"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Accounts"]

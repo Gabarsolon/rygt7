@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ryGT7</title>
+<meta name="description" content="ryGT7, a fan-made PC launcher with online play. Bring your own game dump.">
+<style>
+:root { --back:#111216; --panel:#16181d; --field:#1f2229; --text:#e8e9ec; --dim:#8d919b; --line:#2b2e36; --blue:#2f6bff; }
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body { margin:0; background:var(--back); color:var(--text); font:16px/1.6 "Segoe UI",system-ui,sans-serif; }
+a { color:inherit; }
+nav { position:sticky; top:0; z-index:2; display:flex; gap:22px; justify-content:flex-end; padding:14px 24px; background:rgba(17,18,22,.85); backdrop-filter:blur(8px); }
+nav a { padding:8px 16px; border:1px solid var(--line); border-radius:3px; color:var(--dim); text-decoration:none; font-size:13px; letter-spacing:.14em; text-transform:uppercase; }
+nav a:hover, nav a.on { border-color:#d5d7dc; color:var(--text); }
+main section { display:none; border-bottom:0; }
+main section.on { display:block; }
+.hero.off { display:none; }
+.hero { min-height:78vh; display:flex; flex-direction:column; justify-content:center; padding:48px 7vw; background:radial-gradient(ellipse 55% 60% at 62% 45%, rgba(24,44,190,.62), transparent 70%), #05060c; }
+.hero img { width:min(430px,80vw); height:auto; }
+.caption { margin:18px 0 26px; color:#c4c7cf; font-size:13px; letter-spacing:.28em; text-transform:uppercase; }
+.button { display:inline-block; width:fit-content; padding:13px 34px; border:1px solid #d5d7dc; border-radius:3px; background:rgba(20,22,28,.6); color:#fff; text-decoration:none; font-weight:600; letter-spacing:.3em; text-transform:uppercase; }
+.buttons { display:flex; flex-wrap:wrap; gap:12px; }
+.button:hover { background:#fff; color:#0b0c10; }
+.note { margin:14px 0 0; color:var(--dim); font-size:14px; }
+main { max-width:860px; margin:0 auto; padding:24px; }
+section { padding:34px 0; border-bottom:1px solid var(--line); }
+h2 { margin:0 0 14px; font-size:14px; letter-spacing:.24em; text-transform:uppercase; }
+ol, ul { padding-left:22px; } li { margin:6px 0; }
+table { width:100%; border-collapse:collapse; } td { padding:7px 0; border-top:1px solid var(--line); } td:last-child { color:var(--dim); text-align:right; }
+.server { display:flex; justify-content:space-between; padding:12px 16px; margin-bottom:6px; background:var(--field); border-radius:3px; }
+.server span { color:var(--dim); font-size:14px; }
+code { background:var(--field); padding:1px 6px; border-radius:3px; }
+.form { display:grid; gap:14px; max-width:420px; margin:18px 0; } .form label { display:grid; gap:4px; color:var(--dim); font-size:14px; }
+.form input { padding:10px 12px; border:1px solid var(--line); border-radius:3px; background:var(--field); color:var(--text); font:inherit; } .form button { cursor:pointer; }
+details { padding:11px 0; border-top:1px solid var(--line); } summary { cursor:pointer; font-weight:600; } details p { margin:8px 0 0; color:#c4c7cf; }
+.socials { display:flex; gap:10px; margin:0 0 14px; } .socials a { padding:8px 16px; border:1px solid var(--line); border-radius:3px; color:var(--text); text-decoration:none; } .socials a:hover { border-color:#d5d7dc; }
+footer { max-width:860px; margin:0 auto; padding:24px; color:var(--dim); font-size:13px; }
+@media (max-width:560px){ nav { gap:6px; justify-content:center; flex-wrap:wrap; padding:12px 16px; } nav a { padding:7px 10px; font-size:11px; } .hero { padding:40px 16px; min-height:64vh; } .button { padding:13px 24px; letter-spacing:.2em; } }
+</style>
+</head>
+<body>
+<nav><a href="#home">Home</a><a href="#install">GT7 Guide</a><a href="#sport">GT Sport Guide</a><a href="#docs">GT7 Docs</a><a href="#servers">Servers</a><a href="#account">Account</a><a href="#faq">FAQ</a><a href="#issues">Issues</a></nav>
+<header class="hero">
+  <img src="logo.png" alt="ryGT7" width="430" height="192">
+  <p class="caption">Fan-made PC launchers for GT7 and GT Sport</p>
+  <div class="buttons">
+    <a class="button" href="https://gitlab.com/rygt-team/rygt7/-/releases">Get GT7</a>
+    <a class="button" href="https://gitlab.com/rygt-team/RyGTS/-/releases">Get GT Sport</a>
+  </div>
+  <p class="note">You need the game files from your own PS4, plus its system modules and fonts. None of these are provided here.</p>
+</header>
+<main>
+  <section id="account">
+    <h2>Create your account</h2>
+    <p>One account for every ryGT7 server. Sign in with it in the launcher's Online page.</p>
+    <form id="signup" class="form">
+      <label>Online ID<input name="online" required minlength="3" maxlength="16" pattern="[A-Za-z0-9_\-]+" autocomplete="username"></label>
+      <label>Email<input name="email" type="email" required autocomplete="email"></label>
+      <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+      <label>Confirm password<input name="confirm" type="password" required minlength="8" autocomplete="new-password"></label>
+      <button class="button" type="submit">Create account</button>
+      <p id="signup-state" class="note" role="status"></p>
+    </form>
+    <p class="note">Online IDs are 3-16 letters, digits, - or _. Your password is scrambled in this page before it is sent.</p>
+  </section>
+  <section id="install">
+    <h2>Gran Turismo 7 setup</h2>
+    <ol>
+      <li>Extract the complete ryGT7 release to a writable folder, separate from your game folders.</li>
+      <li>Run <code>RyGT7.exe</code>.</li>
+      <li>Select your decrypted <b>Gran Turismo 7 base game, CUSA24769</b>. Pick the folder containing <code>eboot.bin</code>, <code>sce_sys/param.sfo</code>, <code>sce_module</code>, and <code>contents</code> with <code>gt.idx</code> and the <code>gt*.vol</code> archives.</li>
+      <li>If your update is already merged into that folder, leave <b>Update</b> empty. Otherwise select the extracted update folder containing its own <code>eboot.bin</code> and <code>sce_sys/param.sfo</code>.</li>
+      <li>Select your PS4 firmware's system modules and the fonts folder containing <code>font</code> and <code>font2</code>.</li>
+      <li>Press <b>Set up</b>. Once it finishes, press <b>Play</b>, then choose <b>Online</b> or <b>Offline</b>.</li>
+    </ol>
+    <p class="note">Keep your game and update folders in place after setup: their files are linked, not copied. Use the same drive as your game dump, or turn on Windows Developer Mode to link across drives. Your source game files are never patched.</p>
+  </section>
+  <section id="sport">
+    <h2>Gran Turismo Sport setup</h2>
+    <p>RyGTS runs Gran Turismo Sport (CUSA03220, update 1.69) as a native Windows program.</p>
+    <ol>
+      <li>Download the latest <a href="https://gitlab.com/rygt-team/RyGTS/-/releases">RyGTS release</a>.</li>
+      <li>Dump these from your own PS4: GT Sport CUSA03220 decrypted with update 1.69, plus the system modules and fonts. They aren't provided here.</li>
+      <li>Unzip the release on the same drive as your dump.</li>
+      <li>Run <code>RyGT.exe</code>, then pick your game, update, firmware module and font folders.</li>
+      <li>Press <b>Set up</b>, then <b>Play</b>.</li>
+    </ol>
+    <h2 style="margin-top:28px">Status</h2>
+    <table>
+      <tr><td>Boot, menus, car and track selection</td><td>Working</td></tr>
+      <tr><td>Races</td><td>Working, about 42-60 fps</td></tr>
+      <tr><td>Race summary and results</td><td>Working</td></tr>
+      <tr><td>Audio</td><td>Working</td></tr>
+      <tr><td>Controllers</td><td>Working</td></tr>
+      <tr><td>Steering wheels</td><td>In development</td></tr>
+      <tr><td>Online features</td><td>In development</td></tr>
+      <tr><td>VR features</td><td>In development</td></tr>
+    </table>
+    <p class="note">The first 30 seconds of a race can stutter while graphics pipelines compile.</p>
+  </section>
+  <section id="docs">
+    <h2>GT7 docs</h2>
+    <details open><summary>What Set up checks</summary><p>It rejects other title IDs, malformed metadata, incomplete folders, and updates older than the selected game. It converts into a staging folder first, so a failed conversion keeps your existing executable. When it replaces <code>app0</code>, the old folder is kept as <code>app0.previous-&lt;timestamp&gt;</code>. Your dumps and saves are left alone.</p></details>
+    <details><summary>Verified game version</summary><p>The verified dump is CUSA24769 with <code>APP_VER</code> 01.00. Separate updates are tested, but later game updates have not been verified for conversion or gameplay.</p></details>
+    <details><summary>Offline mode patch</summary><p>Releases include the community Offline mode patch as <code>patches\CUSA24769.xml</code>, and Set up applies it automatically. Only its Offline mode group is used, never DLC unlocks or debug settings. If the file is added, changed or removed later, Play runs Set up again. The game writes its dealership catalog to <code>data\gt7offline</code>.</p></details>
+    <details><summary>Settings and where files live</summary><p>Display, FSR/DLSS, shader compilation, logging, controller bindings, ports and wheel settings are in the launcher. Paths are stored in <code>RyGT7.ini</code>. Logs, shaders, converted output and saves stay in the launcher folder.</p></details>
+    <details><summary>Updates</summary><p>The launcher checks GitLab for the newest release at start. If there is one, an Update button appears at the top right of the home page. It verifies the download, moves replaced files to <code>update\backup-&lt;old version&gt;</code>, and restarts. Your <code>user\</code> folder, shaders, converted game and .ini files are not touched. You can turn the check off or roll back in Settings &gt; Display.</p></details>
+    <details><summary>Building from source</summary><p>Run <code>build.cmd &lt;output-folder&gt;</code> from a Windows command prompt. It uses the C# compiler included with .NET Framework. Run <code>test-gt7.cmd &lt;temporary-output-folder&gt;</code> for setup regression checks.</p></details>
+    <details><summary>What releases contain</summary><p>Releases include the open-source converter, GT7 runtime libraries, renderer and their dependencies. Players provide all game files, firmware modules and fonts. No game, firmware, saves or game shader packs are in a release. The launcher is GPL-2.0-only.</p></details>
+  </section>
+  <section id="servers">
+    <h2>Servers online now</h2>
+    <div id="list"><p class="note">Checking...</p></div>
+    <p class="note">Open the launcher's Online page and press Find servers to join.</p>
+  </section>
+  <section id="faq">
+    <h2>FAQ</h2>
+    <p class="note">These answers are for GT7. GT Sport online is still in development.</p>
+    <details><summary>How do I join a server?</summary><p>On the Online page, press Find servers, then Join next to a server. The launcher signs you in and starts the game.</p></details>
+    <details><summary>How do I host?</summary><p>Press Start hosting on the Online page. Friends outside your home need these ports forwarded to your PC: 7890 TCP and UDP, 31313 TCP, 31315 TCP, and 3658 TCP and UDP. Then press Allow through firewall.</p></details>
+    <details><summary>Does my save stay on my PC?</summary><p>Yes. A host only keeps your account and online session data.</p></details>
+    <details><summary>Can I play without going online?</summary><p>Yes. Press Play, then Offline. You don't need an account or a server.</p></details>
+    <details><summary>Why is another player's car jumping around?</summary><p>This is a known problem we're still measuring. A slow PC or an unstable connection on either side can cause it.</p></details>
+  </section>
+  <section id="issues">
+    <h2>Known issues (GT7)</h2>
+    <ul>
+      <li>Buying a used car freezes on a grey and black screen. Buy from Brand Central for now.</li>
+      <li>Other players' cars can rubber-band in online races.</li>
+    </ul>
+  </section>
+</main>
+<footer><p class="socials"><a href="https://discord.gg/65m7dX3z9t">Discord</a><a href="https://gitlab.com/rygt-team">GitLab</a></p>ryGT is an unofficial fan project. It is not affiliated with or endorsed by Sony Interactive Entertainment or Polyphony Digital.</footer>
+<script>
+function show() {
+  const page = location.hash.slice(1) || "home";
+  document.querySelector(".hero").classList.toggle("off", page !== "home");
+  document.querySelectorAll("main section").forEach(s => s.classList.toggle("on", s.id === page));
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.getAttribute("href") === "#" + page));
+  scrollTo(0, 0);
+}
+addEventListener("hashchange", show);
+show();
+// The same key as OnlinePlay.AccountKey in the launcher: the password itself never leaves this page.
+async function accountKey(online, password) {
+  const text = new TextEncoder();
+  const base = await crypto.subtle.importKey("raw", text.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: text.encode("ryGT7:" + online.toLowerCase()), iterations: 100000 }, base, 128);
+  return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+document.getElementById("signup").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.target, state = document.getElementById("signup-state");
+  if (form.password.value !== form.confirm.value) { state.textContent = "The passwords do not match."; return; }
+  form.querySelector("button").disabled = true;
+  state.textContent = "Creating your account...";
+  try {
+    const online = form.online.value.trim();
+    const reply = await fetch("https://rygt-server-list.rygt7.workers.dev/account/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ online, email: form.email.value.trim(), password: await accountKey(online, form.password.value) }),
+    }).then(r => r.json());
+    state.textContent = reply.result ? "Account made. Sign in with it in the launcher." : reply.message;
+    if (reply.result) form.reset();
+  } catch { state.textContent = "The account server could not be reached."; }
+  form.querySelector("button").disabled = false;
+});
+fetch("https://rygt-server-list.rygt7.workers.dev/names").then(r => r.json()).then(names => {
+  const list = document.getElementById("list");
+  if (!names.length) { list.innerHTML = '<p class="note">No public servers right now.</p>'; return; }
+  list.textContent = "";
+  for (const { name, game } of names) {
+    const row = document.createElement("div"); row.className = "server"; row.textContent = name;
+    const tag = document.createElement("span"); tag.textContent = game;
+    row.append(tag);
+    list.append(row);
+  }
+}).catch(() => { document.getElementById("list").innerHTML = '<p class="note">The server list could not be reached.</p>'; });
+</script>
+</body>
+</html>

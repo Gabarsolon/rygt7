@@ -930,6 +930,10 @@ namespace RyGT
         /// The updater's notice (a newer release) at the top right, above its Update button.
         public string Notice = "";
         public GlowButton UpdateButton;
+        /// The signed-in online ID and the ryGT7 logo beside it, at the top right; the notice goes under them.
+        public string Player = "";
+        public Image PlayerLogo;
+        int NoticeTop { get { return Player.Length > 0 ? 92 : 30; } }
         readonly Dictionary<int, Bitmap> scaled = new Dictionary<int, Bitmap>();
         Size scaledFor;
         Bitmap overlay, frame;
@@ -1081,7 +1085,7 @@ namespace RyGT
                 x += button.Width + Gap;
             }
             if (UpdateButton != null)
-                UpdateButton.Location = new Point(Width - UpdateButton.Width - 30, 30 + NoticeHeight + 14);
+                UpdateButton.Location = new Point(Width - UpdateButton.Width - 30, NoticeTop + NoticeHeight + 14);
         }
 
         const int NoticeWidth = 420;
@@ -1135,9 +1139,25 @@ namespace RyGT
             // The status under the buttons, the version at the bottom right.
             TextRenderer.DrawText(g, Status, Font, new Rectangle(Left_ + 2, top + buttons[0].Height + 12, Math.Max(100, Width - Left_ - 260), 40),
                                   Color.FromArgb(200, 204, 212), TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+            if (Player.Length > 0)
+            {
+                const int logoSize = 36, pad = 8;
+                var nameFont = Dark.Caps(10f);
+                var nameSize = TextRenderer.MeasureText(Player, nameFont, Size.Empty, TextFormatFlags.NoPrefix);
+                int width = nameSize.Width + logoSize + pad * 3, x = Width - width - 30;
+                using (var path = Dark.RoundedRect(new RectangleF(x, 24, width, logoSize + pad * 2), 4))
+                using (var shade = new SolidBrush(Color.FromArgb(150, 10, 11, 14)))
+                    g.FillPath(shade, path);
+                TextRenderer.DrawText(g, Player, nameFont, new Point(x + pad, 24 + pad + (logoSize - nameSize.Height) / 2), Color.White, TextFormatFlags.NoPrefix);
+                if (PlayerLogo != null)
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(PlayerLogo, new Rectangle(x + width - pad - logoSize, 24 + pad, logoSize, logoSize));
+                }
+            }
             if (Notice.Length > 0)
             {
-                var box = new Rectangle(Width - NoticeWidth - 30, 30, NoticeWidth, NoticeHeight);
+                var box = new Rectangle(Width - NoticeWidth - 30, NoticeTop, NoticeWidth, NoticeHeight);
                 using (var shade = new SolidBrush(Color.FromArgb(150, 10, 11, 14)))
                     g.FillRectangle(shade, Rectangle.Inflate(box, 12, 10));
                 TextRenderer.DrawText(g, Notice, Font, box, Color.FromArgb(226, 230, 238),
@@ -1570,6 +1590,7 @@ namespace RyGT
             updateButton = new GlowButton { Text = "Update", Size = new Size(230, 40), Font = Dark.Caps(10f), Visible = false };
             updateButton.Click += delegate { InstallUpdate(); };
             home.UpdateButton = updateButton;
+            try { home.PlayerLogo = Icon.ToBitmap(); } catch { }
             home.Controls.Add(updateButton);
             curtain = new Curtain { Dock = DockStyle.Fill, Visible = false };
             Controls.Add(curtain);
