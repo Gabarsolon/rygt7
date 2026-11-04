@@ -19,7 +19,22 @@ The release manifest identifies the shipped files by SHA-256.
 
 ## Renderer
 
-Clone the repository and commit in `renderer.json`, with its submodules. From a Visual Studio x64
+`renderer.json` follows the official renderer's `main` branch (`commit: "HEAD"`).
+Resolve that branch once when starting a build, then keep the resolved commit for
+all targets and packaging. For example, after cloning the configured repository:
+
+```
+git fetch origin main
+git checkout --detach FETCH_HEAD
+git submodule update --init --recursive
+git rev-parse HEAD
+```
+
+GitHub CI resolves the branch once in its controller and verifies the same full SHA
+through building and publication. The release manifest records the actual checkout,
+so the JSON policy does not replace exact build provenance.
+
+From a Visual Studio x64
 developer environment with clang-cl, Python, CMake, Ninja and the Windows SDK:
 
 ```
