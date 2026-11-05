@@ -258,9 +258,9 @@ Tips:
   (Windows' .NET Framework C# compiler). It needs `libzstd.dll` (MSYS2 UCRT64's) next to it.
 - [PSN library for online play](renderer/shadGT-patches/0062-online-psn-shadnet-rygtserver.patch):
   a shadGT patch, built with the renderer's `ryty_np` target.
-- [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, pinned in
-  [build-support/renderer.json](build-support/renderer.json). Since 2026-10-27 the pin names
-  rygt-team/shadgt7 `main` again: it now carries the wheel + ultrawide edition's renderer work (the
+- [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, following `main` through
+  [build-support/renderer.json](build-support/renderer.json). Each build resolves `HEAD` once
+  and records the exact SHA in its manifest. The branch carries the wheel + ultrawide edition's renderer work (the
   16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame generation, fast flips and GT7
   job-thread hooks, off by default).
 - [Build and packaging instructions](build-support/README.md).
