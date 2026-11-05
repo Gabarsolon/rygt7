@@ -123,7 +123,11 @@ void FanatecReport(const std::uint8_t* report, std::size_t length) {
         APS5_LOG_OUT("Pad: fanatec ffb: %d reports, constant %d spring %d damper %d friction %d", updates, f.constant, f.spring, f.damper,
             f.friction);
     }
-    if (WheelInput* input = wheel.load()) input->SetForces(DecodeFanatec(FallbackSpring()));
+    if (WheelInput* input = wheel.load()) {
+        const bool playForce = length >= 8 && (first & 0x0f) == 0x01 &&
+                               (c[1] == 0x08 || c[1] == 0x0b || c[1] == 0x0c);
+        input->SetForces(DecodeFanatec(FallbackSpring()), playForce);
+    }
 }
 
 void LogCommand(const std::uint8_t* command, const char* note) {
@@ -238,6 +242,7 @@ void WheelReport(const std::uint8_t* report, std::size_t length) {
         FanatecReport(report, length);
         return;
     }
+    bool drivingCommand = false;
     // Byte 0 is the report id; the rest holds 8-byte commands.
     for (std::size_t offset = 1; offset + 8 <= length; offset += 8) {
         const std::uint8_t* c = report + offset;
@@ -267,11 +272,12 @@ void WheelReport(const std::uint8_t* report, std::size_t length) {
             }
             if (operation == 0x1 || operation == 0x2) slot.playing = true;
             if (operation == 0x3) slot.playing = false;
+            drivingCommand |= slot.playing;
         }
         LogCommand(c, "");
     }
     if (WheelInput* input = wheel.load()) {
-        input->SetForces(DecodeForces(FallbackSpring()));
+        input->SetForces(DecodeForces(FallbackSpring()), drivingCommand);
     }
 }
 

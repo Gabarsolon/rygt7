@@ -61,6 +61,7 @@ public:
     WheelState State() const;
     // Called from any thread; the forces are played on the wheel by the next Update.
     void SetForces(const WheelForces& forces);
+    void SetForces(const WheelForces& forces, bool drivingCommand);
 
 private:
     struct Device {
@@ -133,6 +134,7 @@ private:
     mutable std::mutex sampleMutex;
     std::mutex forcesMutex;
     WheelForces forces{};
+    std::chrono::steady_clock::time_point lastDriveCommand{}, nextCheck{};
     int springStrength = 30;
 };
 

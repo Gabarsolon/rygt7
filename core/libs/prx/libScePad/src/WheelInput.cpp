@@ -83,8 +83,8 @@ WheelInput::WheelInput(const Pad::InputConfig& config)
         APS5_LOG_ERR("Pad: SDL joystick init failed: %s", SDL_GetError());
         return;
     }
-    if (springStrength > 0 && (SDL_WasInit(SDL_INIT_HAPTIC) & SDL_INIT_HAPTIC) == 0 && SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
-        APS5_LOG_OUT("Pad: SDL haptic init failed, wheels will not self-center: %s", SDL_GetError());
+    if ((SDL_WasInit(SDL_INIT_HAPTIC) & SDL_INIT_HAPTIC) == 0 && SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
+        APS5_LOG_ERR("Pad: SDL haptic init failed, wheel force feedback unavailable: %s", SDL_GetError());
     }
     for (int deviceIndex = 0; deviceIndex < SDL_NumJoysticks(); ++deviceIndex) open(deviceIndex);
 }
@@ -133,13 +133,28 @@ void WheelInput::open(int deviceIndex) {
 }
 
 void WheelInput::startSpring(Device& device) {
-    if (!device.wheel || SDL_JoystickIsHaptic(device.joystick) != SDL_TRUE) return;
+    if (!device.wheel) return;
+    const int isHaptic = SDL_JoystickIsHaptic(device.joystick);
+    if (isHaptic != SDL_TRUE) {
+        if (isHaptic < 0) {
+            APS5_LOG_ERR("Pad: FFB capability query failed for %s (%04x:%04x): %s",
+                device.name.c_str(), device.vendor, device.product, SDL_GetError());
+        } else {
+            APS5_LOG_ERR("Pad: SDL reports no FFB for %s (%04x:%04x)",
+                device.name.c_str(), device.vendor, device.product);
+        }
+        return;
+    }
     device.haptic = SDL_HapticOpenFromJoystick(device.joystick);
-    if (device.haptic == nullptr) return;
+    if (device.haptic == nullptr) {
+        APS5_LOG_ERR("Pad: could not open FFB for %s (%04x:%04x): %s",
+            device.name.c_str(), device.vendor, device.product, SDL_GetError());
+        return;
+    }
     const unsigned int features = SDL_HapticQuery(device.haptic);
     device.hapticFeatures = features;
     const int axes = SDL_HapticNumAxes(device.haptic);
-    APS5_LOG_OUT("Pad: wheel force feedback: %d axes, effects 0x%x", axes, features);
+    APS5_LOG_ERR("Pad: wheel force feedback: %d axes, effects 0x%x", axes, features);
     if (springStrength <= 0) return;
     if ((features & SDL_HAPTIC_SPRING) != 0) {
         // Some drivers reject a condition effect without an explicit direction, so a second
@@ -386,11 +401,33 @@ bool WheelInput::Update() {
         else applyStick(binding.control, next.negative, next.positive);
     }
     WheelForces wanted;
+    std::chrono::steady_clock::time_point lastCommand;
     {
         std::lock_guard lock(forcesMutex);
         wanted = forces;
+        lastCommand = lastDriveCommand;
     }
-    if (Device* wheel = primary(); wheel != nullptr && wheel->haptic != nullptr && wanted.active) playForces(*wheel, wanted, next.steering);
+    Device* wheel = primary();
+    if (wheel && wheel->haptic && wanted.active) playForces(*wheel, wanted, next.steering);
+    if (wheel && wheel->vendor == VendorThrustmaster && wheel->lowerName.find("t300") != std::string::npos && now >= nextCheck) {
+        nextCheck = now + std::chrono::seconds(1);
+        const bool recent = lastCommand != std::chrono::steady_clock::time_point{} &&
+                            now - lastCommand <= std::chrono::seconds(1);
+        if (recent && wheel->haptic && wanted.active && (wheel->hapticFeatures & SDL_HAPTIC_STATUS)) {
+            auto checkEffect = [&](const char* label, int id, int requested) {
+                if (id < 0 || requested == 0 || Pad::Wheel().ffbGain <= 0) return;
+                const int status = SDL_HapticGetEffectStatus(wheel->haptic, id);
+                if (status == 0) {
+                    if (SDL_HapticRunEffect(wheel->haptic, id, 1) < 0)
+                        APS5_LOG_OUT("Pad: could not restart %s force: %s", label, SDL_GetError());
+                }
+            };
+            checkEffect("constant", wheel->constantEffect, wanted.constant);
+            checkEffect("spring", wheel->gameSpringEffect, wanted.spring);
+            checkEffect("damper", wheel->damperEffect, wanted.damper);
+            checkEffect("friction", wheel->frictionEffect, wanted.friction);
+        }
+    }
     std::lock_guard lock(sampleMutex);
     const bool changed = next != sample;
     sample = next;
@@ -422,8 +459,13 @@ WheelState WheelInput::State() const {
 }
 
 void WheelInput::SetForces(const WheelForces& wanted) {
+    SetForces(wanted, false);
+}
+
+void WheelInput::SetForces(const WheelForces& wanted, bool drivingCommand) {
     std::lock_guard lock(forcesMutex);
     forces = wanted;
+    if (drivingCommand) lastDriveCommand = std::chrono::steady_clock::now();
 }
 
 namespace {
