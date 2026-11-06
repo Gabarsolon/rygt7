@@ -278,7 +278,7 @@ frame multiplier and fast flips are by dessierror (the wheel + ultrawide edition
 play (RyGTServer's GT7 service, PSN session signaling, the launcher's Online page). GPL version 2
 applies to this project; individual files and dependencies retain their stated licenses.
 [LICENSE](LICENSE) and the release's `licenses` folder contain notices.
-@dessierror for the artwork used in README.md
+- @dessierror for the artwork used in README.md
 
 Gran Turismo is a trademark of Sony Interactive Entertainment. This project is independent of Sony
 and Polyphony Digital.
