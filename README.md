@@ -281,3 +281,7 @@ applies to this project; individual files and dependencies retain their stated l
 
 Gran Turismo is a trademark of Sony Interactive Entertainment. This project is independent of Sony
 and Polyphony Digital.
+
+<p align="center">
+  <img src="assets/GranTurismoSportBanner2.webp" width="800" alt="Gran Turismo 7 banner">
+</p>
