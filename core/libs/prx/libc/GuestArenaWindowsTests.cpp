@@ -143,9 +143,47 @@ int main() {
         Require(Query(stream).State == MEM_RESERVE && Query(stream + Pieces * Piece).State == MEM_RESERVE, "streamed pieces were not released");
         UnmapViewOfFile(backing);
         CloseHandle(pool);
+
+        // FIX-GT7-105: a range larger than the view chunk (2 MB) is mapped as views cut at guest
+        // addresses that are multiples of it; releasing a chunk unmaps its view only, and a release
+        // inside a chunk remaps the rest of that chunk only.
+        {
+            constexpr std::size_t Chunk = 0x200000;
+            constexpr std::size_t Lead = 0x10000; // the range starts 64 KB past a chunk boundary
+            constexpr std::size_t Bytes = 4 * Chunk;
+            auto* big = reinterpret_cast<std::uint8_t*>(0xf3fd000000ull);
+            auto* start = big + Lead;
+            const auto expected = [&](const std::uint8_t* at) { return static_cast<std::uint8_t>((at - start) / Page * 7 + 1); };
+            const auto intact = [&](const std::uint8_t* from, const std::uint8_t* to) {
+                for (auto* at = from; at < to; at += Page) if (*at != expected(at)) return false;
+                return true;
+            };
+            GuestArenaMarkUsed_nid_postfix(big, 5 * Chunk);
+            HANDLE bigPool = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, static_cast<DWORD>(Bytes + Chunk), nullptr);
+            Require(bigPool != nullptr, "could not create large backing");
+            GuestArenaMap_nid_postfix(start, Bytes, bigPool, Page, PAGE_READWRITE);
+            for (auto* at = start; at < start + Bytes; at += Page) *at = expected(at);
+            Require(Query(start).AllocationBase == start && Query(start).RegionSize == Chunk - Lead, "first view does not end at the next chunk boundary");
+            for (int i = 1; i < 4; ++i) {
+                Require(Query(big + i * Chunk).AllocationBase == big + i * Chunk && Query(big + i * Chunk).RegionSize == Chunk, "a middle view is not one chunk");
+            }
+            Require(Query(big + 4 * Chunk).AllocationBase == big + 4 * Chunk && Query(big + 4 * Chunk).RegionSize == Lead, "last view is not the rest of the range");
+            GuestArenaReset_nid_postfix(big + 2 * Chunk, Chunk);
+            Require(Query(big + 2 * Chunk).State == MEM_RESERVE && Query(big + 2 * Chunk).RegionSize == Chunk, "released chunk is not its own placeholder");
+            Require(intact(start, big + 2 * Chunk) && intact(big + 3 * Chunk, start + Bytes), "releasing a chunk damaged the other chunks");
+            GuestArenaReset_nid_postfix(big + Chunk + 0x80000, 0x40000);
+            Require(Query(big + Chunk + 0x80000).State == MEM_RESERVE && Query(big + Chunk + 0x80000).RegionSize == 0x40000, "partial release inside a chunk");
+            Require(Query(big + Chunk).Type == MEM_MAPPED && Query(big + Chunk + 0xc0000).Type == MEM_MAPPED, "the rest of a partly released chunk is not mapped");
+            Require(intact(start, big + Chunk + 0x80000) && intact(big + Chunk + 0xc0000, big + 2 * Chunk) && intact(big + 3 * Chunk, start + Bytes),
+                    "a release inside a chunk damaged the rest of the range");
+            GuestArenaReset_nid_postfix(big, 5 * Chunk);
+            Require(Query(big).State == MEM_RESERVE && Query(big + 4 * Chunk).State == MEM_RESERVE, "chunked views were not all released");
+            GuestArenaRelease_nid_postfix(big, 5 * Chunk);
+            CloseHandle(bigPool);
+        }
         VirtualFree(driverBase, 0, MEM_RELEASE);
         VirtualFree(largeHost, 0, MEM_RELEASE);
-        std::puts("PASS: partitioned arena, host collisions, reuse, fixed mappings, partial unmap, shared aliases, streamed pieces");
+        std::puts("PASS: partitioned arena, host collisions, reuse, fixed mappings, partial unmap, shared aliases, streamed pieces, chunked views");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s (Windows error %lu)\n", error.what(), GetLastError());

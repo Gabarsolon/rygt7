@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <limits>
+#include <utility>
 #include <vector>
 #include <stdexcept>
 #include <string>
@@ -130,12 +131,11 @@ public:
         // 16 KB at a time took five or six Windows calls per page, and GT Sport maps hundreds of MB
         // while it streams a track: up to seconds of stalls on Nurburgring 24h. reset() splits a
         // view again when only part of it is released or remapped later.
+        // FIX-GT7-105: as views of at most viewChunk bytes (see mapViews).
         bool whole = false;
         if (bytes > pageBytes) {
             if (!placeholder) split(cursor, bytes);
-            whole = map(section, GetCurrentProcess(), address, offset, bytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0) != nullptr;
-            DWORD previous;
-            if (whole && !VirtualProtect(address, bytes, protection, &previous)) fail("protect shared guest pages");
+            whole = mapViews(section, cursor, offset, bytes, protection);
         }
         for (std::size_t done = 0; done < bytes; done += pageBytes) {
             void* page = reinterpret_cast<void*>(cursor + done);
@@ -378,6 +378,52 @@ private:
         allocationGranularity = system.dwAllocationGranularity;
     }
 
+    // FIX-GT7-105: Windows unmaps only whole views. GT7 maps 1.9 GB of direct memory as one range
+    // when a race loads and then releases it 2 MB at a time: each release unmapped the rest of that
+    // view and mapped it again (VirtualQuery over the hundreds of MB left, ~9 ms a release, 2.7 s
+    // in all with the game stopped, once per race load). A range larger than viewChunk is mapped as
+    // views cut at guest addresses that are multiples of viewChunk (2 MB): a release unmaps its own
+    // views, and a partial one remaps at most one chunk. RYGT_MAPPING_VIEW_CHUNK=<bytes> sets the
+    // size (a power of two of 64 KB or more), 0 maps one view as before.
+    static std::size_t ViewChunkFromEnvironment() {
+        const char* value = std::getenv("RYGT_MAPPING_VIEW_CHUNK");
+        if (!value || !*value) return 0x200000;
+        const auto bytes = static_cast<std::size_t>(std::strtoull(value, nullptr, 0));
+        if (bytes == 0) return 0;
+        if (bytes < 0x10000 || (bytes & (bytes - 1)) != 0) return 0x200000;
+        return bytes;
+    }
+
+    /// The native view of a page of a range that mapViews mapped.
+    std::pair<std::uintptr_t, std::uintptr_t> viewBounds(std::uintptr_t address, std::size_t bytes,
+                                                         std::uintptr_t page) const {
+        const auto end = address + bytes;
+        if (viewChunk == 0) return {address, end};
+        const auto chunk = page & ~(static_cast<std::uintptr_t>(viewChunk) - 1);
+        return {std::max(address, chunk), std::min(end, chunk + viewChunk)};
+    }
+
+    /// Maps [address, address + bytes), one placeholder, as views of at most viewChunk bytes, each
+    /// with the protection. False (the range placeholders again) when a view can't be mapped.
+    bool mapViews(HANDLE section, std::uintptr_t address, std::uint64_t offset, std::size_t bytes,
+                  DWORD protection) {
+        const auto end = address + bytes;
+        for (auto cursor = address; cursor < end;) {
+            const auto stop = viewBounds(address, bytes, cursor).second;
+            if (stop != end && !VirtualFree(reinterpret_cast<void*>(cursor), stop - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder into views");
+            if (!map(section, GetCurrentProcess(), reinterpret_cast<void*>(cursor), offset + (cursor - address), stop - cursor, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0)) {
+                for (auto done = address; done < cursor; done = viewBounds(address, bytes, done).second) {
+                    if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(done), MEM_PRESERVE_PLACEHOLDER)) fail("unmap shared guest view");
+                }
+                return false;
+            }
+            DWORD previous;
+            if (!VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous)) fail("protect shared guest pages");
+            cursor = stop;
+        }
+        return true;
+    }
+
     static std::uintptr_t alignUp(std::uintptr_t value, std::size_t alignment) {
         if (value > std::numeric_limits<std::uintptr_t>::max() - (alignment - 1)) return std::numeric_limits<std::uintptr_t>::max();
         return (value + alignment - 1) & ~(static_cast<std::uintptr_t>(alignment) - 1);
@@ -583,6 +629,7 @@ private:
     }
 
     std::map<std::uintptr_t, std::uintptr_t> reservations;
+    std::size_t viewChunk = ViewChunkFromEnvironment(); // FIX-GT7-105
     std::size_t allocationGranularity = 0;
     std::map<std::uintptr_t, std::uintptr_t> cleanRanges;
     std::map<std::uintptr_t, View> views;
