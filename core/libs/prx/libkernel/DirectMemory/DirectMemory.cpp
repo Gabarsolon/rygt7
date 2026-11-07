@@ -991,7 +991,21 @@ void UnmapWorker() {
             g_inflightBegin = entry.begin;
             g_inflightEnd = entry.end;
         }
-        CarryOutPending(entry);
+        try {
+            CarryOutPending(entry);
+        } catch (const std::exception& error) {
+            // The game's unmap returned long ago: no GuardMemoryCall turns this into an error it
+            // can handle, so the reason is logged as one would be, and the range is left as it is
+            // (the views not yet released stay mapped, the arena keeps the range, the registry no
+            // longer has it). Without this the exception ended the process, unreported.
+            static std::atomic<unsigned> logged{0};
+            if (logged.fetch_add(1) < 50) {
+                std::fprintf(stderr, "[memory] PERF-GT7-092: deferred unmap of %p+0x%llx failed: %s\n",
+                    reinterpret_cast<void*>(entry.begin), static_cast<unsigned long long>(entry.end - entry.begin), error.what());
+            }
+            // The pieces released before the failure are gone for the renderer's cached answers too.
+            NotifyRenderer("RytyGpuMappingChanged", reinterpret_cast<void*>(entry.begin), entry.end - entry.begin);
+        }
         std::lock_guard lock(g_pendingLock);
         g_inflightBegin = 0;
         g_inflightEnd = 0;

@@ -627,7 +627,7 @@ private:
     /// RyGT: a view that `[start, end)` releases only part of (it starts before `start` or ends after
     /// `end`) is unmapped whole and the parts of it outside the range are mapped again, page
     /// bookkeeping and protections included. False when the view lies inside the range.
-    [[gnu::used, gnu::noinline]] bool splitView(std::uintptr_t start, std::uintptr_t end) {
+    bool splitView(std::uintptr_t start, std::uintptr_t end) {
         return SplitViewKnown(start, end, nullptr, nullptr);
     }
 
