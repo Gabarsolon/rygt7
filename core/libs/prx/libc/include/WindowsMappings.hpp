@@ -31,6 +31,7 @@ public:
 
     bool Reserve(void* address, std::size_t bytes) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         return reserve(reinterpret_cast<std::uintptr_t>(address), bytes);
     }
 
@@ -38,6 +39,7 @@ public:
     // Existing foreign mappings remain foreign and cannot be reset or replaced.
     bool ReserveAvailable(std::uintptr_t first, std::uintptr_t end) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         for (auto cursor = first; cursor < end;) {
             const auto memory = query(cursor);
             const auto stop = std::min(end, reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize);
@@ -50,6 +52,7 @@ public:
     // Search both guest-owned placeholders and currently free host ranges.
     void* FindAndReserve(std::uintptr_t first, std::uintptr_t end, std::size_t bytes, std::size_t alignment) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         if (bytes == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0) return nullptr;
         unsigned retries = 0;
         auto candidate = alignUp(first, alignment);
@@ -80,6 +83,7 @@ public:
 
     void Commit(void* address, std::size_t bytes, DWORD protection, std::size_t granule, bool watched) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         requireOwned(reinterpret_cast<std::uintptr_t>(address), bytes);
         const auto end = reinterpret_cast<std::uintptr_t>(address) + bytes;
         for (auto cursor = reinterpret_cast<std::uintptr_t>(address); cursor < end;) {
@@ -116,6 +120,7 @@ public:
     void Reset(void* address, std::size_t bytes) {
         MappingDiagnostics::Scope diagnostic(mapping_diagnostic, 2, reinterpret_cast<std::uintptr_t>(address), bytes);
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         diagnostic.Locked();
         reset(reinterpret_cast<std::uintptr_t>(address), bytes);
     }
@@ -168,6 +173,7 @@ public:
 
     void SetProtection(std::uintptr_t address, std::size_t bytes, DWORD protection) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         for (auto it = views.lower_bound(address); it != views.end() && it->first < address + bytes; ++it) {
             it->second.protection = protection;
             it->second.armed = false;
@@ -177,6 +183,7 @@ public:
 
     bool HandleWrite(std::uintptr_t address) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         const auto base = address & ~(pageBytes - 1);
         const auto found = views.find(base);
         if (found == views.end() || !writable(found->second.protection)) return false;
@@ -213,6 +220,7 @@ public:
 
     void* MapAlias(std::uintptr_t address, std::size_t bytes) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         const auto refuse = [&](const char* reason) {
             char text[192];
             std::snprintf(text, sizeof(text), "read-write alias of shared guest memory 0x%llx+0x%llx: %s", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes), reason);
@@ -249,6 +257,7 @@ public:
 
     bool Protection(std::uintptr_t address, std::uint32_t* protection) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         const auto found = views.find(address & ~(pageBytes - 1));
         if (found == views.end()) return false;
         *protection = found->second.protection;
@@ -257,6 +266,7 @@ public:
 
     bool Collect(std::uintptr_t address, std::size_t bytes, void** pages, std::size_t* count, bool clear) {
         Lock lock(*this);
+        carve_next = carve_end = 0; // PERF-GT7-093: placeholders may change
         const auto capacity = *count;
         *count = 0;
         const auto end = address + bytes;
@@ -386,6 +396,8 @@ private:
         reuse_section_handles = handles ? handles[0] == '1' : combined;
         const char* bounds = std::getenv("RYGT_MAPPING_VIEW_BOUNDS");
         reuse_view_bounds = bounds && bounds[0] == '1';
+        const char* carve = std::getenv("RYGT_PLACEHOLDER_CACHE");
+        placeholder_cache = carve && carve[0] == '1';
         const auto module = GetModuleHandleW(L"KernelBase.dll");
         if (!module) fail("load Windows memory API");
         allocate = reinterpret_cast<AllocateFunction>(GetProcAddress(module, "VirtualAlloc2"));
@@ -524,6 +536,20 @@ private:
     bool carvePlaceholder(std::uintptr_t address, std::size_t bytes) {
         requireOwned(address, bytes);
         const auto end = address + bytes;
+        // PERF-GT7-093 (RYGT_PLACEHOLDER_CACHE=1): what is left of the placeholder the previous map
+        // was carved from starts where that map ended, and stays a placeholder until another call
+        // under this lock (they all forget it). GT7 maps its streaming runs page after page there:
+        // the next page needs no query, only its suffix split.
+        if (placeholder_cache && carve_end != 0 && address == carve_next && end <= carve_end) {
+            if (end != carve_end && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder suffix");
+            forgetClean(address, end);
+            if (end < carve_end) carve_next = end;
+            else carve_next = carve_end = 0;
+            const auto hits = ++carve_hits;
+            if (hits == 1 || hits % 20000 == 0) std::fprintf(stderr, "[libc] PERF-GT7-093: %llu maps carved without a placeholder query\n", static_cast<unsigned long long>(hits));
+            return true;
+        }
+        carve_next = carve_end = 0;
         const auto memory = query(address);
         const auto placeholderEnd = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
         if (memory.State != MEM_RESERVE || placeholderEnd < end) return false;
@@ -531,6 +557,10 @@ private:
         if (placeholderBase != address && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(placeholderBase), address - placeholderBase, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder prefix");
         if (placeholderEnd != end && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder suffix");
         forgetClean(address, end);
+        if (placeholder_cache && placeholderEnd > end) {
+            carve_next = end;
+            carve_end = placeholderEnd;
+        }
         return true;
     }
 
@@ -757,6 +787,10 @@ private:
 
     MappingDiagnostics::Store mapping_diagnostic;
     bool reuse_region_queries = false;
+    bool placeholder_cache = false; // PERF-GT7-093
+    std::uintptr_t carve_next = 0;
+    std::uintptr_t carve_end = 0;
+    unsigned long long carve_hits = 0;
     bool reuse_section_handles = false;
     bool reuse_view_bounds = false;
     HANDLE recent_source = nullptr;
