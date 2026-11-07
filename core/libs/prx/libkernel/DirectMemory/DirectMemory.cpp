@@ -2,6 +2,7 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <iterator>
@@ -139,6 +140,32 @@ namespace {
 
 constexpr int GuestMapFixedFlag = 0x10;
 
+class DependencyScope {
+public:
+    explicit DependencyScope(unsigned zone, std::size_t bytes = 0) : zone(zone), bytes(bytes) {
+        static const bool enabled = [] {
+            const char* value = std::getenv("RYGT_DIAG_DEPENDENCIES");
+            return value && value[0] == '1';
+        }();
+        if (enabled && KernelDiagEnabled()) start = std::chrono::steady_clock::now();
+    }
+    ~DependencyScope() { Finish(); }
+    void Finish() {
+        if (start == std::chrono::steady_clock::time_point{}) return;
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        start = {};
+        KernelDiagRecord(static_cast<KernelDiagZone>(zone),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(),
+            reinterpret_cast<const void*>(bytes));
+    }
+    DependencyScope(const DependencyScope&) = delete;
+    DependencyScope& operator=(const DependencyScope&) = delete;
+private:
+    unsigned zone;
+    std::size_t bytes;
+    std::chrono::steady_clock::time_point start{};
+};
+
 #if defined(__linux__)
 void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment) {
     constexpr std::uintptr_t UserLimit = 0x7fff00000000ull;
@@ -252,6 +279,7 @@ public:
     PhysicalBacking& operator=(const PhysicalBacking&) = delete;
 
     void Map(std::uintptr_t address, std::size_t bytes, std::uint64_t offset, int protection) const {
+        DependencyScope dependency(95, bytes);
 #ifdef _WIN32
         GuestArena::GuestArenaMap_nid_postfix(reinterpret_cast<void*>(address), bytes, section, offset, WinProtFromPosix(protection));
 #else
@@ -356,7 +384,9 @@ bool RemapFixedIntoRegistered(GuestAllocations::Mutation& mutation, void* addr, 
     const auto nativeProtection = LinuxProtFromSce(prot);
     mutation.Protect(addr, len, (prot & 3) != 0, (prot & 2) != 0, [&] {
         const auto address = reinterpret_cast<std::uintptr_t>(addr);
+        DependencyScope direct_wait(97);
         std::lock_guard lock(g_directLock);
+        direct_wait.Finish();
         if (physStart >= 0) {
             AddMapping(address, len, static_cast<std::uint64_t>(physStart), nativeProtection);
         } else {
@@ -484,6 +514,7 @@ bool ProtectionUnchanged(std::uintptr_t start, std::uintptr_t end, int prot) {
 }
 
 void RecordProtection(const void* addr, size_t len, int prot) {
+    DependencyScope dependency(98, len);
     const auto start = reinterpret_cast<std::uintptr_t>(addr);
     std::lock_guard lock(g_protectionLock);
     EraseProtections(start, start + len);
@@ -534,12 +565,15 @@ void NotifyRenderer(const char* name, const void* addr, size_t len) {
 // these reports waits for the renderer's GPU thread, behind the work it already recorded, and GT7
 // maps thousands of 64 KB pages of direct memory into free space when a race starts.
 void ReleaseFixedOverlap(void* addr, size_t len, int flags) {
+    DependencyScope dependency(99, len);
     constexpr int GuestMapNoOverwrite = 0x80;
     if (addr == nullptr || (flags & GuestMapFixedFlag) == 0) return;
     bool registered = false;
     bool overlaps = false;
     {
+        DependencyScope allocation_wait(96);
         GuestAllocations::Mutation mutation;
+        allocation_wait.Finish();
         registered = mutation.Overlaps(addr, len);
         overlaps = registered && !mutation.Covers(addr, len);
     }
@@ -552,20 +586,25 @@ void ReleaseFixedOverlap(void* addr, size_t len, int flags) {
 }
 
 int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart, size_t alignment) {
+    DependencyScope dependency(92, len);
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
     if (physStart < 0 || (static_cast<std::uint64_t>(physStart) & (PS5_PAGE_SIZE - 1)) != 0 || static_cast<std::uint64_t>(physStart) >= DIRECT_MEMORY_SIZE || len > DIRECT_MEMORY_SIZE - static_cast<std::uint64_t>(physStart)) {
         return SCE_KERNEL_ERROR_EINVAL;
     }
     ReleaseFixedOverlap(*addr, len, flags);
+    DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
+    allocation_wait.Finish();
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags, physStart)) {
         RecordProtection(*addr, len, prot);
         NotifyRenderer("RytyGpuMapMemory", *addr, len);
         return 0;
     }
     if (*addr != nullptr && (flags & GuestMapFixedFlag) != 0) mutation.RequireAvailable(*addr, len);
+    DependencyScope direct_wait(97);
     std::lock_guard lock(g_directLock);
+    direct_wait.Finish();
     ValidatePhysicalRange(static_cast<std::uint64_t>(physStart), len);
     void* mapped = MapAligned(*addr, len, PROT_NONE, flags, alignment);
     try {
@@ -584,10 +623,13 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
 }
 
 int DoMapAnon(void** addr, size_t len, int prot, int flags) {
+    DependencyScope dependency(93, len);
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
     ReleaseFixedOverlap(*addr, len, flags);
+    DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
+    allocation_wait.Finish();
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags)) {
         RecordProtection(*addr, len, prot);
         NotifyRenderer("RytyGpuMapMemory", *addr, len);
@@ -627,7 +669,9 @@ int DoMprotect(const void* addr, size_t len, int prot) {
     if (first >= GuestArenaBase && end <= GuestArenaEnd && ProtectionUnchanged(first, end, prot)) return 0;
     const auto* pointer = reinterpret_cast<const void*>(first);
     const auto nativeProtection = LinuxProtFromSce(prot);
+    DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
+    allocation_wait.Finish();
 #ifdef _WIN32
     MEMORY_BASIC_INFORMATION memory{};
     if (VirtualQuery(pointer, &memory, sizeof(memory)) != sizeof(memory)) throw std::runtime_error("Cannot query guest memory protection range");
@@ -647,13 +691,18 @@ int DoMprotect(const void* addr, size_t len, int prot) {
 }
 
 int DoMunmap(void* addr, size_t len) {
+    DependencyScope dependency(94, len);
     Trace("unmap %p+0x%zx", addr, len);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0 || !addr) return SCE_KERNEL_ERROR_EINVAL;
     NotifyRenderer("RytyGpuUnmapMemory", addr, len);
+    DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
+    allocation_wait.Finish();
     mutation.Unmap(addr, len, [&](const void* piece, std::size_t pieceBytes, const void* allocation, bool last) {
         auto* pieceAddress = const_cast<void*>(piece);
+        DependencyScope direct_wait(97);
         std::lock_guard lock(g_directLock);
+        direct_wait.Finish();
         EraseMappings(reinterpret_cast<std::uintptr_t>(piece), reinterpret_cast<std::uintptr_t>(piece) + pieceBytes);
 #if defined(__linux__)
         Unmap(pieceAddress, pieceBytes);
@@ -673,7 +722,9 @@ int DoMunmap(void* addr, size_t len) {
 int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
+    DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
+    allocation_wait.Finish();
     const bool fixed = *addr != nullptr && (flags & GuestMapFixedFlag) != 0;
     if (fixed) mutation.RequireAvailable(*addr, len);
     constexpr int GuestMapNoCoalesce = 0x400000;
@@ -690,7 +741,9 @@ int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
 }
 
 void CreateDirectMemoryBacking(int64_t start, size_t len, int memoryType) {
+    DependencyScope direct_wait(97);
     std::lock_guard lock(g_directLock);
+    direct_wait.Finish();
     const auto first = static_cast<std::uint64_t>(start);
     for (std::size_t offset = 0; offset < len; offset += PS5_PAGE_SIZE) {
         if (g_physPages.contains(first + offset)) throw std::runtime_error("physical allocation overlaps live direct memory");
@@ -709,7 +762,9 @@ void UnmapDirectMemory(int64_t start, size_t len) {
     const auto last = first + len;
     std::vector<std::pair<std::uintptr_t, std::size_t>> ranges;
     {
+        DependencyScope direct_wait(97);
         std::lock_guard lock(g_directLock);
+        direct_wait.Finish();
         for (const auto& [base, mapping] : g_directMappings) {
             const auto mappingEnd = mapping.phys + (mapping.end - base);
             const auto overlapFirst = std::max(first, mapping.phys);
@@ -726,7 +781,9 @@ void UnmapDirectMemory(int64_t start, size_t len) {
 
 void ForgetDirectMemory(int64_t start, size_t len) {
     const auto first = static_cast<std::uint64_t>(start);
+    DependencyScope direct_wait(97);
     std::lock_guard lock(g_directLock);
+    direct_wait.Finish();
     ValidatePhysicalRange(first, len);
     g_physPages.erase(g_physPages.lower_bound(first), g_physPages.lower_bound(first + len));
     Trace("release physical 0x%llx+0x%zx", static_cast<unsigned long long>(first), len);
@@ -743,7 +800,9 @@ bool GuestProtection(uintptr_t addr, int* prot) {
 }
 
 bool QueryDirectMapping(std::uintptr_t address, std::uintptr_t* start, std::uintptr_t* end, std::uint64_t* offset, int* memoryType) {
+    DependencyScope direct_wait(97);
     std::lock_guard lock(g_directLock);
+    direct_wait.Finish();
     const auto next = g_directMappings.upper_bound(address);
     if (next == g_directMappings.begin()) return false;
     const auto it = std::prev(next);

@@ -48,6 +48,7 @@ public:
 
     void NotifyOne();
     void NotifyAll();
+    bool NotifyThread(std::uint32_t thread_id);
 
     template <class TLock>
     void Wait(TLock& lock) {

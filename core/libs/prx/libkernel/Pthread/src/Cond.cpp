@@ -7,6 +7,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -153,8 +157,24 @@ int APS5_VABI scePthreadCondBroadcast(PthreadCond* cond) {
 }
 
 int APS5_VABI scePthreadCondSignalto(PthreadCond* cond, Pthread thread) {
-    (void)thread;
-    resolveCond(cond)->_cv.NotifyAll();
+    auto* c = resolveCond(cond);
+    if (KernelDiagEnabled())
+        c->_last_signal.store(KernelDiagWaker(__builtin_return_address(0)), std::memory_order_relaxed);
+#ifdef _WIN32
+    static const bool targeted = [] {
+        const char* value = std::getenv("RYGT_COND_TARGETED");
+        return value && value[0] == '1';
+    }();
+    const DWORD target = (targeted || KernelDiagEnabled()) && thread && thread->nativeHandle
+                             ? GetThreadId(thread->nativeHandle) : 0;
+    const bool use_target = targeted && target != 0 && !TimedWait::Coarse();
+    const bool found = use_target && c->_cv.NotifyThread(target);
+    if (KernelDiagEnabled())
+        KernelDiagMark(static_cast<KernelDiagZone>(84), (static_cast<std::uint64_t>(target) << 32) |
+                       (use_target ? (found ? 1u : 2u) : 0u));
+    if (use_target) return 0;
+#endif
+    c->_cv.NotifyAll();
     return 0;
 }
 

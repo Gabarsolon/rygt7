@@ -2,7 +2,9 @@
 #include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/ReadAhead.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
+#include "prx/libkernel/File/include/GuestReadBuffer.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "SceTypes.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
@@ -10,6 +12,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -96,6 +99,48 @@ static int MapFlags(int sceFlags) {
 }
 #endif
 
+namespace {
+
+class GuestReadTimer {
+public:
+    GuestReadTimer(GuestReadPhase phase, std::size_t bytes) : phase(phase), bytes(bytes) {
+        if (KernelDiagEnabled()) {
+            started = std::chrono::steady_clock::now();
+            if (phase == GuestReadPhase::Direct || phase == GuestReadPhase::Staged ||
+                phase == GuestReadPhase::Retry || phase == GuestReadPhase::DirectAgain) {
+                const std::uint64_t mode = phase == GuestReadPhase::Staged ? 1 :
+                                           phase == GuestReadPhase::Retry ? 2 :
+                                           phase == GuestReadPhase::DirectAgain ? 3 : 0;
+                KernelDiagMark(static_cast<KernelDiagZone>(70),
+                               (mode << 56) | static_cast<std::uint64_t>(bytes));
+            }
+        }
+    }
+
+    ~GuestReadTimer() {
+        if (started == std::chrono::steady_clock::time_point{}) return;
+        const int error = errno;
+#ifdef _WIN32
+        const DWORD nativeError = GetLastError();
+#endif
+        const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - started).count();
+        KernelDiagRecord(static_cast<KernelDiagZone>(phase), static_cast<std::uint64_t>(nanos),
+                         reinterpret_cast<const void*>(bytes));
+        errno = error;
+#ifdef _WIN32
+        SetLastError(nativeError);
+#endif
+    }
+
+private:
+    GuestReadPhase phase;
+    std::size_t bytes;
+    std::chrono::steady_clock::time_point started{};
+};
+
+}
+
 void PrepareGuestWrite(void* buffer, std::size_t bytes) {
 #ifdef _WIN32
     using RangeFunction = void (*)(std::uint64_t, std::uint64_t);
@@ -113,12 +158,64 @@ void PrepareGuestWrite(void* buffer, std::size_t bytes) {
 }
 
 std::int64_t ReadIntoGuest(void* buffer, std::size_t bytes, const std::function<std::int64_t(void*)>& read) {
-    PrepareGuestWrite(buffer, bytes);
-    const std::int64_t n = read(buffer);
+    if (KernelDiagEnabled()) {
+        KernelDiagMark(static_cast<KernelDiagZone>(63), reinterpret_cast<std::uintptr_t>(buffer));
+    }
+#ifdef _WIN32
+    // RYGT_STAGED_GUEST_READS: 0 the historical path (prepare, read in place, a host buffer when
+    // that fails), 1 a reusable host buffer first, 2 the read in place tried once more after a
+    // second prepare before the host buffer.
+    static const int mode = [] {
+        const char* value = std::getenv("RYGT_STAGED_GUEST_READS");
+        return value ? std::atoi(value) : 0;
+    }();
+    if (mode == 1) {
+        static thread_local GuestReadBuffer storage;
+        auto observe = [](GuestReadPhase phase, std::size_t size, auto&& operation) -> decltype(auto) {
+            GuestReadTimer timer{phase, size};
+            return operation();
+        };
+        if (auto result = ReadGuestStaged(storage, buffer, bytes, read, PrepareGuestWrite, observe))
+            return *result;
+    }
+#endif
+    {
+        GuestReadTimer timer{GuestReadPhase::Prepare, bytes};
+        PrepareGuestWrite(buffer, bytes);
+    }
+    std::int64_t n = [&] {
+        GuestReadTimer timer{GuestReadPhase::Direct, bytes};
+        return read(buffer);
+    }();
+#ifdef _WIN32
+    if (n < 0 && mode == 2 && buffer != nullptr && bytes != 0) {
+        // The pages were opened for the read just before it; a failure means page tracking
+        // protected one of them again in between (the recorder watches a texture it uploaded
+        // again). They are opened again and the read tried once more in place, which costs no
+        // host buffer and no copy; the host buffer path below stays for a second failure.
+        const int error = errno;
+        {
+            GuestReadTimer timer{GuestReadPhase::Prepare, bytes};
+            PrepareGuestWrite(buffer, bytes);
+        }
+        n = [&] {
+            GuestReadTimer timer{GuestReadPhase::DirectAgain, bytes};
+            return read(buffer);
+        }();
+        if (n < 0) errno = error;
+    }
+#endif
     if (n >= 0 || buffer == nullptr || bytes == 0) return n;
     const int error = errno;
-    std::vector<char> bounce(bytes);
-    const std::int64_t retried = read(bounce.data());
+    std::vector<char> bounce;
+    {
+        GuestReadTimer timer{GuestReadPhase::Allocate, bytes};
+        bounce.resize(bytes);
+    }
+    const std::int64_t retried = [&] {
+        GuestReadTimer timer{GuestReadPhase::Retry, bytes};
+        return read(bounce.data());
+    }();
     if (retried < 0) {
         errno = error;
         return n;
@@ -128,7 +225,10 @@ std::int64_t ReadIntoGuest(void* buffer, std::size_t bytes, const std::function<
         std::fprintf(stderr, "[file] read into %p (%zu bytes) failed (errno %d); read again through a host buffer\n",
                      buffer, bytes, error);
     }
-    std::memcpy(buffer, bounce.data(), static_cast<std::size_t>(retried));
+    {
+        GuestReadTimer timer{GuestReadPhase::Copy, static_cast<std::size_t>(retried)};
+        std::memcpy(buffer, bounce.data(), static_cast<std::size_t>(retried));
+    }
     return retried;
 }
 
@@ -168,11 +268,15 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
     if (fd < 0) {
         return SceErrorFromErrno(errno);
     }
+    #ifdef _WIN32
+    ReadAhead::Register(fd, path, flags);
+    #endif
     return fd;
 }
 
 int APS5_VABI sceKernelClose(int d) {
 #ifdef _WIN32
+    ReadAhead::Forget(d);
     File::ForgetDirectoryDescriptor(d);
 #endif
     if (NativeClose(d) != 0) {
