@@ -8,6 +8,11 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <thread>
+#include <chrono>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -596,6 +601,7 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
     DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
+    if (*addr != nullptr && (flags & GuestMapFixedFlag) != 0) FlushPendingUnmaps(*addr, len); // PERF-GT7-092
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags, physStart)) {
         RecordProtection(*addr, len, prot);
         NotifyRenderer("RytyGpuMapMemory", *addr, len);
@@ -622,6 +628,155 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
     return 0;
 }
 
+namespace {
+
+// With g_directLock held.
+bool PhysicalRangeAllocated(std::uint64_t phys, std::size_t len) {
+    for (std::size_t offset = 0; offset < len; offset += PS5_PAGE_SIZE) {
+        if (!g_physPages.contains(phys + offset)) return false;
+    }
+    return true;
+}
+
+// With g_directLock held. Without coalesce each part goes through AddMapping, as in DoMapDirect.
+// With coalesce a physically contiguous group of parts is one native view, but the direct mapping
+// records stay one per part, as DoMapDirect leaves them (sceKernelVirtualQuery reports each part).
+void AddRunMappings(std::uintptr_t address, const DirectMapPart* parts, std::size_t count, int nativeProt, bool coalesce) {
+    std::uintptr_t cursor = address;
+    for (std::size_t i = 0; i < count;) {
+        const auto phys = static_cast<std::uint64_t>(parts[i].phys);
+        std::size_t bytes = parts[i].length;
+        std::size_t next = i + 1;
+        while (coalesce && next < count && static_cast<std::uint64_t>(parts[next].phys) == phys + bytes) {
+            bytes += parts[next].length;
+            ++next;
+        }
+        if (next == i + 1) {
+            AddMapping(cursor, bytes, phys, nativeProt);
+        } else {
+            // AddMapping's native views for the group, then its records split at the parts.
+            AddMapping(cursor, bytes, phys, nativeProt);
+            EraseMappings(cursor, cursor + bytes);
+            std::uintptr_t partAddress = cursor;
+            for (std::size_t k = i; k < next; ++k) {
+                const auto partPhys = static_cast<std::uint64_t>(parts[k].phys);
+                const auto& page = g_physPages.at(partPhys);
+                g_directMappings.emplace(partAddress, DirectMapping{partAddress + parts[k].length, partPhys, page.backing->MemoryType(), page.backing});
+                partAddress += parts[k].length;
+            }
+        }
+        cursor += bytes;
+        i = next;
+    }
+}
+
+// The allocation registry gets one range per part, as DoMapDirect leaves it (a later partial unmap
+// and sceKernelVirtualQuery then see what they saw before the runs).
+void AddRunAllocations(GuestAllocations::Mutation& mutation, std::uintptr_t address, const DirectMapPart* parts, std::size_t count, int prot) {
+    std::uintptr_t cursor = address;
+    for (std::size_t i = 0; i < count; ++i) {
+        mutation.Add(reinterpret_cast<void*>(cursor), parts[i].length, (prot & 3) != 0, (prot & 2) != 0);
+        cursor += parts[i].length;
+    }
+}
+
+}
+
+// PERF-GT7-090: GT7 streams textures with sceKernelBatchMap2 batches of about 1,000 fixed 64 KB
+// direct mappings and 100 unmaps (Trial Mountain's landmark: 43-48 ms on the game's job thread,
+// which its render thread waits for). Taken one by one, each part paid the allocation lock, the
+// overlap checks, the protection record and the renderer's report (its locks, its region lookups,
+// the page warmer's wake-up) on top of the native mapping itself: about half of the batch. A run
+// of consecutive parts takes the path DoMapDirect takes for each of them: all over registered
+// memory (remapped in place) or all over free space. Covers() holds for the run exactly when it
+// holds for every part, the parts being contiguous; a run over both kinds, or with a part
+// DoMapDirect would refuse, goes back part by part.
+int DoMapDirectRun(void* addr, size_t len, int prot, int flags, const DirectMapPart* parts, size_t count, bool coalesce) {
+    DependencyScope dependency(92, len);
+    constexpr int GuestMapNoOverwrite = 0x80;
+    if (addr == nullptr || parts == nullptr || count < 2 || (flags & GuestMapFixedFlag) == 0) return 1;
+    const auto address = reinterpret_cast<std::uintptr_t>(addr);
+    if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0 || (address & (PS5_PAGE_SIZE - 1)) != 0) return 1;
+    if (len > std::numeric_limits<std::uintptr_t>::max() - address) return 1;
+    if ((prot & ~0xF7) != 0) return 1; // LinuxProtFromSce throws: the first part reports it
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& part = parts[i];
+        if (part.length == 0 || (part.length & (PS5_PAGE_SIZE - 1)) != 0) return 1;
+        if (part.phys < 0 || (static_cast<std::uint64_t>(part.phys) & (PS5_PAGE_SIZE - 1)) != 0 || static_cast<std::uint64_t>(part.phys) >= DIRECT_MEMORY_SIZE || part.length > DIRECT_MEMORY_SIZE - static_cast<std::uint64_t>(part.phys)) return 1;
+        total += part.length;
+    }
+    if (total != len) return 1;
+    const auto nativeProtection = LinuxProtFromSce(prot);
+    bool registered = false;
+    {
+        DependencyScope allocation_wait(96);
+        GuestAllocations::Mutation mutation;
+        allocation_wait.Finish();
+        registered = mutation.Overlaps(addr, len);
+        if (registered && (!mutation.Covers(addr, len) || (flags & GuestMapNoOverwrite) != 0)) return 1;
+    }
+    {
+        DependencyScope direct_wait(97);
+        std::lock_guard lock(g_directLock);
+        direct_wait.Finish();
+        for (std::size_t i = 0; i < count; ++i) {
+            if (!PhysicalRangeAllocated(static_cast<std::uint64_t>(parts[i].phys), parts[i].length)) return 1;
+        }
+    }
+    if (registered) {
+        // ReleaseFixedOverlap for a covered range: the renderer drops its copies, nothing is unmapped.
+        NotifyRenderer("RytyGpuUnmapMemory", addr, len);
+        DependencyScope allocation_wait(96);
+        GuestAllocations::Mutation mutation;
+        allocation_wait.Finish();
+        FlushPendingUnmaps(addr, len); // PERF-GT7-092 (not expected over registered memory)
+        // Changed by another thread since: the parts go one by one (the report above only made
+        // the renderer drop copies their own reports drop again).
+        if (!mutation.Covers(addr, len)) return 1;
+        Trace("remap fixed run %p+0x%zx prot=0x%x parts=%zu", addr, len, prot, count);
+        mutation.Protect(addr, len, (prot & 3) != 0, (prot & 2) != 0, [&] {
+            DependencyScope direct_wait(97);
+            std::lock_guard lock(g_directLock);
+            direct_wait.Finish();
+            AddRunMappings(address, parts, count, nativeProtection, coalesce);
+        });
+        RecordProtection(addr, len, prot);
+        NotifyRenderer("RytyGpuMapMemory", addr, len);
+        return 0;
+    }
+    DependencyScope allocation_wait(96);
+    GuestAllocations::Mutation mutation;
+    allocation_wait.Finish();
+    FlushPendingUnmaps(addr, len); // PERF-GT7-092
+    if (mutation.Overlaps(addr, len)) return 1; // registered by another thread since
+    DependencyScope direct_wait(97);
+    std::lock_guard lock(g_directLock);
+    direct_wait.Finish();
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!PhysicalRangeAllocated(static_cast<std::uint64_t>(parts[i].phys), parts[i].length)) return 1;
+    }
+    void* mapped = MapAligned(addr, len, PROT_NONE, flags, 0);
+    bool registeredParts = false;
+    try {
+        AddRunMappings(reinterpret_cast<std::uintptr_t>(mapped), parts, count, nativeProtection, coalesce);
+        registeredParts = true;
+        AddRunAllocations(mutation, reinterpret_cast<std::uintptr_t>(mapped), parts, count, prot);
+    } catch (...) {
+        if (registeredParts) {
+            // The parts registered before the failure go again (nothing native is unmapped twice).
+            try { mutation.Unmap(mapped, len, [](const void*, std::size_t, const void*, bool) {}); } catch (...) {}
+        }
+        EraseMappings(reinterpret_cast<std::uintptr_t>(mapped), reinterpret_cast<std::uintptr_t>(mapped) + len);
+        Unmap(mapped, len);
+        throw;
+    }
+    RecordProtection(mapped, len, prot);
+    Trace("map direct run %p+0x%zx prot=0x%x flags=0x%x parts=%zu", mapped, len, prot, flags, count);
+    NotifyRenderer("RytyGpuMapMemory", mapped, len);
+    return 0;
+}
+
 int DoMapAnon(void** addr, size_t len, int prot, int flags) {
     DependencyScope dependency(93, len);
     ValidateOutput(addr);
@@ -630,6 +785,7 @@ int DoMapAnon(void** addr, size_t len, int prot, int flags) {
     DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
+    if (*addr != nullptr && (flags & GuestMapFixedFlag) != 0) FlushPendingUnmaps(*addr, len); // PERF-GT7-092
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags)) {
         RecordProtection(*addr, len, prot);
         NotifyRenderer("RytyGpuMapMemory", *addr, len);
@@ -672,6 +828,7 @@ int DoMprotect(const void* addr, size_t len, int prot) {
     DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
+    FlushPendingUnmaps(pointer, bytes); // PERF-GT7-092
 #ifdef _WIN32
     MEMORY_BASIC_INFORMATION memory{};
     if (VirtualQuery(pointer, &memory, sizeof(memory)) != sizeof(memory)) throw std::runtime_error("Cannot query guest memory protection range");
@@ -698,6 +855,17 @@ int DoMunmap(void* addr, size_t len) {
     DependencyScope allocation_wait(96);
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
+    FlushPendingUnmaps(addr, len); // PERF-GT7-092
+    // PERF-GT7-090: adjacent guest arena pieces go to libc as one range once the registry is done
+    // (the same unmap: a run mapped as one native view and released part by part was split again
+    // for every part, quadratic in its length).
+    std::uintptr_t arenaBegin = 0;
+    std::uintptr_t arenaEnd = 0;
+    const auto flushArena = [&] {
+        if (arenaEnd == arenaBegin) return;
+        munmap(reinterpret_cast<void*>(arenaBegin), arenaEnd - arenaBegin);
+        arenaBegin = arenaEnd = 0;
+    };
     mutation.Unmap(addr, len, [&](const void* piece, std::size_t pieceBytes, const void* allocation, bool last) {
         auto* pieceAddress = const_cast<void*>(piece);
         DependencyScope direct_wait(97);
@@ -707,15 +875,228 @@ int DoMunmap(void* addr, size_t len) {
 #if defined(__linux__)
         Unmap(pieceAddress, pieceBytes);
 #else
-        if (KernelArena::Get().Contains(pieceAddress, pieceBytes)) munmap(pieceAddress, pieceBytes);
-        else if (last) munmap_release(const_cast<void*>(allocation));
+        if (KernelArena::Get().Contains(pieceAddress, pieceBytes)) {
+            const auto begin = reinterpret_cast<std::uintptr_t>(piece);
+            if (arenaEnd != begin) flushArena();
+            if (arenaEnd == arenaBegin) arenaBegin = begin;
+            arenaEnd = begin + pieceBytes;
+            return;
+        }
+        flushArena();
+        if (last) munmap_release(const_cast<void*>(allocation));
         else munmap(pieceAddress, pieceBytes);
 #endif
     });
+    {
+        std::lock_guard lock(g_directLock);
+        flushArena();
+    }
     RecordProtection(addr, len, -1);
     // The renderer was told before the unmap so it stops using the memory; this tells it the
     // pages are gone, so answers it cached in between are dropped.
     NotifyRenderer("RytyGpuMappingChanged", addr, len);
+    return 0;
+}
+
+// PERF-GT7-092 (RYGT_DEFER_UNMAP=1): GT7's streaming batches unmap about 1,000 64 KB views on the
+// job thread its render thread waits for (Trial Mountain's landmark: ~8 ms of UnmapViewOfFile2
+// and placeholder coalescing, each view a TLB flush on every core). The guest-visible unmap stays
+// immediate (allocation registry, direct mappings, protection records, and the renderer's report,
+// which may still use the memory); only the native views are removed later, on a worker thread,
+// once the batches have paused. Until then the old views keep the physical pages mapped where the
+// game no longer looks. Anything placing or protecting memory over a pending range finishes its
+// removal first (FlushPendingUnmaps), and the arena does not hand the range out meanwhile (it is
+// released with the views).
+namespace {
+
+struct PendingUnmap {
+    std::uintptr_t begin = 0;
+    std::uintptr_t end = 0;
+    std::vector<std::pair<void*, std::size_t>> pieces;
+    std::chrono::steady_clock::time_point queued{};
+};
+
+std::mutex g_pendingLock;
+std::condition_variable g_pendingWake;
+std::deque<PendingUnmap> g_pendingUnmaps;
+std::uintptr_t g_inflightBegin = 0;
+std::uintptr_t g_inflightEnd = 0;
+std::mutex g_unmapWork; // held while a pending unmap is carried out
+std::atomic<long long> g_lastBatchNs{0};
+std::atomic<unsigned long long> g_deferredCount{0};
+std::atomic<unsigned long long> g_flushedEarly{0};
+
+long long SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void CarryOutPending(PendingUnmap& entry) {
+    {
+        // Adjacent pieces as one range (see DoMunmap).
+        std::lock_guard lock(g_directLock);
+        std::uintptr_t begin = 0;
+        std::uintptr_t end = 0;
+        for (const auto& [piece, bytes] : entry.pieces) {
+            const auto start = reinterpret_cast<std::uintptr_t>(piece);
+            if (start != end && end != begin) {
+                munmap(reinterpret_cast<void*>(begin), end - begin);
+                begin = end = 0;
+            }
+            if (end == begin) begin = start;
+            end = start + bytes;
+        }
+        if (end != begin) munmap(reinterpret_cast<void*>(begin), end - begin);
+    }
+    NotifyRenderer("RytyGpuMappingChanged", reinterpret_cast<void*>(entry.begin), entry.end - entry.begin);
+}
+
+void UnmapWorker() {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+    if (const auto set = reinterpret_cast<SetDescription>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")))) set(GetCurrentThread(), L"Ryty:UnmapLater");
+#endif
+    for (;;) {
+        {
+            std::unique_lock lock(g_pendingLock);
+            g_pendingWake.wait(lock, [] { return !g_pendingUnmaps.empty(); });
+        }
+        // The game's batches first: 1 ms without one, or 30 ms after the oldest pending unmap.
+        for (;;) {
+            long long oldest = 0;
+            {
+                std::lock_guard lock(g_pendingLock);
+                if (g_pendingUnmaps.empty()) break;
+                oldest = std::chrono::duration_cast<std::chrono::nanoseconds>(g_pendingUnmaps.front().queued.time_since_epoch()).count();
+            }
+            const long long now = SteadyNs();
+            if (now - g_lastBatchNs.load(std::memory_order_relaxed) > 1'000'000 || now - oldest > 30'000'000) break;
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+        std::lock_guard work(g_unmapWork);
+        PendingUnmap entry;
+        {
+            std::lock_guard lock(g_pendingLock);
+            if (g_pendingUnmaps.empty()) continue;
+            entry = std::move(g_pendingUnmaps.front());
+            g_pendingUnmaps.pop_front();
+            g_inflightBegin = entry.begin;
+            g_inflightEnd = entry.end;
+        }
+        CarryOutPending(entry);
+        std::lock_guard lock(g_pendingLock);
+        g_inflightBegin = 0;
+        g_inflightEnd = 0;
+    }
+}
+
+}
+
+bool DeferUnmapEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("RYGT_DEFER_UNMAP");
+        const bool on = value && value[0] == '1';
+        if (on) std::fprintf(stderr, "[memory] PERF-GT7-092: native views of batch unmaps are removed later (RYGT_DEFER_UNMAP=1)\n");
+        return on;
+    }();
+    return enabled;
+}
+
+void NoteBatchMapActivity() {
+    if (DeferUnmapEnabled()) g_lastBatchNs.store(SteadyNs(), std::memory_order_relaxed);
+}
+
+bool PendingUnmapContains(std::uintptr_t address) {
+    if (!DeferUnmapEnabled()) return false;
+    std::lock_guard lock(g_pendingLock);
+    if (address >= g_inflightBegin && address < g_inflightEnd) return true;
+    for (const auto& entry : g_pendingUnmaps) {
+        if (address >= entry.begin && address < entry.end) return true;
+    }
+    return false;
+}
+
+void FlushPendingUnmaps(const void* addr, size_t len) {
+    if (!DeferUnmapEnabled() || len == 0) return;
+    const auto begin = reinterpret_cast<std::uintptr_t>(addr);
+    const auto end = begin + len;
+    {
+        std::lock_guard lock(g_pendingLock);
+        bool any = g_inflightEnd > begin && g_inflightBegin < end;
+        for (const auto& entry : g_pendingUnmaps) {
+            if (any) break;
+            any = entry.end > begin && entry.begin < end;
+        }
+        if (!any) return;
+    }
+    std::lock_guard work(g_unmapWork); // the worker's unmap in flight finishes first
+    std::vector<PendingUnmap> mine;
+    {
+        std::lock_guard lock(g_pendingLock);
+        for (auto it = g_pendingUnmaps.begin(); it != g_pendingUnmaps.end();) {
+            if (it->end > begin && it->begin < end) {
+                mine.push_back(std::move(*it));
+                it = g_pendingUnmaps.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& entry : mine) CarryOutPending(entry);
+    g_flushedEarly.fetch_add(mine.size(), std::memory_order_relaxed);
+}
+
+int DoMunmapDeferred(void* addr, size_t len) {
+    if (!DeferUnmapEnabled()) return DoMunmap(addr, len);
+    if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0 || !addr) return SCE_KERNEL_ERROR_EINVAL;
+#ifdef _WIN32
+    // Only guest arena memory (all of GT7's streaming pools); anything else as before.
+    if (!KernelArena::Get().Contains(addr, len)) return DoMunmap(addr, len);
+#else
+    return DoMunmap(addr, len);
+#endif
+    DependencyScope dependency(94, len);
+    Trace("unmap (native views later) %p+0x%zx", addr, len);
+    NotifyRenderer("RytyGpuUnmapMemory", addr, len);
+    static std::once_flag started;
+    std::call_once(started, [] { std::thread(UnmapWorker).detach(); });
+    PendingUnmap entry;
+    entry.begin = reinterpret_cast<std::uintptr_t>(addr);
+    entry.end = entry.begin + len;
+    bool queued = false;
+    {
+        DependencyScope allocation_wait(96);
+        GuestAllocations::Mutation mutation;
+        allocation_wait.Finish();
+        FlushPendingUnmaps(addr, len); // an older pending unmap over the range (not expected)
+        try {
+            mutation.Unmap(addr, len, [&](const void* piece, std::size_t pieceBytes, const void*, bool) {
+                DependencyScope direct_wait(97);
+                std::lock_guard lock(g_directLock);
+                direct_wait.Finish();
+                EraseMappings(reinterpret_cast<std::uintptr_t>(piece), reinterpret_cast<std::uintptr_t>(piece) + pieceBytes);
+                entry.pieces.emplace_back(const_cast<void*>(piece), pieceBytes);
+            });
+        } catch (...) {
+            CarryOutPending(entry); // the pieces already taken off the registry go now
+            throw;
+        }
+        // Queued before the registry is released: a map over the range by another thread takes the
+        // registry after this and finds the entry (FlushPendingUnmaps inside its Mutation).
+        if (!entry.pieces.empty()) {
+            entry.queued = std::chrono::steady_clock::now();
+            std::lock_guard lock(g_pendingLock);
+            g_pendingUnmaps.push_back(std::move(entry));
+            queued = true;
+        }
+    }
+    RecordProtection(addr, len, -1);
+    if (!queued) return 0;
+    g_pendingWake.notify_one();
+    const auto n = g_deferredCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 3 || n % 2000 == 0) {
+        std::fprintf(stderr, "[memory] PERF-GT7-092: %llu unmaps deferred, %llu finished early by a map over them\n", n, g_flushedEarly.load());
+    }
     return 0;
 }
 
@@ -726,6 +1107,7 @@ int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
     const bool fixed = *addr != nullptr && (flags & GuestMapFixedFlag) != 0;
+    if (fixed) FlushPendingUnmaps(*addr, len); // PERF-GT7-092
     if (fixed) mutation.RequireAvailable(*addr, len);
     constexpr int GuestMapNoCoalesce = 0x400000;
     void* mapped = MapAligned(fixed ? *addr : nullptr, len, PROT_NONE, fixed ? GuestMapFixedFlag | (flags & GuestMapNoCoalesce) : 0, alignment);
