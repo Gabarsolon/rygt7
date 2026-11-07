@@ -2,7 +2,6 @@
 #include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
-#include "prx/libkernel/File/include/ReadAhead.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libkernel/File/include/GuestReadBuffer.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
@@ -268,15 +267,11 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
     if (fd < 0) {
         return SceErrorFromErrno(errno);
     }
-    #ifdef _WIN32
-    ReadAhead::Register(fd, path, flags);
-    #endif
     return fd;
 }
 
 int APS5_VABI sceKernelClose(int d) {
 #ifdef _WIN32
-    ReadAhead::Forget(d);
     File::ForgetDirectoryDescriptor(d);
 #endif
     if (NativeClose(d) != 0) {

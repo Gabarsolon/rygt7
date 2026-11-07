@@ -1,12 +1,10 @@
 #include <cstdint>
 #include <cstddef>
-#include <cstdlib>
 #include <limits>
 #include "SceTypes.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
-#include "prx/libkernel/File/include/ReadAhead.hpp"
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
@@ -19,132 +17,12 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
-#include <map>
-#include <mutex>
-#include <memory>
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
 #include <direct.h>
 #include <sys/stat.h>
 #include <sys/utime.h>
-namespace ReadAhead {
-namespace {
-constexpr DWORD Capacity = 256 * 1024;
-struct Source {
-    HANDLE handle = INVALID_HANDLE_VALUE;
-    std::uint64_t generation = 0;
-    ~Source() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
-};
-std::mutex source_mutex;
-std::map<int, std::shared_ptr<Source>> sources;
-std::atomic<std::uint64_t> next_generation{1};
-
-bool Enabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("RYGT_READ_AHEAD");
-        return value && value[0] == '1';
-    }();
-    return enabled;
-}
-
-struct Buffer {
-    void* data = nullptr;
-    std::uint64_t generation = 0;
-    std::uint64_t first = 0;
-    std::uint64_t next = UINT64_MAX;
-    DWORD valid = 0;
-    ~Buffer() { if (data) VirtualFree(data, 0, MEM_RELEASE); }
-};
-
-std::shared_ptr<Source> Find(int descriptor) {
-    if (!Enabled()) return {};
-    std::lock_guard lock(source_mutex);
-    const auto found = sources.find(descriptor);
-    return found == sources.end() ? nullptr : found->second;
-}
-
-std::int64_t NativeRead(HANDLE handle, void* target, DWORD bytes, std::uint64_t offset) {
-    OVERLAPPED at{};
-    at.Offset = static_cast<DWORD>(offset);
-    at.OffsetHigh = static_cast<DWORD>(offset >> 32);
-    DWORD got = 0;
-    DWORD error = ERROR_SUCCESS;
-    {
-        KernelDiagScope diag(static_cast<KernelDiagZone>(85), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(bytes)));
-        if (!::ReadFile(handle, target, bytes, &got, &at)) error = ::GetLastError();
-    }
-    if (error == ERROR_SUCCESS) return got;
-    ::SetLastError(error);
-    if (error == ERROR_HANDLE_EOF) return 0;
-    errno = EIO;
-    return -1;
-}
-
-std::int64_t Read(const std::shared_ptr<Source>& source, HANDLE original,
-                  void* target, DWORD bytes, std::uint64_t offset) {
-    if (!source) return NativeRead(original, target, bytes, offset);
-    static thread_local Buffer buffer;
-    if (buffer.generation != source->generation) {
-        buffer.generation = source->generation;
-        buffer.valid = 0;
-        buffer.next = UINT64_MAX;
-    }
-    const bool sequential = buffer.next == offset && bytes >= 32768 && bytes <= 131072;
-    buffer.next = bytes && offset <= UINT64_MAX - bytes ? offset + bytes : UINT64_MAX;
-    if (bytes && offset >= buffer.first && offset - buffer.first < buffer.valid &&
-        bytes <= buffer.valid - (offset - buffer.first)) {
-        std::memcpy(target, static_cast<const char*>(buffer.data) + (offset - buffer.first), bytes);
-        KernelDiagMark(static_cast<KernelDiagZone>(86), bytes);
-        return bytes;
-    }
-    if (sequential) {
-        if (!buffer.data) buffer.data = VirtualAlloc(nullptr, Capacity, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-        if (buffer.data) {
-            buffer.valid = 0;
-            const auto got = NativeRead(source->handle, buffer.data, Capacity, offset);
-            if (got >= 0) {
-                buffer.first = offset;
-                buffer.valid = static_cast<DWORD>(got);
-                const auto delivered = std::min(bytes, buffer.valid);
-                std::memcpy(target, buffer.data, delivered);
-                return delivered;
-            }
-        }
-    }
-    return NativeRead(source->handle, target, bytes, offset);
-}
-}
-
-void Register(int descriptor, const char* path, int flags) noexcept {
-    if (!Enabled() || !path || descriptor < 0 ||
-        (flags & (SCE_KERNEL_O_ACCMODE | SCE_KERNEL_O_CREAT | SCE_KERNEL_O_TRUNC | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT))) return;
-    try {
-        const auto guest = std::filesystem::path(path).lexically_normal().generic_string();
-        if (!guest.starts_with("/app0/contents/") || !guest.ends_with(".vol")) return;
-        const HANDLE original = reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor));
-        if (original == INVALID_HANDLE_VALUE || GetFileType(original) != FILE_TYPE_DISK) return;
-        auto source = std::make_shared<Source>();
-        source->handle = ReOpenFile(original, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, 0);
-        if (source->handle == INVALID_HANDLE_VALUE) return;
-        source->generation = next_generation.fetch_add(1, std::memory_order_relaxed);
-        {
-            std::lock_guard lock(source_mutex);
-            sources[descriptor] = source;
-        }
-        std::fprintf(stderr, "[read-ahead] fd %d generation %llu: %s (256 KiB, read-only)\n",
-                     descriptor, static_cast<unsigned long long>(source->generation), guest.c_str());
-    } catch (...) {
-    }
-}
-
-void Forget(int descriptor) {
-    if (!Enabled()) return;
-    std::lock_guard lock(source_mutex);
-    sources.erase(descriptor);
-}
-}
-
 static int NativeRmdir(const std::filesystem::path& path) {
     return ::_wrmdir(path.wstring().c_str());
 }
@@ -197,9 +75,20 @@ static std::int64_t NativePositioned(int descriptor, void* buf, std::size_t nbyt
                            (static_cast<std::uint64_t>(descriptor) << 48) |
                            static_cast<std::uint64_t>(offset));
         }
-        const auto source = ReadAhead::Find(descriptor);
         return ReadIntoGuest(buf, nbytes, [&](void* target) -> std::int64_t {
-            return ReadAhead::Read(source, handle, target, static_cast<DWORD>(nbytes), offset);
+            OVERLAPPED at = overlapped;
+            DWORD got = 0;
+            DWORD error = ERROR_SUCCESS;
+            {
+                // The host read alone, for the read diagnostics (zone 85).
+                KernelDiagScope diag(static_cast<KernelDiagZone>(85), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(nbytes)));
+                if (!::ReadFile(handle, target, static_cast<DWORD>(nbytes), &got, &at)) error = ::GetLastError();
+            }
+            if (error == ERROR_SUCCESS) return got;
+            ::SetLastError(error);
+            if (error == ERROR_HANDLE_EOF) return 0;
+            errno = EIO;
+            return -1;
         });
     }
     if (!::WriteFile(handle, buf, static_cast<DWORD>(nbytes), &done, &overlapped)) {
@@ -281,7 +170,6 @@ int APS5_VABI chmod_nid_postfix(const char* path, int mode) {
 int APS5_VABI close_nid_postfix(int d) {
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Close(d);
 #ifdef _WIN32
-    ReadAhead::Forget(d);
     return _close(d);
 #else
     return ::close(d);
