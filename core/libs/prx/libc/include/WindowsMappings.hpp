@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -17,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include "MappingDiagnostics.hpp"
 
 namespace GuestArena {
 
@@ -105,28 +107,30 @@ public:
                     invalidate(*mapped->second.page);
                 }
                 DWORD previous;
-                if (!VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous)) fail("protect guest memory");
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::Protect, [&] { return VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous); })) fail("protect guest memory");
                 cursor = stop;
             }
         }
     }
 
     void Reset(void* address, std::size_t bytes) {
+        MappingDiagnostics::Scope diagnostic(mapping_diagnostic, 2, reinterpret_cast<std::uintptr_t>(address), bytes);
         Lock lock(*this);
+        diagnostic.Locked();
         reset(reinterpret_cast<std::uintptr_t>(address), bytes);
     }
 
     void Map(void* address, std::size_t bytes, HANDLE section, std::uint64_t offset, DWORD protection) {
+        MappingDiagnostics::Scope diagnostic(mapping_diagnostic, 1, reinterpret_cast<std::uintptr_t>(address), bytes);
         Lock lock(*this);
+        diagnostic.Locked();
         auto cursor = reinterpret_cast<std::uintptr_t>(address);
         // RyGT7: GT7 maps thousands of 64 KB pages of direct memory at the start of a race, each into
         // free placeholder space. Then one query, at most two placeholder splits, the map and the
         // protection suffice; reset() and split() would query the same placeholder about ten times.
         const bool placeholder = carvePlaceholder(cursor, bytes);
         if (!placeholder) reset(cursor, bytes);
-        HANDLE duplicate = nullptr;
-        if (!DuplicateHandle(GetCurrentProcess(), section, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) fail("keep shared guest section");
-        const auto owned = std::make_shared<Section>(duplicate);
+        const auto owned = KeepSection(section);
         // RyGT: the whole range as one view (one placeholder replaced, one protection call). Mapping
         // 16 KB at a time took five or six Windows calls per page, and GT Sport maps hundreds of MB
         // while it streams a track: up to seconds of stalls on Nurburgring 24h. reset() splits a
@@ -134,17 +138,18 @@ public:
         // FIX-GT7-105: as views of at most viewChunk bytes (see mapViews).
         bool whole = false;
         if (bytes > pageBytes) {
-            if (!placeholder) split(cursor, bytes);
+            if (!placeholder && !reuse_region_queries) split(cursor, bytes);
             whole = mapViews(section, cursor, offset, bytes, protection);
         }
         for (std::size_t done = 0; done < bytes; done += pageBytes) {
             void* page = reinterpret_cast<void*>(cursor + done);
             if (!whole) {
-                split(cursor + done, pageBytes);
-                if (!map(section, GetCurrentProcess(), page, offset + done, pageBytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0)) fail("map shared guest page");
+                if (!reuse_region_queries || bytes != pageBytes) split(cursor + done, pageBytes);
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::MapView, [&] { return map(section, GetCurrentProcess(), page, offset + done, pageBytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0); })) fail("map shared guest page");
                 DWORD previous;
-                if (!VirtualProtect(page, pageBytes, protection, &previous)) fail("protect shared guest page");
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::Protect, [&] { return VirtualProtect(page, pageBytes, protection, &previous); })) fail("protect shared guest page");
             }
+            MappingDiagnostics::Interval metadata_time(MappingDiagnostics::Metadata);
             const auto key = std::make_pair(reinterpret_cast<std::uintptr_t>(section), offset + done);
             auto shared = physical[key].lock();
             if (!shared) {
@@ -153,7 +158,10 @@ public:
             }
             const auto base = cursor + done;
             shared->aliases.push_back(base);
-            views.emplace(base, View{shared, protection, 0, false, owned, offset + done});
+            const auto native = whole ? viewBounds(cursor, bytes, base)
+                                      : std::make_pair(base, base + pageBytes);
+            views.emplace(base, View{shared, protection, 0, false, owned, offset + done,
+                                     native.first, native.second});
             invalidate(*shared);
         }
     }
@@ -175,7 +183,7 @@ public:
         auto& view = found->second;
         invalidate(*view.page);
         DWORD previous;
-        if (!VirtualProtect(reinterpret_cast<void*>(base), pageBytes, view.protection, &previous)) fail("resume shared memory write");
+        if (!MappingDiagnostics::Measure(MappingDiagnostics::Protect, [&] { return VirtualProtect(reinterpret_cast<void*>(base), pageBytes, view.protection, &previous); })) fail("resume shared memory write");
         view.armed = false;
         return true;
     }
@@ -195,7 +203,7 @@ public:
         std::lock_guard lock(mutex, std::adopt_lock);
         if (reservationEnd(address) <= address) return false;
         MEMORY_BASIC_INFORMATION memory{};
-        if (VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) != sizeof(memory)) return false;
+        if (MappingDiagnostics::Measure(MappingDiagnostics::Query, [&] { return VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)); }) != sizeof(memory)) return false;
         if (memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) return false;
         const DWORD protection = memory.Protect & 0xff;
         if (!write) return true;
@@ -222,7 +230,7 @@ public:
             if (view->second.section != section && !sameSection(view->second.section->handle, section->handle)) throw refuse("the range spans several sections");
         }
         const auto lead = offset % system.dwAllocationGranularity;
-        void* alias = map(section->handle, GetCurrentProcess(), nullptr, offset - lead, lead + bytes, 0, PAGE_READWRITE, nullptr, 0);
+        void* alias = MappingDiagnostics::Measure(MappingDiagnostics::MapView, [&] { return map(section->handle, GetCurrentProcess(), nullptr, offset - lead, lead + bytes, 0, PAGE_READWRITE, nullptr, 0); });
         if (alias == nullptr) {
             char text[160];
             std::snprintf(text, sizeof(text), "MapViewOfFile3 of a read-write alias of shared guest memory 0x%llx+0x%llx", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes));
@@ -236,7 +244,7 @@ public:
         SYSTEM_INFO system{};
         GetSystemInfo(&system);
         const auto base = reinterpret_cast<std::uintptr_t>(alias) & ~(static_cast<std::uintptr_t>(system.dwAllocationGranularity) - 1);
-        if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(base), 0)) fail("unmap shared guest alias");
+        if (!MappingDiagnostics::Measure(MappingDiagnostics::UnmapView, [&] { return unmap(GetCurrentProcess(), reinterpret_cast<void*>(base), 0); })) fail("unmap shared guest alias");
     }
 
     bool Protection(std::uintptr_t address, std::uint32_t* protection) {
@@ -281,7 +289,7 @@ public:
                         if (!writable(other.protection) || other.armed) continue;
                         DWORD previous;
                         const DWORD protection = other.protection == PAGE_EXECUTE_READWRITE ? PAGE_EXECUTE_READ : PAGE_READONLY;
-                        if (!VirtualProtect(reinterpret_cast<void*>(alias), pageBytes, protection, &previous)) fail("arm shared memory write tracking");
+                        if (!MappingDiagnostics::Measure(MappingDiagnostics::Protect, [&] { return VirtualProtect(reinterpret_cast<void*>(alias), pageBytes, protection, &previous); })) fail("arm shared memory write tracking");
                         other.armed = true;
                     }
                     view.seen = view.page->generation;
@@ -324,6 +332,10 @@ private:
         bool armed;
         std::shared_ptr<Section> section;
         std::uint64_t offset;
+        // Native allocation boundaries, independent of protection regions. Only this
+        // class maps/unmaps these views, under Lock; partial remaps replace both bounds.
+        std::uintptr_t native_base;
+        std::uintptr_t native_end;
     };
     void forgetClean(std::uintptr_t start, std::uintptr_t end) {
         auto it = cleanRanges.lower_bound(start);
@@ -354,7 +366,7 @@ private:
     }
 
     bool sameSection(HANDLE first, HANDLE second) const {
-        return compare != nullptr && compare(first, second);
+        return compare != nullptr && MappingDiagnostics::Measure(MappingDiagnostics::Compare, [&] { return compare(first, second); });
     }
 
     static bool writable(DWORD protection) {
@@ -366,6 +378,14 @@ private:
     using CompareFunction = BOOL (WINAPI*)(HANDLE, HANDLE);
 
     WindowsMappings() {
+        const char* value = std::getenv("RYGT_FAST_NATIVE_MAPPINGS");
+        const bool combined = value && value[0] == '1';
+        const char* queries = std::getenv("RYGT_MAPPING_QUERY_REUSE");
+        const char* handles = std::getenv("RYGT_MAPPING_HANDLE_REUSE");
+        reuse_region_queries = queries ? queries[0] == '1' : combined;
+        reuse_section_handles = handles ? handles[0] == '1' : combined;
+        const char* bounds = std::getenv("RYGT_MAPPING_VIEW_BOUNDS");
+        reuse_view_bounds = bounds && bounds[0] == '1';
         const auto module = GetModuleHandleW(L"KernelBase.dll");
         if (!module) fail("load Windows memory API");
         allocate = reinterpret_cast<AllocateFunction>(GetProcAddress(module, "VirtualAlloc2"));
@@ -410,15 +430,15 @@ private:
         const auto end = address + bytes;
         for (auto cursor = address; cursor < end;) {
             const auto stop = viewBounds(address, bytes, cursor).second;
-            if (stop != end && !VirtualFree(reinterpret_cast<void*>(cursor), stop - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder into views");
-            if (!map(section, GetCurrentProcess(), reinterpret_cast<void*>(cursor), offset + (cursor - address), stop - cursor, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0)) {
+            if (stop != end && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(cursor), stop - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder into views");
+            if (!MappingDiagnostics::Measure(MappingDiagnostics::MapView, [&] { return map(section, GetCurrentProcess(), reinterpret_cast<void*>(cursor), offset + (cursor - address), stop - cursor, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0); })) {
                 for (auto done = address; done < cursor; done = viewBounds(address, bytes, done).second) {
-                    if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(done), MEM_PRESERVE_PLACEHOLDER)) fail("unmap shared guest view");
+                    if (!MappingDiagnostics::Measure(MappingDiagnostics::UnmapView, [&] { return unmap(GetCurrentProcess(), reinterpret_cast<void*>(done), MEM_PRESERVE_PLACEHOLDER); })) fail("unmap shared guest view");
                 }
                 return false;
             }
             DWORD previous;
-            if (!VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous)) fail("protect shared guest pages");
+            if (!MappingDiagnostics::Measure(MappingDiagnostics::Protect, [&] { return VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous); })) fail("protect shared guest pages");
             cursor = stop;
         }
         return true;
@@ -453,7 +473,7 @@ private:
             const auto stop = next == reservations.end() ? end : std::min(end, next->first);
             if (!allocate(GetCurrentProcess(), reinterpret_cast<void*>(cursor), stop - cursor,
                           MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0)) {
-                for (const auto& [base, limit] : added) VirtualFree(reinterpret_cast<void*>(base), 0, MEM_RELEASE);
+                for (const auto& [base, limit] : added) MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(base), 0, MEM_RELEASE); });
                 return false;
             }
             added.emplace_back(cursor, stop);
@@ -494,7 +514,7 @@ private:
 
     static MEMORY_BASIC_INFORMATION query(std::uintptr_t address) {
         MEMORY_BASIC_INFORMATION memory{};
-        if (VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) != sizeof(memory)) fail("query guest memory");
+        if (MappingDiagnostics::Measure(MappingDiagnostics::Query, [&] { return VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)); }) != sizeof(memory)) fail("query guest memory");
         return memory;
     }
 
@@ -508,8 +528,8 @@ private:
         const auto placeholderEnd = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
         if (memory.State != MEM_RESERVE || placeholderEnd < end) return false;
         const auto placeholderBase = reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
-        if (placeholderBase != address && !VirtualFree(reinterpret_cast<void*>(placeholderBase), address - placeholderBase, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder prefix");
-        if (placeholderEnd != end && !VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder suffix");
+        if (placeholderBase != address && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(placeholderBase), address - placeholderBase, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder prefix");
+        if (placeholderEnd != end && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder suffix");
         forgetClean(address, end);
         return true;
     }
@@ -520,14 +540,18 @@ private:
         if (memory.State != MEM_RESERVE) throw std::runtime_error("guest mapping requires a placeholder");
         const auto base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
         if (address != base) {
-            if (!VirtualFree(reinterpret_cast<void*>(base), address - base, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder prefix");
+            if (!MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(base), address - base, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder prefix");
             memory = query(address);
         }
         if (memory.RegionSize < bytes) throw std::runtime_error("guest placeholder is too small");
-        if (memory.RegionSize != bytes && !VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder suffix");
+        if (memory.RegionSize != bytes && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder suffix");
     }
 
     void reset(std::uintptr_t address, std::size_t bytes) {
+        if (reuse_region_queries) {
+            ResetFast(address, bytes);
+            return;
+        }
         requireOwned(address, bytes);
         const auto end = address + bytes;
         forgetClean(address, end);
@@ -547,7 +571,7 @@ private:
             } while (allocationEnd < end);
             if (allocationEnd > end || query(allocationEnd).AllocationBase == memory.AllocationBase) throw std::runtime_error("guest release truncates a host allocation");
             if (memory.Type == MEM_MAPPED) {
-                if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(cursor), MEM_PRESERVE_PLACEHOLDER)) fail("unmap shared guest page");
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::UnmapView, [&] { return unmap(GetCurrentProcess(), reinterpret_cast<void*>(cursor), MEM_PRESERVE_PLACEHOLDER); })) fail("unmap shared guest page");
                 for (auto page = cursor; page < allocationEnd; page += pageBytes) {
                     const auto found = views.find(page);
                     if (found != views.end()) {
@@ -556,7 +580,7 @@ private:
                     }
                 }
             } else if (memory.Type == MEM_PRIVATE) {
-                if (!VirtualFree(reinterpret_cast<void*>(cursor), allocationEnd - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("release private guest memory");
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(cursor), allocationEnd - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("release private guest memory");
             } else {
                 throw std::runtime_error("unsupported guest mapping type");
             }
@@ -567,21 +591,27 @@ private:
         if (lastBase + last.RegionSize > end) split(lastBase, end - lastBase);
         const auto first = query(address);
         split(address, std::min(bytes, reinterpret_cast<std::uintptr_t>(first.BaseAddress) + first.RegionSize - address));
-        if (query(address).RegionSize != bytes && !VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS)) fail("coalesce guest placeholders");
+        if (query(address).RegionSize != bytes && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS); })) fail("coalesce guest placeholders");
     }
 
     /// RyGT: a view that `[start, end)` releases only part of (it starts before `start` or ends after
     /// `end`) is unmapped whole and the parts of it outside the range are mapped again, page
     /// bookkeeping and protections included. False when the view lies inside the range.
-    bool splitView(std::uintptr_t start, std::uintptr_t end) {
-        const auto memory = query(start);
+    [[gnu::used, gnu::noinline]] bool splitView(std::uintptr_t start, std::uintptr_t end) {
+        return SplitViewKnown(start, end, nullptr, nullptr);
+    }
+
+    bool SplitViewKnown(std::uintptr_t start, std::uintptr_t end,
+                   const MEMORY_BASIC_INFORMATION* known = nullptr, std::uintptr_t* limit = nullptr) {
+        const auto memory = known ? *known : query(start);
         const auto viewBase = reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
-        auto viewEnd = viewBase;
+        auto viewEnd = known ? reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize : viewBase;
         for (;;) {
             const auto part = query(viewEnd);
             if (part.AllocationBase != memory.AllocationBase || part.State == MEM_FREE) break;
             viewEnd = reinterpret_cast<std::uintptr_t>(part.BaseAddress) + part.RegionSize;
         }
+        if (limit) *limit = viewEnd;
         if (viewBase >= start && viewEnd <= end) return false;
         std::vector<std::pair<std::uintptr_t, View>> keep;
         for (auto page = viewBase; page < viewEnd; page += pageBytes) {
@@ -591,7 +621,7 @@ private:
             std::erase(found->second.page->aliases, page);
             views.erase(found);
         }
-        if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(viewBase), MEM_PRESERVE_PLACEHOLDER)) fail("unmap shared guest view");
+        if (!MappingDiagnostics::Measure(MappingDiagnostics::UnmapView, [&] { return unmap(GetCurrentProcess(), reinterpret_cast<void*>(viewBase), MEM_PRESERVE_PLACEHOLDER); })) fail("unmap shared guest view");
         for (std::size_t i = 0; i < keep.size();) {
             // One view per run of consecutive pages of one section at consecutive offsets.
             std::size_t j = i + 1;
@@ -602,8 +632,9 @@ private:
             }
             const auto runBase = keep[i].first;
             const auto runBytes = (j - i) * pageBytes;
-            split(runBase, runBytes);
-            if (!map(keep[i].second.section->handle, GetCurrentProcess(), reinterpret_cast<void*>(runBase), keep[i].second.offset, runBytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0)) fail("map shared guest view again");
+            if (reuse_region_queries) SplitKnown(runBase, runBytes, query(runBase));
+            else split(runBase, runBytes);
+            if (!MappingDiagnostics::Measure(MappingDiagnostics::MapView, [&] { return map(keep[i].second.section->handle, GetCurrentProcess(), reinterpret_cast<void*>(runBase), keep[i].second.offset, runBytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0); })) fail("map shared guest view again");
             // One protection call per run of pages that end up alike: per page, a remap of a large
             // view took thousands of calls, and the kept pages are missing until it is done.
             const auto effective = [](const View& view) {
@@ -615,11 +646,13 @@ private:
                 std::size_t l = k + 1;
                 while (l < j && effective(keep[l].second) == protection) ++l;
                 DWORD previous;
-                if (!VirtualProtect(reinterpret_cast<void*>(keep[k].first), (l - k) * pageBytes, protection, &previous)) fail("protect shared guest page again");
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::Protect, [&] { return VirtualProtect(reinterpret_cast<void*>(keep[k].first), (l - k) * pageBytes, protection, &previous); })) fail("protect shared guest page again");
                 k = l;
             }
             for (std::size_t k = i; k < j; ++k) {
                 auto& [page, view] = keep[k];
+                view.native_base = runBase;
+                view.native_end = runBase + runBytes;
                 view.page->aliases.push_back(page);
                 views.emplace(page, view);
             }
@@ -628,6 +661,106 @@ private:
         return true;
     }
 
+    std::shared_ptr<Section> KeepSection(HANDLE source) {
+        if (reuse_section_handles && source == recent_source) {
+            auto owned = recent_section.lock();
+            if (owned && sameSection(source, owned->handle)) return owned;
+        }
+        HANDLE duplicate = nullptr;
+        if (!MappingDiagnostics::Measure(MappingDiagnostics::Duplicate, [&] { return DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS); })) fail("keep shared guest section");
+        std::shared_ptr<Section> owned;
+        try {
+            owned = std::make_shared<Section>(duplicate);
+        } catch (...) {
+            CloseHandle(duplicate);
+            throw;
+        }
+        if (reuse_section_handles) {
+            recent_source = source;
+            recent_section = owned;
+        }
+        return owned;
+    }
+
+    static void SplitKnown(std::uintptr_t address, std::size_t bytes, const MEMORY_BASIC_INFORMATION& memory) {
+        const auto base = reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
+        const auto limit = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+        if (memory.State != MEM_RESERVE || base > address || address >= limit || bytes > limit - address) {
+            throw std::runtime_error("guest placeholder is too small");
+        }
+        if (base != address && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(base), address - base, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder prefix");
+        if (address + bytes != limit && !MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("split guest placeholder suffix");
+    }
+
+    void ResetFast(std::uintptr_t address, std::size_t bytes) {
+        requireOwned(address, bytes);
+        const auto end = address + bytes;
+        forgetClean(address, end);
+        for (auto cursor = address; cursor < end;) {
+            const auto tracked = reuse_view_bounds ? views.find(cursor) : views.end();
+            if (tracked != views.end() && tracked->second.native_base == cursor &&
+                tracked->second.native_end <= end) {
+                const auto stop = tracked->second.native_end;
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::UnmapView, [&] { return unmap(GetCurrentProcess(), reinterpret_cast<void*>(cursor), MEM_PRESERVE_PLACEHOLDER); })) fail("unmap tracked shared guest view");
+                for (auto it = tracked; it != views.end() && it->first < stop;) {
+                    std::erase(it->second.page->aliases, it->first);
+                    it = views.erase(it);
+                }
+                cursor = stop;
+                continue;
+            }
+            const auto memory = query(cursor);
+            auto allocation_end = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+            if (memory.State == MEM_RESERVE) {
+                cursor = std::min(end, allocation_end);
+                continue;
+            }
+            if (memory.Type == MEM_MAPPED) {
+                if (SplitViewKnown(cursor, end, &memory, &allocation_end)) continue;
+            } else {
+                for (;;) {
+                    const auto next = query(allocation_end);
+                    if (next.AllocationBase != memory.AllocationBase) break;
+                    if (allocation_end >= end) throw std::runtime_error("guest release truncates a host allocation");
+                    allocation_end = reinterpret_cast<std::uintptr_t>(next.BaseAddress) + next.RegionSize;
+                }
+            }
+            if (reinterpret_cast<std::uintptr_t>(memory.AllocationBase) != cursor) throw std::runtime_error("cannot release part of a host allocation");
+            if (allocation_end > end) throw std::runtime_error("guest release truncates a host allocation");
+            if (memory.Type == MEM_MAPPED) {
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::UnmapView, [&] { return unmap(GetCurrentProcess(), reinterpret_cast<void*>(cursor), MEM_PRESERVE_PLACEHOLDER); })) fail("unmap shared guest page");
+                for (auto it = views.lower_bound(cursor); it != views.end() && it->first < allocation_end;) {
+                    std::erase(it->second.page->aliases, it->first);
+                    it = views.erase(it);
+                }
+            } else if (memory.Type == MEM_PRIVATE) {
+                if (!MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(cursor), allocation_end - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); })) fail("release private guest memory");
+            } else {
+                throw std::runtime_error("unsupported guest mapping type");
+            }
+            cursor = allocation_end;
+        }
+        const auto first = query(address);
+        const auto first_end = reinterpret_cast<std::uintptr_t>(first.BaseAddress) + first.RegionSize;
+        if (first_end >= end) {
+            SplitKnown(address, bytes, first);
+            return;
+        }
+        const auto last = query(end - 1);
+        if (reinterpret_cast<std::uintptr_t>(last.BaseAddress) + last.RegionSize > end) {
+            const auto last_base = reinterpret_cast<std::uintptr_t>(last.AllocationBase);
+            SplitKnown(last_base, end - last_base, last);
+        }
+        SplitKnown(address, first_end - address, first);
+        if (!MappingDiagnostics::Measure(MappingDiagnostics::Placeholder, [&] { return VirtualFree(reinterpret_cast<void*>(address), bytes, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS); })) fail("coalesce guest placeholders");
+    }
+
+    MappingDiagnostics::Store mapping_diagnostic;
+    bool reuse_region_queries = false;
+    bool reuse_section_handles = false;
+    bool reuse_view_bounds = false;
+    HANDLE recent_source = nullptr;
+    std::weak_ptr<Section> recent_section;
     std::map<std::uintptr_t, std::uintptr_t> reservations;
     std::size_t viewChunk = ViewChunkFromEnvironment(); // FIX-GT7-105
     std::size_t allocationGranularity = 0;
