@@ -856,9 +856,13 @@ int DoMunmap(void* addr, size_t len) {
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
     FlushPendingUnmaps(addr, len); // PERF-GT7-092
-    // PERF-GT7-090: adjacent guest arena pieces go to libc as one range once the registry is done
-    // (the same unmap: a run mapped as one native view and released part by part was split again
-    // for every part, quadratic in its length).
+    // PERF-GT7-090 (RYGT_BATCHMAP_MERGE=2): adjacent guest arena pieces go to libc as one range
+    // once the registry is done (the same unmap: a run mapped as one native view and released part
+    // by part was split again for every part, quadratic in its length).
+    static const bool mergePieces = [] {
+        const char* value = std::getenv("RYGT_BATCHMAP_MERGE");
+        return value && std::atoi(value) >= 2;
+    }();
     std::uintptr_t arenaBegin = 0;
     std::uintptr_t arenaEnd = 0;
     const auto flushArena = [&] {
@@ -875,6 +879,10 @@ int DoMunmap(void* addr, size_t len) {
 #if defined(__linux__)
         Unmap(pieceAddress, pieceBytes);
 #else
+        if (KernelArena::Get().Contains(pieceAddress, pieceBytes) && !mergePieces) {
+            munmap(pieceAddress, pieceBytes);
+            return;
+        }
         if (KernelArena::Get().Contains(pieceAddress, pieceBytes)) {
             const auto begin = reinterpret_cast<std::uintptr_t>(piece);
             if (arenaEnd != begin) flushArena();
