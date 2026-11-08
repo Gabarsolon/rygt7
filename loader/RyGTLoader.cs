@@ -2030,12 +2030,12 @@ namespace RyGT
             // RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC). It fixes some AMD rendering glitches but makes shader
             // loading slower; other GPUs ignore it.
             AddOption(graphics, "AMD graphics fix (AMD GPUs only; slower shader loading)", "GPU", "amd_graphics_fix", false);
+            // A tester's RX 6000 series card crashed loading into races with it on (2026-10-30).
+            graphics.Controls.Add(Hint("Can crash RX 6000 series GPUs when loading into a race. If the game crashes when a race loads, turn this off."));
             // PERF-GT7-111/117: shader pre-translation (RYGT_MANIFEST_RECORD / RYGT_MANIFEST_PRETRANSLATE).
             AddOption(graphics, "Rebuild translated shaders in the background after a renderer update (about 30 MB a track)", "GPU", "shader_pretranslate", false);
             // PERF-GT7-108: the compile pack (RYGT_COMPILE_PACK).
             AddOption(graphics, "Compile the shaders already seen on this PC at start, after a driver update (background, pauses in races)", "GPU", "compile_pack", false);
-            // A tester's RX 6000 series card crashed loading into races with it on (2026-10-30).
-            graphics.Controls.Add(Hint("Can crash RX 6000 series GPUs when loading into a race. If the game crashes when a race loads, turn this off."));
             fpsLock.SelectedIndexChanged += delegate
             {
                 try { WriteSetting("GPU", "race_fps_lock", fpsLock.SelectedIndex == 1 ? 60 : 30); }
@@ -3608,10 +3608,13 @@ namespace RyGT
                         // (shaders\<serial>.manifest) and its code (shaders\<serial>.capture, this PC's only);
                         // at start, the ones the shader store lacks (after a renderer update) are translated
                         // again in the background, so the races after an update start as warm ones.
-                        string pretranslate = GpuSetting(root, "shader_pretranslate") is bool &&
-                            (bool)GpuSetting(root, "shader_pretranslate") ? "1" : "0";
-                        start.EnvironmentVariables["RYGT_MANIFEST_RECORD"] = pretranslate;
-                        start.EnvironmentVariables["RYGT_MANIFEST_PRETRANSLATE"] = pretranslate;
+                        // Only when checked (like the compile pack below): a launcher script that
+                        // sets them itself keeps its setting.
+                        if (GpuSetting(root, "shader_pretranslate") is bool && (bool)GpuSetting(root, "shader_pretranslate"))
+                        {
+                            start.EnvironmentVariables["RYGT_MANIFEST_RECORD"] = "1";
+                            start.EnvironmentVariables["RYGT_MANIFEST_PRETRANSLATE"] = "1";
+                        }
                         // PERF-GT7-108 from the Graphics page: the pipelines this PC's driver cache lacks (after
                         // a driver update) are compiled at start from the recipes kept in the compile pack.
                         // Only when checked: Jouer-Compile-Pack.cmd sets it itself before starting this launcher.
