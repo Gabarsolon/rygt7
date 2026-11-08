@@ -2030,6 +2030,8 @@ namespace RyGT
             // RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC). It fixes some AMD rendering glitches but makes shader
             // loading slower; other GPUs ignore it.
             AddOption(graphics, "AMD graphics fix (AMD GPUs only; slower shader loading)", "GPU", "amd_graphics_fix", false);
+            // PERF-GT7-111/117: shader pre-translation (RYGT_MANIFEST_RECORD / RYGT_MANIFEST_PRETRANSLATE).
+            AddOption(graphics, "Rebuild translated shaders in the background after a renderer update (about 30 MB a track)", "GPU", "shader_pretranslate", false);
             // A tester's RX 6000 series card crashed loading into races with it on (2026-10-30).
             graphics.Controls.Add(Hint("Can crash RX 6000 series GPUs when loading into a race. If the game crashes when a race loads, turn this off."));
             fpsLock.SelectedIndexChanged += delegate
@@ -3600,6 +3602,14 @@ namespace RyGT
                         start.EnvironmentVariables["RYGT_DRIVER_CACHE_MAX_MB"] = DriverCacheMaxMb(root).ToString();
                         start.EnvironmentVariables["RYGT_AMD_SINGLE_SAMPLE_BARYCENTRIC"] =
                             GpuSetting(root, "amd_graphics_fix") is bool && (bool)GpuSetting(root, "amd_graphics_fix") ? "1" : "0";
+                        // PERF-GT7-111/117 from the Graphics page: each shader translation leaves a record
+                        // (shaders\<serial>.manifest) and its code (shaders\<serial>.capture, this PC's only);
+                        // at start, the ones the shader store lacks (after a renderer update) are translated
+                        // again in the background, so the races after an update start as warm ones.
+                        string pretranslate = GpuSetting(root, "shader_pretranslate") is bool &&
+                            (bool)GpuSetting(root, "shader_pretranslate") ? "1" : "0";
+                        start.EnvironmentVariables["RYGT_MANIFEST_RECORD"] = pretranslate;
+                        start.EnvironmentVariables["RYGT_MANIFEST_PRETRANSLATE"] = pretranslate;
                         // DLSS frame multiplier from the Graphics page (generated frames, 1-5).
                         start.EnvironmentVariables["RYGT_DLSSG_FRAMES"] = DlssgFrames(root).ToString();
                         // Upscaling quality from the Graphics page (the size DLSS and FSR 3.1 scale to).
