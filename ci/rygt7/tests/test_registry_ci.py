@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -18,21 +19,27 @@ RENDERER = 'b' * 40
 
 class Validation(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.folder = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.summary = self.folder / 'summary'
+        self.output = self.folder / 'workflow-output'
         renderer = mock.patch.object(m, 'RENDERER', RENDERER)
         renderer.start(); self.addCleanup(renderer.stop)
         self.real_resolve_renderer = m.resolve_renderer
         resolver = mock.patch.object(m, 'resolve_renderer', return_value=RENDERER)
         resolver.start(); self.addCleanup(resolver.stop)
-        self.env = mock.patch.dict(os.environ, {'GITHUB_ACTIONS':'false'})
+        self.env = mock.patch.dict(os.environ, {
+            'GITHUB_ACTIONS':'false', 'GITHUB_STEP_SUMMARY':str(self.summary),
+            'GITHUB_OUTPUT':str(self.output), 'SOURCE_OVERRIDE_SHA':'',
+            'RENDERER_OVERRIDE_SHA':'', 'FORCE_BUILD':'false',
+        })
         self.env.start(); self.addCleanup(self.env.stop)
-        self.tmp = tempfile.TemporaryDirectory(); self.folder = Path(self.tmp.name)
         self.files = {name: b'fixture' for name in m.REQUIRED if name != 'BUILD_INFO.json'}
         for n in ('libc.prx','libkernel.prx','libScePad.prx'): self.files['libs/'+n]=b'fixture'
         self.info = {'schema': 1, 'rygt7_commit': COMMIT, 'renderer_commit': m.RENDERER,
                      'renderer_configured_url': m.CONFIGURED, 'renderer_fetch_url': m.FETCHED,
                      'base_url': m.BASE_URL, 'base_sha256': m.BASE, 'renderer_vma_patch': {'path':'externals/vma-patches/0001-trim-empty-default-blocks.patch','sha256':'989c12d4729935f11c05a13eeab0fc96fc99e53055c97bd0b81bce04448d6180','target':'include/vk_mem_alloc.h','verified':True}, 'ci_control': {'repository':None,'commit':None,'run_url':None,'attempt':None},
                      'runtime_files': {p: {'origin': ('shadgt7-source-build' if p.endswith('libSceVideoOut.prx') else 'rygt7-source-build'), 'sha256': m.digest(b'fixture')} for p in self.files if p.startswith('libs/')}}
-    def tearDown(self): self.tmp.cleanup()
     def write(self, extra=(), info=None, bad_hash=False):
         files = dict(self.files); files['BUILD_INFO.json'] = json.dumps(info or self.info).encode()
         records = [{'path': p, 'bytes': len(b), 'sha256': m.digest(b)} for p,b in files.items()]
@@ -114,6 +121,12 @@ class Validation(unittest.TestCase):
         self.assertEqual(written[0], 'CI-PENDING.json')
         self.assertEqual(len(written),4)
         self.assertTrue(all('/main-'+COMMIT+'-renderer-'+RENDERER+'/' in url for url in bodies))
+        summary = self.summary.read_text()
+        archive = self.folder / f'RyGT7-ci-{COMMIT[:8]}.zip'
+        self.assertIn(f'[`{COMMIT}`](https://gitlab.com/rygt-team/rygt7/-/commit/{COMMIT})', summary)
+        self.assertIn(f'[`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})', summary)
+        self.assertIn(f'SHA-256: `{m.digest(archive.read_bytes())}`', summary)
+        self.summary.unlink()
         written.clear()
         def broken(request,timeout=0):
             if isinstance(request,str): return Response(b'wrong')
@@ -121,6 +134,7 @@ class Validation(unittest.TestCase):
         with mock.patch.dict(os.environ, {'GITLAB_PACKAGE_TOKEN':'secret-value'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=broken):
             with self.assertRaises(ValueError): m.publish(self.folder,COMMIT)
         self.assertEqual(len(written),1)
+        self.assertFalse(self.summary.exists())
     def test_interrupted_forced_retry_requires_rebuild(self):
         self.write()
         old=json.loads((self.folder/'CI-BUILD.json').read_text())
@@ -137,6 +151,11 @@ class Validation(unittest.TestCase):
         with mock.patch.dict(os.environ, {'GITHUB_OUTPUT':str(output),'FORCE_BUILD':'false'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=calls): m.resolve()
         self.assertIn('needed=false',output.read_text())
         self.assertIn('renderer_commit='+RENDERER,output.read_text())
+        summary = self.summary.read_text()
+        self.assertIn(f'[`{COMMIT}`](https://gitlab.com/rygt-team/rygt7/-/commit/{COMMIT})', summary)
+        self.assertIn(f'[`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})', summary)
+        self.assertNotIn('/packages/generic/', summary)
+        self.assertNotIn('[ZIP]', summary)
     def test_resolve_missing_and_denied(self):
         class Response(io.BytesIO): pass
         url='https://example.invalid'
@@ -183,5 +202,21 @@ class Validation(unittest.TestCase):
         for invalid in ('', 'z'*40, 'a'*39):
             with mock.patch.object(m, 'RENDERER', invalid):
                 with self.assertRaises(ValueError): m.validate(self.folder, COMMIT)
+
+class WorkflowEnvironmentIsolation(unittest.TestCase):
+    def test_fixtures_do_not_write_hosted_workflow_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, output = root / 'host-summary', root / 'host-output'
+            summary.write_text('real hosted summary\n')
+            output.write_text('real_output=unchanged\n')
+            environment = dict(os.environ, GITHUB_ACTIONS='true',
+                               GITHUB_STEP_SUMMARY=str(summary), GITHUB_OUTPUT=str(output))
+            completed = subprocess.run([sys.executable, str(Path(__file__).resolve()), 'Validation'],
+                                       env=environment, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(summary.read_text(), 'real hosted summary\n')
+            self.assertEqual(output.read_text(), 'real_output=unchanged\n')
+
 
 if __name__ == '__main__': unittest.main()

@@ -58,19 +58,20 @@ fonts, saves, personal settings, logs and shader caches are excluded.
 
 ## Credentials and publication
 
-The GitHub repository secret `GITLAB_PACKAGE_TOKEN` is shared by both publishers
-and provided only to the final publish step in a fresh Linux job. Source builds
-and tests never receive it. Use an active `rygt-team` group deploy token with
-`read_package_registry` and `write_package_registry` scopes. A project-scoped
-RyGTS deploy token cannot publish to the sibling RyGT7 project.
-GitLab group CI/CD variables are not automatically injected into GitHub jobs.
-`GITHUB_ACTIONS_TOKEN` is a separate credential for GitHub access/dispatch.
+The RyGT7 GitHub repository secret `GITLAB_PACKAGE_TOKEN` is a project-scoped
+deploy token with `read_package_registry` and `write_package_registry` scopes.
+It is provided only to the final publish step in a fresh Linux job. Source builds
+and tests never receive it. The RyGTS publisher uses its own project credential;
+a RyGTS deploy token cannot publish to the sibling RyGT7 project. GitLab group
+CI/CD variables are not automatically injected into GitHub jobs. Renderer pushes
+call the runtime's reusable workflow; no scheduled polling or separate dispatch
+token is required.
 
 The trusted controller validates archive identity, every file hash, safe ZIP
 paths and build provenance before upload. It first uploads and verifies an
 attempt envelope as `CI-PENDING.json`, then uploads and verifies the archive and
-checksum; `CI-BUILD.json` is uploaded last as the completion marker. Scheduled
-checks skip only when the valid pending and completed envelopes match, including
+checksum; `CI-BUILD.json` is uploaded last as the completion marker. Source
+resolution skips only when the valid pending and completed envelopes match, including
 the run attempt. A failed forced rebuild therefore remains retryable rather than
 reusing a stale completion marker. Publication is not an atomic registry
 transaction; each upload and download must pass, including when registry files
