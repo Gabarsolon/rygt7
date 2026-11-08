@@ -76,7 +76,10 @@ jobs:
           Invoke-Checked "$ucrt/bin/cmake.exe" @('--build',$build,'--target','ryty','libs','ryty-wheel-probe','--parallel','4')
       - name: Compile launcher
         shell: cmd
-        run: loader\build.cmd "%RUNNER_TEMP%\pr-launcher"
+        run: |
+          if not exist "%RUNNER_TEMP%\pr-launcher" mkdir "%RUNNER_TEMP%\pr-launcher"
+          if errorlevel 1 exit /b 1
+          call loader\build.cmd "%RUNNER_TEMP%\pr-launcher"
       - name: Compile GT7 compatibility libraries
         shell: pwsh
         env:
