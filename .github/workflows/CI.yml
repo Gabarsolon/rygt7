@@ -1,9 +1,5 @@
 name: GT7 launcher checks
 on:
-  push:
-    branches: [main]
-    paths: ['loader/**', '.github/workflows/CI.yml']
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
