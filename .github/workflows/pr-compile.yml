@@ -30,6 +30,13 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
+      - name: Keep native and MSYS2 checkouts consistent
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf input
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot configure LF checkout policy' }
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enable long checkout paths' }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           submodules: recursive
