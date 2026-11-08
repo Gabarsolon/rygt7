@@ -68,6 +68,12 @@ def resolve():
     needed = needed or os.environ.get('FORCE_BUILD') == 'true'
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
         out.write(f'commit={commit}\nrenderer_commit={RENDERER}\nneeded={str(needed).lower()}\n')
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+            out.write('### Resolved build sources\n\n'
+                      f'- Source: [`{commit}`](https://gitlab.com/rygt-team/rygt7/-/commit/{commit})\n'
+                      f'- Renderer: [`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})\n'
+                      f'- Build needed: `{str(needed).lower()}`\n\n')
     print(f'Resolved GT7 main {commit}; shadgt7 main {RENDERER}')
 
 def digest(data):
@@ -150,6 +156,7 @@ def publish(folder, commit):
     validate(folder, commit)
     folder = Path(folder)
     name = f'RyGT7-ci-{commit[:8]}.zip'
+    archive_digest = json.loads((folder / 'CI-BUILD.json').read_text(encoding='utf-8-sig'))['archive']['sha256']
     base = PROJECT + '/packages/generic/ci/main-' + commit + '-renderer-' + RENDERER + '/'
     token = os.environ['GITLAB_PACKAGE_TOKEN']
     for filename in ('CI-PENDING.json', name, name + '.sha256', 'CI-BUILD.json'):
@@ -168,7 +175,11 @@ def publish(folder, commit):
     print('GT7 package published and verified')
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
-            out.write(f'RyGT7 CI build `{commit}`, renderer `{RENDERER}`\n\n[Source](https://gitlab.com/rygt-team/rygt7/-/commit/{commit}) | [Renderer](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER}) | [ZIP]({base}{name}) | [SHA-256]({base}{name}.sha256)\n')
+            out.write('### Verified CI package\n\n'
+                      f'Source: [`{commit}`](https://gitlab.com/rygt-team/rygt7/-/commit/{commit})\n\n'
+                      f'Renderer: [`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})\n\n'
+                      f'[ZIP]({base}{name}) | [SHA-256 file]({base}{name}.sha256)\n\n'
+                      f'SHA-256: `{archive_digest}`\n')
 
 if __name__ == '__main__':
     if len(sys.argv) != 2: fail()
