@@ -38,6 +38,7 @@ jobs:
         with:
           python-version: '3.12'
       - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        id: msys2
         with:
           msystem: UCRT64
           location: C:/msys64
@@ -51,6 +52,8 @@ jobs:
             mingw-w64-ucrt-x86_64-pkgconf
       - name: Compile runtime DLLs, converter, wheel probe, and launcher
         shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           $ErrorActionPreference = 'Stop'
           function Invoke-Checked([string]$Program, [string[]]$Arguments) {
@@ -58,8 +61,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$Program failed with exit code $LASTEXITCODE" }
           }
           $nativePython = (Get-Command python.exe -CommandType Application).Source.Replace('\','/')
-          $ucrt = 'C:/msys64/ucrt64'
-          $env:PATH = "$ucrt/bin;C:/msys64/usr/bin;$env:PATH"
+          $msysRoot = $env:MSYS2_ROOT.Replace('\','/')
+          $ucrt = "$msysRoot/ucrt64"
+          $env:PATH = "$ucrt/bin;$msysRoot/usr/bin;$env:PATH"
           $build = Join-Path $env:RUNNER_TEMP 'pr-runtime-build'
           Invoke-Checked "$ucrt/bin/cmake.exe" @('-S','.','-B',$build,'-G','Ninja','-DCMAKE_BUILD_TYPE=Release','-DRTY_BUILD_GUI=OFF','-DBUILD_TESTING=OFF','-DRTY_ENABLE_LTO=OFF',"-DCMAKE_C_COMPILER=$ucrt/bin/gcc.exe","-DCMAKE_CXX_COMPILER=$ucrt/bin/g++.exe","-DPython3_EXECUTABLE=$nativePython")
           Invoke-Checked "$ucrt/bin/cmake.exe" @('--build',$build,'--target','ryty','libs','ryty-wheel-probe','--parallel','4')
@@ -68,6 +72,8 @@ jobs:
         run: loader\build.cmd "%RUNNER_TEMP%\pr-launcher"
       - name: Compile GT7 compatibility libraries
         shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -76,7 +82,8 @@ jobs:
           Import-Module (Join-Path $vs 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           $llvm = Join-Path $env:ProgramFiles 'LLVM/bin'
-          $env:PATH = "$llvm;C:/msys64/ucrt64/bin;$env:PATH"
+          $ucrtBin = Join-Path $env:MSYS2_ROOT 'ucrt64/bin'
+          $env:PATH = "$llvm;$ucrtBin;$env:PATH"
           foreach ($tool in @('clang.exe','llvm-lib.exe','lld-link.exe','gcc.exe')) {
             if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required compile-check tool missing: $tool" }
           }
