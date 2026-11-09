@@ -1,43 +1,36 @@
-import importlib.util
 import io
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 import urllib.error
+import sys
+from pathlib import Path
 
-HERE=Path(__file__).resolve().parents[1]
-HELPER=HERE / 'github_source.py'
-spec=importlib.util.spec_from_file_location('github_source_under_test', HELPER)
-source=importlib.util.module_from_spec(spec)
-spec.loader.exec_module(source)
-SHA='a'*40
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import github_source as source
+
+SHA = 'a' * 40
+API = 'https://api.github.com/repos/RyGT-Team/shadgt7'
 
 class GitHubSourceTests(unittest.TestCase):
-    def test_exact_revision_waits_for_relay(self):
-        missing=urllib.error.HTTPError('url',404,'Not Found',{},None)
-        response=io.BytesIO(json.dumps({'id':SHA}).encode())
-        with patch.object(source.urllib.request,'urlopen',side_effect=[missing,response]) as get, patch.object(source.time,'sleep') as sleep:
-            self.assertEqual(source.wait_for_commit('https://gitlab.test/api',SHA,attempts=2),SHA)
-        self.assertEqual(get.call_count,2)
-        self.assertTrue(get.call_args.args[0].endswith('/repository/commits/'+SHA))
-        sleep.assert_called_once_with(5)
-    def test_bad_revision_never_fetches(self):
-        with patch.object(source.urllib.request,'urlopen') as get:
-            for bad in ['', 'HEAD', '../main', 'A'*40, 'a'*39]:
-                with self.assertRaises(ValueError):source.wait_for_commit('api',bad)
+    def test_main_and_exact_sha(self):
+        for revision in ('main', SHA):
+            with patch.object(source.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps({'sha': SHA}).encode())) as get:
+                self.assertEqual(source.resolve_commit(API, revision), SHA)
+                self.assertEqual(get.call_args.args[0].full_url, API + '/commits/' + revision)
+
+    def test_invalid_revision_never_fetches(self):
+        with patch.object(source.urllib.request, 'urlopen') as get:
+            for bad in ('', 'HEAD', '../main', 'A'*40, 'a'*39):
+                with self.assertRaises(ValueError): source.resolve_commit(API, bad)
             get.assert_not_called()
+
+    def test_wrong_or_invalid_response_is_rejected(self):
+        for actual in ('b'*40, 'invalid'):
+            with patch.object(source.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps({'sha': actual}).encode())):
+                with self.assertRaises(ValueError): source.resolve_commit(API, SHA)
+
     def test_missing_revision_does_not_fall_back(self):
-        missing=urllib.error.HTTPError('url',404,'Not Found',{},None)
-        with patch.object(source.urllib.request,'urlopen',side_effect=missing), patch.object(source.time,'sleep'):
-            with self.assertRaisesRegex(RuntimeError,'did not deliver'):source.wait_for_commit('api',SHA,attempts=1)
-    def test_auth_failure_is_not_retried(self):
-        denied=urllib.error.HTTPError('url',403,'Forbidden',{},None)
-        with patch.object(source.urllib.request,'urlopen',side_effect=denied) as get, patch.object(source.time,'sleep') as sleep:
-            with self.assertRaises(urllib.error.HTTPError):source.wait_for_commit('api',SHA)
-            self.assertEqual(get.call_count,1)
-            sleep.assert_not_called()
-    def test_wrong_commit_is_rejected(self):
-        response=io.BytesIO(json.dumps({'id':'b'*40}).encode())
-        with patch.object(source.urllib.request,'urlopen',return_value=response):
-            with self.assertRaises(ValueError):source.wait_for_commit('api',SHA)
+        missing = urllib.error.HTTPError('url', 404, 'Not Found', {}, None)
+        with patch.object(source.urllib.request, 'urlopen', side_effect=missing):
+            with self.assertRaises(urllib.error.HTTPError): source.resolve_commit(API, SHA)

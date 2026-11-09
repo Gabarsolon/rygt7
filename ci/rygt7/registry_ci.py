@@ -1,7 +1,7 @@
 """Resolve trusted GT7 source and validate the complete CI artifact without extracting it."""
 import sys
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
-from github_source import wait_for_commit
+from github_source import resolve_commit
 import hashlib
 import json
 import os
@@ -13,14 +13,13 @@ import urllib.request
 import urllib.error
 import zipfile
 
-PROJECT = 'https://gitlab.com/api/v4/projects/88084032'
-API = PROJECT + '/repository/branches/main'
-RENDERER_API = 'https://gitlab.com/api/v4/projects/rygt-team%2Fshadgt7/repository/branches/main'
+API = 'https://api.github.com/repos/RyGT-Team/rygt7'
+RENDERER_API = 'https://api.github.com/repos/RyGT-Team/shadgt7'
 RENDERER = os.environ.get('RENDERER_SHA', '')
 BASE = 'd8efb3c45b9eb164a66330d60e68638ff3d2a2a74fd51680482e989791697d2e'
 BASE_URL = 'https://gitlab.com/api/v4/projects/88084032/packages/generic/rygt7/2026-10-31/RyGT7-2026-10-31-prerelease.zip'
-CONFIGURED = 'https://gitlab.com/rygt-team/shadgt7.git'
-FETCHED = 'https://gitlab.com/rygt-team/shadgt7.git'
+CONFIGURED = 'https://github.com/RyGT-Team/shadgt7.git'
+FETCHED = 'https://github.com/RyGT-Team/shadgt7.git'
 SHA = re.compile(r'^[0-9a-f]{40}$')
 DIGEST = re.compile(r'^[0-9a-f]{64}$')
 REQUIRED = {'RyGT7.exe', 'converter/ryty.exe', 'libs/libSceVideoOut.prx', 'libs/libSceFiber.prx', 'BUILD_INFO.json'}
@@ -30,49 +29,20 @@ def fail():
     raise ValueError('GT7 artifact validation failed')
 
 def resolve_renderer():
-    override = os.environ.get('RENDERER_OVERRIDE_SHA', '')
-    if override:
-        return wait_for_commit(RENDERER_API.rsplit('/repository/branches/', 1)[0], override)
-    with urllib.request.urlopen(RENDERER_API, timeout=60) as response:
-        commit = json.load(response)['commit']['id']
-    if not isinstance(commit, str) or not SHA.fullmatch(commit): fail()
-    return commit
+    return resolve_commit(RENDERER_API, os.environ.get('RENDERER_OVERRIDE_SHA', '') or 'main')
 
 def resolve():
     global RENDERER
     RENDERER = resolve_renderer()
-    commit = os.environ.get('SOURCE_OVERRIDE_SHA', '')
-    if commit:
-        commit = wait_for_commit(PROJECT, commit)
-    else:
-        with urllib.request.urlopen(API, timeout=60) as response:
-            commit = json.load(response)['commit']['id']
-    if not isinstance(commit, str) or not SHA.fullmatch(commit): fail()
-    url = PROJECT + '/packages/generic/ci/main-' + commit + '-renderer-' + RENDERER + '/CI-BUILD.json'
-    needed = False
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response: marker = json.load(response)
-        a = marker.get('archive', {})
-        if (marker.get('project') != 'rygt-team/rygt7' or marker.get('branch') != 'main' or marker.get('commit') != commit or marker.get('schema') != 1 or marker.get('renderer') != {'configured_repository': CONFIGURED, 'fetched_repository': FETCHED, 'commit': RENDERER} or marker.get('runtime_base') != {'url': BASE_URL, 'sha256': BASE} or marker.get('build_info') != 'BUILD_INFO.json' or a.get('name') != f'RyGT7-ci-{commit[:8]}.zip' or not DIGEST.fullmatch(a.get('sha256', ''))): fail()
-    except urllib.error.HTTPError as error:
-        if error.code != 404: raise
-        needed = True
-    if not needed:
-        try:
-            with urllib.request.urlopen(url.replace('CI-BUILD.json', 'CI-PENDING.json'), timeout=60) as response:
-                pending = json.load(response)
-            if pending != marker: needed = True
-        except urllib.error.HTTPError as error:
-            if error.code != 404: raise
-            needed = True
-    needed = needed or os.environ.get('FORCE_BUILD') == 'true'
+    commit = resolve_commit(API, os.environ.get('SOURCE_OVERRIDE_SHA', '') or 'main')
+    needed = True
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
         out.write(f'commit={commit}\nrenderer_commit={RENDERER}\nneeded={str(needed).lower()}\n')
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
             out.write('### Resolved build sources\n\n'
-                      f'- Source: [`{commit}`](https://gitlab.com/rygt-team/rygt7/-/commit/{commit})\n'
-                      f'- Renderer: [`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})\n'
+                      f'- Source: [`{commit}`](https://github.com/RyGT-Team/rygt7/commit/{commit})\n'
+                      f'- Renderer: [`{RENDERER}`](https://github.com/RyGT-Team/shadgt7/commit/{RENDERER})\n'
                       f'- Build needed: `{str(needed).lower()}`\n\n')
     print(f'Resolved GT7 main {commit}; shadgt7 main {RENDERER}')
 
@@ -152,38 +122,8 @@ def validate(folder, commit):
         if runtime.get('libs/libSceVideoOut.prx', {}).get('origin') != 'shadgt7-source-build': fail()
     print('GT7 artifact validated')
 
-def publish(folder, commit):
-    validate(folder, commit)
-    folder = Path(folder)
-    name = f'RyGT7-ci-{commit[:8]}.zip'
-    archive_digest = json.loads((folder / 'CI-BUILD.json').read_text(encoding='utf-8-sig'))['archive']['sha256']
-    base = PROJECT + '/packages/generic/ci/main-' + commit + '-renderer-' + RENDERER + '/'
-    token = os.environ['GITLAB_PACKAGE_TOKEN']
-    for filename in ('CI-PENDING.json', name, name + '.sha256', 'CI-BUILD.json'):
-        path = folder / ('CI-BUILD.json' if filename == 'CI-PENDING.json' else filename)
-        with path.open('rb') as data:
-            request = urllib.request.Request(base + filename, data=data, method='PUT', headers={
-                'DEPLOY-TOKEN': token, 'Content-Length': str(path.stat().st_size),
-                'Content-Type': 'application/octet-stream'})
-            with urllib.request.urlopen(request, timeout=600) as response:
-                if response.status != 201: fail()
-        with urllib.request.urlopen(base + filename, timeout=600) as response:
-            remote = hashlib.file_digest(response, 'sha256').hexdigest()
-        with path.open('rb') as data:
-            local = hashlib.file_digest(data, 'sha256').hexdigest()
-        if remote != local: fail()
-    print('GT7 package published and verified')
-    if os.environ.get('GITHUB_STEP_SUMMARY'):
-        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
-            out.write('### Verified CI package\n\n'
-                      f'Source: [`{commit}`](https://gitlab.com/rygt-team/rygt7/-/commit/{commit})\n\n'
-                      f'Renderer: [`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})\n\n'
-                      f'[ZIP]({base}{name}) | [SHA-256 file]({base}{name}.sha256)\n\n'
-                      f'SHA-256: `{archive_digest}`\n')
-
 if __name__ == '__main__':
     if len(sys.argv) != 2: fail()
     if sys.argv[1] == 'resolve': resolve()
     elif sys.argv[1] == 'validate': validate(os.environ.get('ARTIFACT_DIR', 'dist'), os.environ['SOURCE_SHA'])
-    elif sys.argv[1] == 'publish': publish(os.environ.get('ARTIFACT_DIR', 'dist'), os.environ['SOURCE_SHA'])
     else: fail()
