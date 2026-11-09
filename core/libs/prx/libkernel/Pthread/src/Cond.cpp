@@ -157,6 +157,7 @@ int APS5_VABI scePthreadCondBroadcast(PthreadCond* cond) {
 }
 
 int APS5_VABI scePthreadCondSignalto(PthreadCond* cond, Pthread thread) {
+    (void)thread;
     auto* c = resolveCond(cond);
     if (KernelDiagEnabled())
         c->_last_signal.store(KernelDiagWaker(__builtin_return_address(0)), std::memory_order_relaxed);

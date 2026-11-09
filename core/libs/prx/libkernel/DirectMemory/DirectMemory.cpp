@@ -859,7 +859,7 @@ int DoMunmap(void* addr, size_t len) {
     // PERF-GT7-090 (RYGT_BATCHMAP_MERGE=2): adjacent guest arena pieces go to libc as one range
     // once the registry is done (the same unmap: a run mapped as one native view and released part
     // by part was split again for every part, quadratic in its length).
-    static const bool mergePieces = [] {
+    [[maybe_unused]] static const bool mergePieces = [] {
         const char* value = std::getenv("RYGT_BATCHMAP_MERGE");
         return value && std::atoi(value) >= 2;
     }();
@@ -895,7 +895,7 @@ int DoMunmap(void* addr, size_t len) {
         else munmap(pieceAddress, pieceBytes);
 #endif
     });
-    {
+    if (arenaEnd != arenaBegin) {
         std::lock_guard lock(g_directLock);
         flushArena();
     }
