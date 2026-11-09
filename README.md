@@ -2,7 +2,7 @@
 
 An experimental Windows porting runtime for **Gran Turismo 7 (PS4, CUSA24769)**, derived from
 [ryGT](https://github.com/mlgprorektm8/RyGT) and [Ryty](https://github.com/aarvsn/Ryty).
-Rendering uses [shadGT7](https://gitlab.com/rygt-team/shadgt7), derived from shadGT/shadPS4.
+Rendering uses [shadGT7](https://github.com/RyGT-Team/shadgt7), derived from shadGT/shadPS4.
 The converter prepares the player's executable locally; game code runs on the host CPU and graphics
 are translated to Vulkan. GT7's online servers can be replaced by one a player hosts on their own PC,
 so friends can sign in, open lobby rooms and race each other (see [Online play](#online-play)).
@@ -258,7 +258,7 @@ Tips:
   (Windows' .NET Framework C# compiler). It needs `libzstd.dll` (MSYS2 UCRT64's) next to it.
 - [PSN library for online play](renderer/shadGT-patches/0062-online-psn-shadnet-rygtserver.patch):
   a shadGT patch, built with the renderer's `ryty_np` target.
-- [Renderer](https://gitlab.com/rygt-team/shadgt7): separate repository, following `main` through
+- [Renderer](https://github.com/RyGT-Team/shadgt7): separate repository, following `main` through
   [build-support/renderer.json](build-support/renderer.json). Each build resolves `HEAD` once
   and records the exact SHA in its manifest. The branch carries the wheel + ultrawide edition's renderer work (the
   16:9 HUD split and F7 editor, single-pass HUD, DLSS multi-frame generation, fast flips and GT7

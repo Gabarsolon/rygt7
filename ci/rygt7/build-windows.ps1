@@ -82,9 +82,9 @@ try {
     Invoke-CmdFile (Join-Path $source 'runtime\gt7\build.cmd') $stubDir
     $pin = Get-Content (Join-Path $source 'build-support\renderer.json') -Raw | ConvertFrom-Json
     # CI follows official main, resolved once by the controller; do not build a floating ref.
-    if ($pin.repository -cne 'https://gitlab.com/rygt-team/shadgt7.git' -or
+    if ($pin.repository -cne 'https://github.com/RyGT-Team/shadgt7.git' -or
         $pin.branch -cne 'main') { throw 'Unexpected renderer pin; update and re-audit adapter explicitly' }
-    $mirror = 'https://gitlab.com/rygt-team/shadgt7.git'
+    $mirror = 'https://github.com/RyGT-Team/shadgt7.git'
     $renderer = Join-Path $workspace 'renderer-source'
     Invoke-Checked git @('clone','--no-checkout',$mirror,$renderer)
     Invoke-Checked git @('-C',$renderer,'fetch','--no-tags','origin',$RendererSha)

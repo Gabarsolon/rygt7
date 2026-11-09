@@ -1,9 +1,8 @@
 # RyGT7 CI worker
 
 This separate workflow builds the public `main` branch of
-https://gitlab.com/rygt-team/rygt7. Each job checks out the exact resolved source
-commit and the official `rygt-team/shadgt7` `main` HEAD once per run. It runs on GitHub main pushes, renderer reusable-workflow calls, or manually with a `force`
-input. Pull requests validate the trusted controller tests without building or publishing. The RyGTS workflows
+https://github.com/RyGT-Team/rygt7. Each job checks out the exact resolved source
+commit and the official `rygt-team/shadgt7` `main` HEAD once per run. It runs on GitHub main pushes, renderer reusable-workflow calls, or manually. Every requested run builds; the legacy `force` input is retained for caller compatibility. Pull requests validate the trusted controller tests without building or publishing. The RyGTS workflows
 and their Release/Debug packages are independent.
 
 ## Outputs
@@ -11,8 +10,6 @@ and their Release/Debug packages are independent.
 The initial RyGT7 channel is a Release client package:
 
 - GitHub artifact: `rygt7-ci-<full source commit>-renderer-<full renderer commit>`, retained for seven days.
-- GitLab project: `rygt-team/rygt7`, Generic Package Registry channel `ci`, version
-  `main-<full source commit>-renderer-<full renderer commit>`.
 - Files: `RyGT7-ci-<short source commit>.zip`, its `.zip.sha256`, and `CI-BUILD.json`.
 
 No tag, release, changelog or announcement is created. There is no RyGT7 Debug
@@ -30,16 +27,15 @@ and packaging validation, not an in-game or GPU performance test.
 
 The controller resolves the official `rygt-team/shadgt7` `main` HEAD to a full
 SHA once, alongside the RyGT7 `main` source SHA. Windows fetches that exact
-renderer object; all build, assembly and publication checks use the same resolved
+renderer object; all build, assembly and validation checks use the same resolved
 value. This CI policy overrides the renderer commit declared by the runtime's
 `build-support/renderer.json`; its official repository/branch requirement is
 still checked. The configured and fetched URLs in `BUILD_INFO.json` describe
 the CI selection. Branch movement during a run cannot silently change its build.
 
-Package versions and GitHub artifacts include both full SHAs, so a renderer-only
+GitHub artifacts include both full SHAs, so a renderer-only
 change triggers a new build without overwriting a different source/renderer pair.
-The archive filename stays `RyGT7-ci-<short source commit>.zip` within that pair's
-version. The exact VMA patch and clean-source provenance checks remain enforced;
+The archive filename stays `RyGT7-ci-<short source commit>.zip` within the artifact. The exact VMA patch and clean-source provenance checks remain enforced;
 an upstream patch change intentionally fails until the adapter is re-audited.
 
 The source release packager expects a complete runtime. A SHA-256 pinned official
@@ -50,32 +46,22 @@ files. The converter and wheel probe are source-built; GCC redistribution files
 come from the same UCRT64 toolchain. The package includes required notices and
 the source's bundled offline patch and credits.
 
+This pinned binary base remains hosted in the GitLab package registry. GitLab is
+not used to fetch source code or publish CI output.
+
 `BUILD_INFO.json` records exact source and renderer commits, runtime-base URL and
 hash, toolchain and submodule information, per-file origins and hashes, and CI
 control/run identity. The historical release's gameplay and build-provenance
 claims are replaced with accurate CI notes. Game executables/data, firmware,
 fonts, saves, personal settings, logs and shader caches are excluded.
 
-## Credentials and publication
+## Artifact delivery
 
-The RyGT7 GitHub repository secret `GITLAB_PACKAGE_TOKEN` is a project-scoped
-deploy token with `read_package_registry` and `write_package_registry` scopes.
-It is provided only to the final publish step in a fresh Linux job. Source builds
-and tests never receive it. The RyGTS publisher uses its own project credential;
-a RyGTS deploy token cannot publish to the sibling RyGT7 project. GitLab group
-CI/CD variables are not automatically injected into GitHub jobs. Renderer pushes
-call the runtime's reusable workflow; no scheduled polling or separate dispatch
-token is required.
-
-The trusted controller validates archive identity, every file hash, safe ZIP
-paths and build provenance before upload. It first uploads and verifies an
-attempt envelope as `CI-PENDING.json`, then uploads and verifies the archive and
-checksum; `CI-BUILD.json` is uploaded last as the completion marker. Source
-resolution skips only when the valid pending and completed envelopes match, including
-the run attempt. A failed forced rebuild therefore remains retryable rather than
-reusing a stale completion marker. Publication is not an atomic registry
-transaction; each upload and download must pass, including when registry files
-with the same name already exist.
+The controller validates archive identity, every file hash, safe ZIP paths and
+build provenance before uploading the GitHub Actions artifact. The workflow
+summary links to the artifact and exact source commits. Renderer pushes call
+the runtime reusable workflow; no publishing token or scheduled polling is
+required. The optional legacy GitLab secret input is ignored for compatibility.
 
 Local checks:
 

@@ -106,96 +106,24 @@ class Validation(unittest.TestCase):
         output=io.StringIO()
         with mock.patch('sys.stdout',output): m.validate(self.folder,COMMIT)
         self.assertNotIn('secret-value',output.getvalue())
-    def test_publish_order_and_readback_failure(self):
-        self.write(); written=[]; bodies={}
-        class Response(io.BytesIO):
-            status=201
-        def open_url(request, timeout=0):
-            if isinstance(request, str):
-                return Response(bodies[request])
-            data=request.data.read(); written.append(request.full_url.rsplit('/',1)[-1]); bodies[request.full_url]=data
-            return Response(b'')
-        with mock.patch.dict(os.environ, {'GITLAB_PACKAGE_TOKEN':'secret-value'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=open_url):
-            m.publish(self.folder,COMMIT)
-        self.assertEqual(written[-1], 'CI-BUILD.json')
-        self.assertEqual(written[0], 'CI-PENDING.json')
-        self.assertEqual(len(written),4)
-        self.assertTrue(all('/main-'+COMMIT+'-renderer-'+RENDERER+'/' in url for url in bodies))
+    def test_resolve_always_builds_without_registry_queries(self):
+        with mock.patch.object(m.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps({'sha': COMMIT}).encode())) as request:
+            m.resolve()
+        self.assertEqual(request.call_count, 1)
+        self.assertIn('needed=true', self.output.read_text())
+        self.assertIn('renderer_commit='+RENDERER, self.output.read_text())
         summary = self.summary.read_text()
-        archive = self.folder / f'RyGT7-ci-{COMMIT[:8]}.zip'
-        self.assertIn(f'[`{COMMIT}`](https://gitlab.com/rygt-team/rygt7/-/commit/{COMMIT})', summary)
-        self.assertIn(f'[`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})', summary)
-        self.assertIn(f'SHA-256: `{m.digest(archive.read_bytes())}`', summary)
-        self.summary.unlink()
-        written.clear()
-        def broken(request,timeout=0):
-            if isinstance(request,str): return Response(b'wrong')
-            written.append(request.full_url); return Response()
-        with mock.patch.dict(os.environ, {'GITLAB_PACKAGE_TOKEN':'secret-value'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=broken):
-            with self.assertRaises(ValueError): m.publish(self.folder,COMMIT)
-        self.assertEqual(len(written),1)
-        self.assertFalse(self.summary.exists())
-    def test_interrupted_forced_retry_requires_rebuild(self):
-        self.write()
-        old=json.loads((self.folder/'CI-BUILD.json').read_text())
-        pending=json.loads(json.dumps(old)); pending['ci_control']['attempt']='2'
-        class Response(io.BytesIO): pass
-        output=self.folder/'output'
-        calls=[Response(json.dumps({'commit':{'id':COMMIT}}).encode()),
-               Response(json.dumps(old).encode()), Response(json.dumps(pending).encode())]
-        with mock.patch.dict(os.environ, {'GITHUB_OUTPUT':str(output),'FORCE_BUILD':'false'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=calls): m.resolve()
-        self.assertIn('needed=true',output.read_text())
-        calls=[Response(json.dumps({'commit':{'id':COMMIT}}).encode()),
-               Response(json.dumps(old).encode()), Response(json.dumps(old).encode())]
-        output.write_text('')
-        with mock.patch.dict(os.environ, {'GITHUB_OUTPUT':str(output),'FORCE_BUILD':'false'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=calls): m.resolve()
-        self.assertIn('needed=false',output.read_text())
-        self.assertIn('renderer_commit='+RENDERER,output.read_text())
-        summary = self.summary.read_text()
-        self.assertIn(f'[`{COMMIT}`](https://gitlab.com/rygt-team/rygt7/-/commit/{COMMIT})', summary)
-        self.assertIn(f'[`{RENDERER}`](https://gitlab.com/rygt-team/shadgt7/-/commit/{RENDERER})', summary)
-        self.assertNotIn('/packages/generic/', summary)
-        self.assertNotIn('[ZIP]', summary)
-    def test_resolve_missing_and_denied(self):
-        class Response(io.BytesIO): pass
-        url='https://example.invalid'
-        for code in (404,401):
-            calls=[Response(json.dumps({'commit':{'id':COMMIT}}).encode()), urllib.error.HTTPError(url,code,'error',{},None)]
-            output=self.folder/'output'
-            with mock.patch.dict(os.environ, {'GITHUB_OUTPUT':str(output),'FORCE_BUILD':'false'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=calls):
-                if code == 404: m.resolve(); self.assertIn('needed=true',output.read_text())
-                else:
-                    with self.assertRaises(urllib.error.HTTPError): m.resolve()
-    def test_resolve_rejects_mismatched_marker(self):
-        class Response(io.BytesIO): pass
-        calls=[Response(json.dumps({'commit':{'id':COMMIT}}).encode()),Response(json.dumps({'commit':'b'*40}).encode())]
-        with mock.patch.dict(os.environ, {'GITHUB_OUTPUT':str(self.folder/'output')}), mock.patch.object(m.urllib.request,'urlopen',side_effect=calls):
-            with self.assertRaises(ValueError): m.resolve()
+        self.assertIn(f'https://github.com/RyGT-Team/rygt7/commit/{COMMIT}', summary)
+        self.assertIn(f'https://github.com/RyGT-Team/shadgt7/commit/{RENDERER}', summary)
 
     def test_renderer_head_resolution(self):
         class Response(io.BytesIO): pass
-        with mock.patch.object(m.urllib.request, 'urlopen', return_value=Response(json.dumps({'commit':{'id':RENDERER}}).encode())) as request:
+        with mock.patch.object(m.urllib.request, 'urlopen', return_value=Response(json.dumps({'sha':RENDERER}).encode())) as request:
             self.assertEqual(self.real_resolve_renderer(), RENDERER)
-            self.assertEqual(request.call_args.args[0], 'https://gitlab.com/api/v4/projects/rygt-team%2Fshadgt7/repository/branches/main')
+            self.assertEqual(request.call_args.args[0].full_url, 'https://api.github.com/repos/RyGT-Team/shadgt7/commits/main')
         for invalid in ('', 'z'*40, 'a'*39):
-            with mock.patch.object(m.urllib.request, 'urlopen', return_value=Response(json.dumps({'commit':{'id':invalid}}).encode())):
+            with mock.patch.object(m.urllib.request, 'urlopen', return_value=Response(json.dumps({'sha':invalid}).encode())):
                 with self.assertRaises(ValueError): self.real_resolve_renderer()
-
-    def test_renderer_change_uses_distinct_package_path(self):
-        class Response(io.BytesIO): pass
-        output=self.folder/'output'; urls=[]
-        def open_url(url, timeout=0):
-            urls.append(url)
-            if url == m.API: return Response(json.dumps({'commit':{'id':COMMIT}}).encode())
-            raise urllib.error.HTTPError(url,404,'missing',{},None)
-        with mock.patch.dict(os.environ, {'GITHUB_OUTPUT':str(output),'FORCE_BUILD':'false'}), mock.patch.object(m.urllib.request,'urlopen',side_effect=open_url):
-            m.resolve()
-            m.resolve_renderer.return_value='c'*40
-            m.resolve()
-        self.assertIn('/main-'+COMMIT+'-renderer-'+RENDERER+'/CI-BUILD.json',urls[1])
-        self.assertIn('/main-'+COMMIT+'-renderer-'+'c'*40+'/CI-BUILD.json',urls[3])
-        self.assertIn('renderer_commit='+'c'*40,output.read_text())
-        self.assertEqual(output.read_text().count('needed=true'),2)
 
     def test_invalid_renderer_rejected(self):
         self.write()
