@@ -25,6 +25,9 @@
 #include <map>
 #include <cstdio>
 #include <mutex>
+#include <cstdlib>
+#include <vector>
+#include <chrono>
 
 namespace {
 
@@ -288,6 +291,8 @@ int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInf
  // region around the address is the honest extent; unmapped memory is an error, as on the PS5.
  #ifdef _WIN32
  MEMORY_BASIC_INFORMATION host{};
+ // PERF-GT7-092: unmapped for the game, even while its native views wait for the worker.
+ if (PendingUnmapContains(address)) return SCE_KERNEL_ERROR_EACCES;
  if (VirtualQuery(addr, &host, sizeof(host)) == 0 || host.State != MEM_COMMIT) return SCE_KERNEL_ERROR_EACCES;
  info->start = reinterpret_cast<uintptr_t>(host.BaseAddress);
  info->end = info->start + host.RegionSize;
@@ -426,6 +431,146 @@ int APS5_VABI sceKernelBatchMap(KernelBatchMapEntry* entries, int num_entries, i
  return sceKernelBatchMap2(entries, num_entries, num_entries_out, MapFixed);
 }
 
+}
+
+namespace {
+
+constexpr int BatchOpMapDirect = 0;
+constexpr int BatchOpUnmap = 1;
+constexpr int BatchMapFixed = 0x10;
+
+// PERF-GT7-090: RYGT_BATCHMAP_MERGE=1 maps each run of consecutive fixed direct mappings with
+// contiguous addresses and one protection in one call (one native view per part, as before) and
+// unmaps each run of contiguous unmaps in one call; =2 also puts physically contiguous parts of a
+// run in one native view. 0 (default): one entry at a time, as before.
+int BatchMergeMode() {
+    static const int mode = [] {
+        const char* value = std::getenv("RYGT_BATCHMAP_MERGE");
+        const int chosen = value ? std::atoi(value) : 0;
+        if (chosen > 0) {
+            std::fprintf(stderr, "[batchmap] PERF-GT7-090: RYGT_BATCHMAP_MERGE=%d, runs of a batch in one call%s\n", chosen,
+                chosen >= 2 ? ", physically contiguous parts in one view" : ", one view per part");
+        }
+        return chosen;
+    }();
+    return mode;
+}
+
+// RYGT_DIAG_BATCHMAP=1: one stderr line per large batch (its shape and its time).
+bool BatchDiagEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("RYGT_DIAG_BATCHMAP");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// End of the run starting at first: consecutive fixed maps with contiguous addresses and the same
+// protection, or consecutive unmaps of contiguous ranges. first + 1 when the entry has no run.
+int BatchRunEnd(const KernelBatchMapEntry* entries, int first, int count, int flags) {
+    const auto& head = entries[first];
+    const bool map = head.operation == BatchOpMapDirect;
+    if (!map && head.operation != BatchOpUnmap) return first + 1;
+    if (map && (flags & BatchMapFixed) == 0) return first + 1;
+    if (head.start == nullptr || head.length == 0 || (head.length & (PS5_PAGE_SIZE - 1)) != 0) return first + 1;
+    auto next = reinterpret_cast<std::uintptr_t>(head.start);
+    if (head.length > UINTPTR_MAX - next) return first + 1;
+    next += head.length;
+    int end = first + 1;
+    while (end < count) {
+        const auto& entry = entries[end];
+        if (entry.operation != head.operation || reinterpret_cast<std::uintptr_t>(entry.start) != next) break;
+        if (entry.length == 0 || (entry.length & (PS5_PAGE_SIZE - 1)) != 0 || entry.length > UINTPTR_MAX - next) break;
+        if (map && entry.protection != head.protection) break;
+        next += entry.length;
+        ++end;
+    }
+    return end;
+}
+
+struct BatchShape {
+    int maps = 0;
+    int unmaps = 0;
+    int others = 0;
+    int mapRuns = 0;      // runs of two or more maps
+    int mapRunParts = 0;
+    int physGroups = 0;   // physically contiguous groups inside those runs
+    int unmapRuns = 0;
+    int unmapRunParts = 0;
+};
+
+// PERF-GT7-092: a batch's unmap; sceKernelMunmap as before unless RYGT_DEFER_UNMAP=1.
+int BatchUnmap(void* start, std::uint64_t length) {
+    if (!DeferUnmapEnabled()) return sceKernelMunmap(reinterpret_cast<uint64_t>(start), length);
+    return GuardMemoryCall("sceKernelMunmap", [&]() -> int {
+        const int result = DoMunmapDeferred(start, length);
+        if (result == 0) _releaseFlexible(reinterpret_cast<uintptr_t>(start), length);
+        return result;
+    });
+}
+
+// Diagnostic clock (RYGT_DIAG_BATCHMAP), nanoseconds.
+long long BatchNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+struct BatchBurst {
+    long long first = 0;
+    long long last = 0;
+    int calls = 0;
+    int entries = 0;
+    double ms = 0;
+    int whole = 0;
+    int fallback = 0;
+    BatchShape shape;
+};
+thread_local BatchBurst g_batchBurst;
+
+void FlushBatchBurst(BatchBurst& burst, long long frequency, int mode) {
+    if (burst.calls > 0 && burst.entries >= 200) {
+        static std::atomic<unsigned> printed{0};
+        if (printed.fetch_add(1) < 300) {
+            const double span = 1000.0 * static_cast<double>(burst.last - burst.first) / static_cast<double>(frequency);
+            std::fprintf(stderr, "[batchmap] burst: %d calls, %d entries over %.2f ms (%.2f ms in the calls), merge %d | %d maps, %d in %d contiguous runs (%d physical groups) | %d unmaps, %d in %d runs | %d other | %d runs taken whole, %d part by part\n",
+                burst.calls, burst.entries, span, burst.ms, mode, burst.shape.maps, burst.shape.mapRunParts, burst.shape.mapRuns, burst.shape.physGroups,
+                burst.shape.unmaps, burst.shape.unmapRunParts, burst.shape.unmapRuns, burst.shape.others, burst.whole, burst.fallback);
+        }
+    }
+    burst = BatchBurst{};
+}
+
+BatchShape MeasureBatch(const KernelBatchMapEntry* entries, int count, int flags) {
+    BatchShape shape;
+    for (int i = 0; i < count;) {
+        const auto& entry = entries[i];
+        if (entry.operation == BatchOpMapDirect) ++shape.maps;
+        else if (entry.operation == BatchOpUnmap) ++shape.unmaps;
+        else ++shape.others;
+        const int end = BatchRunEnd(entries, i, count, flags);
+        if (end - i >= 2) {
+            if (entry.operation == BatchOpMapDirect) {
+                ++shape.mapRuns;
+                shape.mapRunParts += end - i;
+                shape.maps += end - i - 1;
+                ++shape.physGroups;
+                for (int k = i + 1; k < end; ++k) {
+                    if (entries[k].offset != entries[k - 1].offset + entries[k - 1].length) ++shape.physGroups;
+                }
+            } else {
+                ++shape.unmapRuns;
+                shape.unmapRunParts += end - i;
+                shape.unmaps += end - i - 1;
+            }
+        }
+        i = end;
+    }
+    return shape;
+}
+
+}
+
+extern "C" {
+
 int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, int* num_entries_out, int flags) {
  return GuardMemoryCall("sceKernelBatchMap2", [&]() -> int {
  if (!entries || num_entries < 0) return SCE_KERNEL_ERROR_EINVAL;
@@ -436,14 +581,50 @@ int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, 
  constexpr int OpTypeProtect = 4;
  int processed = 0;
  int result = 0;
- for (; processed < num_entries; ++processed) {
+ const int mergeMode = BatchMergeMode();
+ const bool diag = BatchDiagEnabled();
+ BatchShape shape;
+ long long started = 0;
+ if (diag) {
+  shape = MeasureBatch(entries, num_entries, flags);
+  started = BatchNowNs();
+ }
+ int mergedRuns = 0;
+ int fallbackRuns = 0;
+ int plainUntil = 0; // entries of a run that fell back go one by one
+ thread_local std::vector<DirectMapPart> parts;
+ while (processed < num_entries) {
   auto& entry = entries[processed];
+  if (mergeMode > 0 && processed >= plainUntil) {
+   const int end = BatchRunEnd(entries, processed, num_entries, flags);
+   if (end - processed >= 2) {
+    std::size_t bytes = 0;
+    for (int k = processed; k < end; ++k) bytes += entries[k].length;
+    if (entry.operation == OpMapDirect) {
+     parts.clear();
+     for (int k = processed; k < end; ++k) parts.push_back(DirectMapPart{entries[k].length, static_cast<int64_t>(entries[k].offset)});
+     if (DoMapDirectRun(entry.start, bytes, static_cast<uint8_t>(entry.protection), flags, parts.data(), parts.size(), mergeMode >= 2) == 0) {
+      ++mergedRuns;
+      processed = end;
+      continue;
+     }
+     ++fallbackRuns; // part by part below
+     plainUntil = end;
+    } else {
+     result = BatchUnmap(entry.start, bytes); // PERF-GT7-092
+     if (result != 0) break;
+     ++mergedRuns;
+     processed = end;
+     continue;
+    }
+   }
+  }
   switch (entry.operation) {
   case OpMapDirect:
    result = DoMapDirect(&entry.start, entry.length, static_cast<uint8_t>(entry.protection), flags, static_cast<int64_t>(entry.offset), 0);
    break;
   case OpUnmap:
-   result = sceKernelMunmap(reinterpret_cast<uint64_t>(entry.start), entry.length);
+   result = BatchUnmap(entry.start, entry.length); // PERF-GT7-092
    break;
   case OpProtect:
   case OpTypeProtect:
@@ -456,7 +637,40 @@ int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, 
    throw std::invalid_argument("sceKernelBatchMap2: unsupported operation " + std::to_string(entry.operation));
   }
   if (result != 0) break;
+  ++processed;
  }
+ if (diag) {
+  const long long finished = BatchNowNs();
+  const double ms = static_cast<double>(finished - started) / 1e6;
+  // A burst: this thread's batches with less than 5 ms between them (GT7's streaming frames send
+  // many small ones); one line per burst of 200 entries or more.
+  auto& burst = g_batchBurst;
+  if (burst.calls > 0 && started - burst.last > 5'000'000) FlushBatchBurst(burst, 1'000'000'000, mergeMode);
+  if (burst.calls == 0) burst.first = started;
+  ++burst.calls;
+  burst.entries += num_entries;
+  burst.ms += ms;
+  burst.last = finished;
+  burst.whole += mergedRuns;
+  burst.fallback += fallbackRuns;
+  burst.shape.maps += shape.maps;
+  burst.shape.unmaps += shape.unmaps;
+  burst.shape.others += shape.others;
+  burst.shape.mapRuns += shape.mapRuns;
+  burst.shape.mapRunParts += shape.mapRunParts;
+  burst.shape.physGroups += shape.physGroups;
+  burst.shape.unmapRuns += shape.unmapRuns;
+  burst.shape.unmapRunParts += shape.unmapRunParts;
+  static std::atomic<unsigned> batches{0};
+  static std::atomic<unsigned> printed{0};
+  const unsigned n = num_entries >= 32 ? batches.fetch_add(1) + 1 : 0;
+  if (n != 0 && (num_entries >= 256 || n <= 30) && printed.fetch_add(1) < 400) {
+   std::fprintf(stderr, "[batchmap] batch %u: %d entries, %.3f ms, merge %d | %d maps, %d in %d contiguous runs (%d physical groups) | %d unmaps, %d in %d runs | %d other | %d runs taken whole, %d part by part%s\n",
+    n, num_entries, ms, mergeMode, shape.maps, shape.mapRunParts, shape.mapRuns, shape.physGroups, shape.unmaps, shape.unmapRunParts, shape.unmapRuns, shape.others, mergedRuns, fallbackRuns,
+    result != 0 ? " (failed)" : "");
+  }
+ }
+ NoteBatchMapActivity(); // PERF-GT7-092: the worker waits for the batches to pause
  if (num_entries_out) *num_entries_out = processed;
  return result;
  });

@@ -66,6 +66,7 @@ struct Waiter {
     Waiter* previous = nullptr;
     Waiter* next = nullptr;
     bool queued = false;
+    DWORD thread_id = GetCurrentThreadId();
 
     ~Waiter() {
         if (event) CloseHandle(event);
@@ -164,6 +165,18 @@ void Condition::NotifyOne() {
     if (!waiter) return;
     unlink(waiter);
     SetEvent(waiter->event);
+}
+
+bool Condition::NotifyThread(std::uint32_t thread_id) {
+    if (Coarse()) return false;
+    std::lock_guard lock(queueLock);
+    for (Waiter* waiter = head; waiter; waiter = waiter->next) {
+        if (waiter->thread_id != thread_id) continue;
+        unlink(waiter);
+        SetEvent(waiter->event);
+        return true;
+    }
+    return false;
 }
 
 void Condition::NotifyAll() {

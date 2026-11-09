@@ -69,11 +69,24 @@ static std::int64_t NativePositioned(int descriptor, void* buf, std::size_t nbyt
     overlapped.OffsetHigh = static_cast<DWORD>(static_cast<std::uint64_t>(offset) >> 32u);
     DWORD done = 0;
     if (!write) {
+        if (KernelDiagEnabled() && descriptor >= 0 && descriptor <= 0xffff &&
+            offset >= 0 && static_cast<std::uint64_t>(offset) < (1ull << 48)) {
+            KernelDiagMark(static_cast<KernelDiagZone>(83),
+                           (static_cast<std::uint64_t>(descriptor) << 48) |
+                           static_cast<std::uint64_t>(offset));
+        }
         return ReadIntoGuest(buf, nbytes, [&](void* target) -> std::int64_t {
             OVERLAPPED at = overlapped;
             DWORD got = 0;
-            if (::ReadFile(handle, target, static_cast<DWORD>(nbytes), &got, &at)) return got;
-            if (::GetLastError() == ERROR_HANDLE_EOF) return 0;
+            DWORD error = ERROR_SUCCESS;
+            {
+                // The host read alone, for the read diagnostics (zone 85).
+                KernelDiagScope diag(static_cast<KernelDiagZone>(85), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(nbytes)));
+                if (!::ReadFile(handle, target, static_cast<DWORD>(nbytes), &got, &at)) error = ::GetLastError();
+            }
+            if (error == ERROR_SUCCESS) return got;
+            ::SetLastError(error);
+            if (error == ERROR_HANDLE_EOF) return 0;
             errno = EIO;
             return -1;
         });
