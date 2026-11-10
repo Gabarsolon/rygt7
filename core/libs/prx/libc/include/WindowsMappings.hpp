@@ -397,7 +397,7 @@ private:
         const char* bounds = std::getenv("RYGT_MAPPING_VIEW_BOUNDS");
         reuse_view_bounds = bounds && bounds[0] == '1';
         const char* carve = std::getenv("RYGT_PLACEHOLDER_CACHE");
-        placeholder_cache = carve && carve[0] == '1';
+        placeholder_cache = !(carve && carve[0] == '0'); // PERF-GT7-095: on unless set to 0
         const auto module = GetModuleHandleW(L"KernelBase.dll");
         if (!module) fail("load Windows memory API");
         allocate = reinterpret_cast<AllocateFunction>(GetProcAddress(module, "VirtualAlloc2"));
@@ -536,7 +536,7 @@ private:
     bool carvePlaceholder(std::uintptr_t address, std::size_t bytes) {
         requireOwned(address, bytes);
         const auto end = address + bytes;
-        // PERF-GT7-093 (RYGT_PLACEHOLDER_CACHE=1): what is left of the placeholder the previous map
+        // PERF-GT7-093 (RYGT_PLACEHOLDER_CACHE=0 off): what is left of the placeholder the previous map
         // was carved from starts where that map ended, and stays a placeholder until another call
         // under this lock (they all forget it). GT7 maps its streaming runs page after page there:
         // the next page needs no query, only its suffix split.

@@ -34,7 +34,7 @@ struct DirectMapPart {
 // be taken as a whole (its parts then go one by one); 0 when mapped.
 // coalesce: physically contiguous parts become one native view (else one view per part).
 int DoMapDirectRun(void* addr, size_t len, int prot, int flags, const DirectMapPart* parts, size_t count, bool coalesce);
-// PERF-GT7-092 (RYGT_DEFER_UNMAP=1): DoMunmap whose native views go later, on a worker thread.
+// PERF-GT7-092 (RYGT_DEFER_UNMAP=0 off): DoMunmap whose native views go later, on a worker thread.
 int DoMunmapDeferred(void* addr, size_t len);
 bool DeferUnmapEnabled();
 // Finishes the pending unmaps over the range now; call with the GuestAllocations::Mutation held.
