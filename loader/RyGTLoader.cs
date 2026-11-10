@@ -2027,6 +2027,11 @@ namespace RyGT
                 try { WriteSetting("GPU", "texture_lod_bias", sharpnessValues[sharpness.SelectedIndex]); }
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
+            // Motion blur while driving (GPU.motion_blur_gameplay): GT7 shows its motion blur in replays
+            // only. The renderer reads the setting itself and, when it is on, changes the game's own
+            // blur rules at start (only if the game's code is the expected version); off by default.
+            AddOption(graphics, "Motion blur while driving", "GPU", "motion_blur_gameplay", false);
+            graphics.Controls.Add(Hint("GT7 shows its motion blur in replays only. This turns the game's own blur on in races too. Takes effect at the next start, and only with the GT7 version the patch knows."));
             // Shader cache size (GPU.driver_cache_gb, GPU.driver_cache_unlimited; the game gets it as
             // RYGT_DRIVER_CACHE_MAX_MB): the renderer's saved GPU shader cache, like NVIDIA's own
             // setting. 0 turns it off; a bigger cache keeps more cars and tracks compiled, and is saved

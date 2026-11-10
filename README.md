@@ -199,6 +199,15 @@ built from an older renderer pin lacks the ultrawide HUD, DLSS frame multiplier 
   0.6 ms instead of up to 17 ms), which evens out frame times below 60 FPS. In a command prompt:
   `setx RYGT_FAST_FLIPS 1`, then reopen the launcher.
 
+### Motion blur while driving
+
+GT7 draws its motion blur in replays and not in a race. The launcher's **Motion blur while
+driving** option (Graphics page, Rendering; `"motion_blur_gameplay"` in
+`user\custom_configs\CUSA03220.json`, off by default) makes the renderer change the game's own
+blur rules when the game starts, so the game's blur is also drawn while you drive. The change
+is made only when the game's code is the version it was written for; otherwise the game runs
+unchanged and the log says why (`[patch] GT7-BLUR: ... nothing applied`).
+
 ### DLSS frame generation (NVIDIA RTX 40 / 50)
 
 The renderer can upscale with NVIDIA DLSS (any RTX card) and show generated frames between the
