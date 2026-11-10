@@ -1493,7 +1493,8 @@ namespace RyGT
                 using (var stream = new FileStream(temporary, FileMode.CreateNew,
                                                  FileAccess.Write, FileShare.None))
                 {
-                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true))
+                    using (var writer = new StreamWriter(stream,
+                                                         new UTF8Encoding(false), 1024, true))
                         writer.Write(text);
                     stream.Flush(true);
                 }
@@ -1504,6 +1505,45 @@ namespace RyGT
             {
                 try { File.Delete(temporary); } catch { }
             }
+        }
+    }
+
+    static class HdrSettings
+    {
+        internal static double Normalize(string key, double value)
+        {
+            switch (key)
+            {
+                case "hdr_gain": return Math.Max(0.1, Math.Min(8.0, value));
+                case "hdr_peak_nits": return Math.Max(0.0, Math.Min(10000.0, value));
+                case "hdr_metadata_nits":
+                    return value > 0.0 ? Math.Max(100.0, Math.Min(10000.0, value)) : 0.0;
+                case "hdr_metadata_fall_nits": return Math.Max(1.0, Math.Min(10000.0, value));
+                default: throw new ArgumentException("Unknown HDR setting.", "key");
+            }
+        }
+
+        internal static double Number(object value, string key, double fallback)
+        {
+            try
+            {
+                if (value == null || value is bool) return fallback;
+                double number;
+                var text = value as string;
+                if (text != null)
+                {
+                    if (!double.TryParse(text, System.Globalization.NumberStyles.Float,
+                                         System.Globalization.CultureInfo.InvariantCulture,
+                                         out number)) return fallback;
+                }
+                else number = Convert.ToDouble(value,
+                                               System.Globalization.CultureInfo.InvariantCulture);
+                if (double.IsNaN(number) || double.IsInfinity(number)) return fallback;
+                return Normalize(key, number);
+            }
+            catch (FormatException) { return fallback; }
+            catch (InvalidCastException) { return fallback; }
+            catch (OverflowException) { return fallback; }
         }
     }
 
@@ -1787,6 +1827,8 @@ namespace RyGT
             var multRow = comboRow("Multiplier", mult, null);
             frameGen.Controls.Add(multRow);
             frameGen.Controls.Add(fgNote);
+
+            AddHdrControls(Section(graphicsPage, "HDR"));
 
             bool loading = true;
             Func<string, bool> has = name => File.Exists(Path.Combine(dlssDir, name));
@@ -2887,6 +2929,67 @@ namespace RyGT
             row.Controls.Add(check);
             row.Controls.Add(rollBack);
             panel.Controls.Add(row);
+        }
+
+        void AddHdrControls(TableLayoutPanel panel)
+        {
+            var hdr = AddOption(panel, "HDR output", "GPU", "hdr_allowed", false);
+            var gain = AddHdrNumber(panel, "Brightness (%)", "hdr_gain", 10, 800, 100, 100, 5);
+            var peak = AddHdrNumber(panel, "Peak limit (nits, 0 = off)",
+                                    "hdr_peak_nits", 0, 10000, 0, 1, 50);
+            var metadata = AddHdrNumber(panel, "Metadata peak (nits, 0 = off)",
+                                        "hdr_metadata_nits", 0, 10000, 0, 1, 100);
+            var average = AddHdrNumber(panel, "Metadata frame average (nits)",
+                                       "hdr_metadata_fall_nits", 1, 10000, 400, 1, 50);
+            var hint = new Label
+            {
+                AutoSize = true, MaximumSize = new Size(620, 0), BackColor = Color.Transparent,
+                Text = "Enable Windows HDR first. HDR permission takes effect at the next start. " +
+                       "Brightness 100% and peak 0 preserve the game's PQ output. " +
+                       "Metadata is off at 0; positive peaks start at 100 nits. " +
+                       "The renderer limits frame average to the metadata peak. " +
+                       "Restart after metadata changes; brightness/peak refresh within 2 seconds."
+            };
+            panel.Controls.Add(hint);
+            Action refresh = delegate
+            {
+                gain.Enabled = peak.Enabled = metadata.Enabled = hdr.Checked;
+                average.Enabled = hdr.Checked && metadata.Value > 0;
+            };
+            hdr.CheckedChanged += delegate { refresh(); };
+            metadata.ValueChanged += delegate { refresh(); };
+            refresh();
+        }
+
+        NumericUpDown AddHdrNumber(TableLayoutPanel panel, string text, string key,
+                                  int min, int max, int fallback, double scale, int step)
+        {
+            double stored = HdrSettings.Number(GpuSetting(root, key), key, fallback / scale);
+            var number = new NumericUpDown
+            {
+                Name = key, AccessibleName = text, Minimum = min, Maximum = max,
+                Increment = step, DecimalPlaces = 0, Width = 100,
+                Value = (decimal)Math.Round(stored * scale)
+            };
+            panel.Controls.Add(new SettingRow(text, number));
+            bool changing = false;
+            number.ValueChanged += delegate
+            {
+                if (changing) return;
+                changing = true;
+                try
+                {
+                    double value = HdrSettings.Normalize(key, (double)number.Value / scale);
+                    number.Value = (decimal)Math.Round(value * scale);
+                    WriteSetting("GPU", key, value);
+                }
+                catch (Exception e)
+                {
+                    MessageBox.Show(this, "Could not save the setting: " + e.Message);
+                }
+                finally { changing = false; }
+            };
+            return number;
         }
 
         CheckBox AddOption(TableLayoutPanel panel, string text, string sectionName, string key, bool fallback)
