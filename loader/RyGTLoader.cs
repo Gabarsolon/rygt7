@@ -669,6 +669,7 @@ namespace RyGT
         public int TickFrequency = 10, SmallChange = 1, LargeChange = 10;
         /// Shown after the value ("%").
         public string Suffix = "";
+        public bool ShowValue = true;
         public event EventHandler ValueChanged;
 
         public Slider()
@@ -697,7 +698,14 @@ namespace RyGT
             }
         }
 
-        Rectangle Track { get { return new Rectangle(8, Height / 2 - 1, Math.Max(10, Width - 8 - 64), 2); } }
+        Rectangle Track
+        {
+            get
+            {
+                return new Rectangle(8, Height / 2 - 1,
+                                     Math.Max(10, Width - 8 - (ShowValue ? 64 : 8)), 2);
+            }
+        }
 
         void SetFromX(int x)
         {
@@ -740,8 +748,12 @@ namespace RyGT
                 g.FillRectangle(done, track.X, track.Y, x - track.X, track.Height);
             float knob = Focused ? 14 : 12;
             using (var fill = new SolidBrush(Enabled ? Color.White : Dark.Disabled)) g.FillEllipse(fill, x - knob / 2, track.Y + 1 - knob / 2, knob, knob);
-            TextRenderer.DrawText(g, value + Suffix, Dark.Caps(9f), new Rectangle(track.Right + 8, 0, Width - track.Right - 8, Height),
-                                  Enabled ? Dark.Text : Dark.Disabled, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            if (ShowValue)
+                TextRenderer.DrawText(g, value + Suffix, Dark.Caps(9f),
+                    new Rectangle(track.Right + 8, 0, Width - track.Right - 8, Height),
+                    Enabled ? Dark.Text : Dark.Disabled,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.NoPrefix);
         }
     }
 
@@ -1504,6 +1516,63 @@ namespace RyGT
             finally
             {
                 try { File.Delete(temporary); } catch { }
+            }
+        }
+    }
+
+    sealed class HdrSlider : TableLayoutPanel
+    {
+        readonly Slider slider;
+        readonly NumericUpDown number;
+        readonly Func<int, int> normalize;
+        bool changing;
+        int value;
+        public event EventHandler ValueChanged;
+
+        public HdrSlider(int min, int max, int initial, int step, Func<int, int> normalize)
+        {
+            this.normalize = normalize;
+            ColumnCount = 2;
+            RowCount = 1;
+            BackColor = Color.Transparent;
+            Size = new Size(400, 28);
+            ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            slider = new Slider
+            {
+                Name = "Slider", Minimum = min, Maximum = max, ShowValue = false,
+                SmallChange = 1, LargeChange = step, Dock = DockStyle.Fill, Margin = new Padding(0)
+            };
+            number = new NumericUpDown
+            {
+                Name = "Number", Minimum = min, Maximum = max, Increment = step,
+                DecimalPlaces = 0, Width = 100, Anchor = AnchorStyles.Right,
+                Margin = new Padding(8, 0, 0, 0), TextAlign = HorizontalAlignment.Right
+            };
+            Controls.Add(slider, 0, 0);
+            Controls.Add(number, 1, 0);
+            Value = initial;
+            slider.ValueChanged += delegate { Value = slider.Value; };
+            number.ValueChanged += delegate { Value = (int)number.Value; };
+        }
+
+        public int Value
+        {
+            get { return value; }
+            set
+            {
+                if (changing) return;
+                int next = Math.Max(slider.Minimum, Math.Min(slider.Maximum, normalize(value)));
+                bool changed = next != this.value;
+                changing = true;
+                try
+                {
+                    this.value = next;
+                    slider.Value = next;
+                    number.Value = next;
+                }
+                finally { changing = false; }
+                if (changed && ValueChanged != null) ValueChanged(this, EventArgs.Empty);
             }
         }
     }
@@ -2933,24 +3002,36 @@ namespace RyGT
 
         void AddHdrControls(TableLayoutPanel panel)
         {
-            var hdr = AddOption(panel, "HDR output", "GPU", "hdr_allowed", false);
-            var gain = AddHdrNumber(panel, "Brightness (%)", "hdr_gain", 10, 800, 100, 100, 5);
-            var peak = AddHdrNumber(panel, "Peak limit (nits, 0 = off)",
-                                    "hdr_peak_nits", 0, 10000, 0, 1, 50);
-            var metadata = AddHdrNumber(panel, "Metadata peak (nits, 0 = off)",
-                                        "hdr_metadata_nits", 0, 10000, 0, 1, 100);
-            var average = AddHdrNumber(panel, "Metadata frame average (nits)",
-                                       "hdr_metadata_fall_nits", 1, 10000, 400, 1, 50);
-            var hint = new Label
+            AddHdrControls(panel, key => GpuSetting(root, key), (key, value) =>
             {
-                AutoSize = true, MaximumSize = new Size(620, 0), BackColor = Color.Transparent,
-                Text = "Enable Windows HDR first. HDR permission takes effect at the next start. " +
-                       "Brightness 100% and peak 0 preserve the game's PQ output. " +
-                       "Metadata is off at 0; positive peaks start at 100 nits. " +
-                       "The renderer limits frame average to the metadata peak. " +
-                       "Restart after metadata changes; brightness/peak refresh within 2 seconds."
+                try { WriteSetting("GPU", key, value); }
+                catch (Exception e)
+                {
+                    MessageBox.Show(this, "Could not save the setting: " + e.Message);
+                }
+            });
+        }
+
+        static void AddHdrControls(TableLayoutPanel panel, Func<string, object> read,
+                                   Action<string, object> save)
+        {
+            object allowed = read("hdr_allowed");
+            var hdr = new ToggleRow
+            {
+                Text = "HDR output", Checked = allowed is bool && (bool)allowed
             };
-            panel.Controls.Add(hint);
+            hdr.CheckedChanged += delegate { save("hdr_allowed", hdr.Checked); };
+            panel.Controls.Add(hdr);
+            var gain = AddHdrSlider(panel, "Brightness (%)", "hdr_gain",
+                                    10, 800, 100, 100, 5, read, save);
+            var peak = AddHdrSlider(panel, "Peak limit (nits, 0 = off)", "hdr_peak_nits",
+                                    0, 10000, 0, 1, 50, read, save);
+            var metadata = AddHdrSlider(panel, "Metadata peak (nits, 0 = off)", "hdr_metadata_nits",
+                                        0, 10000, 0, 1, 100, read, save);
+            var average = AddHdrSlider(panel, "Metadata frame average (nits)",
+                                       "hdr_metadata_fall_nits", 1, 10000, 400, 1, 50, read, save);
+            panel.Controls.Add(Hint("Enable Windows HDR first. Brightness 100% and peak 0 " +
+                                    "keep the game's output; metadata off at 0."));
             Action refresh = delegate
             {
                 gain.Enabled = peak.Enabled = metadata.Enabled = hdr.Checked;
@@ -2961,35 +3042,19 @@ namespace RyGT
             refresh();
         }
 
-        NumericUpDown AddHdrNumber(TableLayoutPanel panel, string text, string key,
-                                  int min, int max, int fallback, double scale, int step)
+        static HdrSlider AddHdrSlider(TableLayoutPanel panel, string text, string key,
+                                      int min, int max, int fallback, double scale, int step,
+                                      Func<string, object> read, Action<string, object> save)
         {
-            double stored = HdrSettings.Number(GpuSetting(root, key), key, fallback / scale);
-            var number = new NumericUpDown
+            double stored = HdrSettings.Number(read(key), key, fallback / scale);
+            var control = new HdrSlider(min, max, (int)Math.Round(stored * scale), step,
+                value => (int)Math.Round(HdrSettings.Normalize(key, value / scale) * scale))
             {
-                Name = key, AccessibleName = text, Minimum = min, Maximum = max,
-                Increment = step, DecimalPlaces = 0, Width = 100,
-                Value = (decimal)Math.Round(stored * scale)
+                Name = key, AccessibleName = text
             };
-            panel.Controls.Add(new SettingRow(text, number));
-            bool changing = false;
-            number.ValueChanged += delegate
-            {
-                if (changing) return;
-                changing = true;
-                try
-                {
-                    double value = HdrSettings.Normalize(key, (double)number.Value / scale);
-                    number.Value = (decimal)Math.Round(value * scale);
-                    WriteSetting("GPU", key, value);
-                }
-                catch (Exception e)
-                {
-                    MessageBox.Show(this, "Could not save the setting: " + e.Message);
-                }
-                finally { changing = false; }
-            };
-            return number;
+            panel.Controls.Add(new SettingRow(text, control));
+            control.ValueChanged += delegate { save(key, control.Value / scale); };
+            return control;
         }
 
         CheckBox AddOption(TableLayoutPanel panel, string text, string sectionName, string key, bool fallback)
