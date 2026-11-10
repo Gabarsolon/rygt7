@@ -199,6 +199,15 @@ built from an older renderer pin lacks the ultrawide HUD, DLSS frame multiplier 
   0.6 ms instead of up to 17 ms), which evens out frame times below 60 FPS. In a command prompt:
   `setx RYGT_FAST_FLIPS 1`, then reopen the launcher.
 
+### HD UI
+
+The game draws its menus and HUD at 1920×1080 and the renderer scales the picture. The launcher's
+**HD UI** option (Graphics page, Rendering; `"hd_ui"` in `user\custom_configs\CUSA03220.json`,
+off by default) scales the 3D scene first and then draws the UI at the window's size, with the
+game's 4K images and the map icons at the window's density. It needs a window bigger than
+1920×1080 and uses more video memory (the renderer keeps it within 1 GiB), and it does nothing
+with an ultrawide screen.
+
 ### DLSS frame generation (NVIDIA RTX 40 / 50)
 
 The renderer can upscale with NVIDIA DLSS (any RTX card) and show generated frames between the
