@@ -442,11 +442,12 @@ constexpr int BatchMapFixed = 0x10;
 // PERF-GT7-090: RYGT_BATCHMAP_MERGE=1 maps each run of consecutive fixed direct mappings with
 // contiguous addresses and one protection in one call (one native view per part, as before) and
 // unmaps each run of contiguous unmaps in one call; =2 also puts physically contiguous parts of a
-// run in one native view. 0 (default): one entry at a time, as before.
+// run in one native view. 0: one entry at a time, as before.
+// PERF-GT7-095: 2 by default (it was 0); RYGT_BATCHMAP_MERGE=0 or 1 for the earlier ways.
 int BatchMergeMode() {
     static const int mode = [] {
         const char* value = std::getenv("RYGT_BATCHMAP_MERGE");
-        const int chosen = value ? std::atoi(value) : 0;
+        const int chosen = value ? std::atoi(value) : 2;
         if (chosen > 0) {
             std::fprintf(stderr, "[batchmap] PERF-GT7-090: RYGT_BATCHMAP_MERGE=%d, runs of a batch in one call%s\n", chosen,
                 chosen >= 2 ? ", physically contiguous parts in one view" : ", one view per part");
@@ -499,7 +500,7 @@ struct BatchShape {
     int unmapRunParts = 0;
 };
 
-// PERF-GT7-092: a batch's unmap; sceKernelMunmap as before unless RYGT_DEFER_UNMAP=1.
+// PERF-GT7-092: a batch's unmap; sceKernelMunmap as before with RYGT_DEFER_UNMAP=0.
 int BatchUnmap(void* start, std::uint64_t length) {
     if (!DeferUnmapEnabled()) return sceKernelMunmap(reinterpret_cast<uint64_t>(start), length);
     return GuardMemoryCall("sceKernelMunmap", [&]() -> int {

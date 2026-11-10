@@ -856,12 +856,13 @@ int DoMunmap(void* addr, size_t len) {
     GuestAllocations::Mutation mutation;
     allocation_wait.Finish();
     FlushPendingUnmaps(addr, len); // PERF-GT7-092
-    // PERF-GT7-090 (RYGT_BATCHMAP_MERGE=2): adjacent guest arena pieces go to libc as one range
+    // PERF-GT7-090 (RYGT_BATCHMAP_MERGE=2, the default since PERF-GT7-095): adjacent guest arena
+    // pieces go to libc as one range
     // once the registry is done (the same unmap: a run mapped as one native view and released part
     // by part was split again for every part, quadratic in its length).
     [[maybe_unused]] static const bool mergePieces = [] {
         const char* value = std::getenv("RYGT_BATCHMAP_MERGE");
-        return value && std::atoi(value) >= 2;
+        return !value || std::atoi(value) >= 2;
     }();
     std::uintptr_t arenaBegin = 0;
     std::uintptr_t arenaEnd = 0;
@@ -906,7 +907,8 @@ int DoMunmap(void* addr, size_t len) {
     return 0;
 }
 
-// PERF-GT7-092 (RYGT_DEFER_UNMAP=1): GT7's streaming batches unmap about 1,000 64 KB views on the
+// PERF-GT7-092 (on by default since PERF-GT7-095; RYGT_DEFER_UNMAP=0 off): GT7's streaming batches
+// unmap about 1,000 64 KB views on the
 // job thread its render thread waits for (Trial Mountain's landmark: ~8 ms of UnmapViewOfFile2
 // and placeholder coalescing, each view a TLB flush on every core). The guest-visible unmap stays
 // immediate (allocation registry, direct mappings, protection records, and the renderer's report,
@@ -1017,8 +1019,8 @@ void UnmapWorker() {
 bool DeferUnmapEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("RYGT_DEFER_UNMAP");
-        const bool on = value && value[0] == '1';
-        if (on) std::fprintf(stderr, "[memory] PERF-GT7-092: native views of batch unmaps are removed later (RYGT_DEFER_UNMAP=1)\n");
+        const bool on = !(value && value[0] == '0'); // PERF-GT7-095: on unless set to 0
+        if (on) std::fprintf(stderr, "[memory] PERF-GT7-092: native views of batch unmaps are removed later (RYGT_DEFER_UNMAP=0 turns it off)\n");
         return on;
     }();
     return enabled;
