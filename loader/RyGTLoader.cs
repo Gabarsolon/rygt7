@@ -1481,6 +1481,33 @@ namespace RyGT
         }
     }
 
+    static class AtomicConfig
+    {
+        internal static void Write(string path, string text)
+        {
+            path = Path.GetFullPath(path);
+            string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                using (var stream = new FileStream(temporary, FileMode.CreateNew,
+                                                 FileAccess.Write, FileShare.None))
+                {
+                    using (var writer = new StreamWriter(stream,
+                                                         new UTF8Encoding(false), 1024, true))
+                        writer.Write(text);
+                    stream.Flush(true);
+                }
+                if (File.Exists(path)) File.Replace(temporary, path, null);
+                else File.Move(temporary, path);
+            }
+            finally
+            {
+                try { File.Delete(temporary); } catch { }
+            }
+        }
+    }
+
     class Settings
     {
         public string Game = "", Update = "", Modules = "", Fonts = "";
@@ -2428,8 +2455,8 @@ namespace RyGT
             if (section == null) { section = new Dictionary<string, object>(); config[sectionName] = section; }
             section[key] = on;
             Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
-            File.WriteAllText(ConfigPath, new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(config),
-                              new UTF8Encoding(false));
+            AtomicConfig.Write(ConfigPath,
+                new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(config));
         }
 
         [StructLayout(LayoutKind.Sequential)]
