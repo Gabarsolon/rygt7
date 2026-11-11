@@ -20,6 +20,10 @@ on:
     secrets:
       GITLAB_PACKAGE_TOKEN:
         required: false # Compatibility with existing renderer callers; unused.
+      CODESIGN_PFX_BASE64:
+        required: false
+      CODESIGN_PFX_PASSWORD:
+        required: false
   workflow_dispatch:
     inputs:
       force:
@@ -147,6 +151,9 @@ jobs:
         shell: pwsh
         env:
           UCRT_ROOT: ${{ steps.msys2.outputs.msys2-location }}/ucrt64
+          RYGT_CODESIGN: '1'
+          CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          CODESIGN_PFX_PASSWORD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
           . ./ci/rygt7/setup-tools.ps1

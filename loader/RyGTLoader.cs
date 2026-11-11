@@ -15,6 +15,8 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyCompany("RyGT-Team")]
+
 namespace RyGT
 {
     static class Native
