@@ -1762,6 +1762,71 @@ namespace RyGT
             frameGen.Controls.Add(multRow);
             frameGen.Controls.Add(fgNote);
 
+            // FIX-GT7-141: HDR output (GPU.hdr_allowed, the renderer's setting) and the display the
+            // game is told of (GPU.hdr_display_peak_nits, which libSceSystemService reads when the
+            // game starts: GT7 tone maps its scene to that peak). 1000 unless set, as the library
+            // takes it; 0: the display as Windows describes it. The box goes from 0 to 300, the
+            // lowest peak offered.
+            var hdr = Section(graphicsPage, "HDR");
+            var hdrOutput = AddOption(hdr, "HDR output", "GPU", "hdr_allowed", false);
+            // A value written by hand may be a decimal or "<peak>,<full frame>,<min>": its peak is
+            // shown, and the file keeps it until the box is changed.
+            int hdrPeakStored = 1000;
+            {
+                object stored = GpuSetting(root, "hdr_display_peak_nits");
+                string text = stored == null || stored is bool ? null
+                    : Convert.ToString(stored, System.Globalization.CultureInfo.InvariantCulture).Split(',')[0];
+                double peak;
+                if (text != null && double.TryParse(text, System.Globalization.NumberStyles.Float,
+                                                    System.Globalization.CultureInfo.InvariantCulture, out peak) &&
+                    !double.IsNaN(peak) && !double.IsInfinity(peak))
+                {
+                    // As the library reads it: 0 asks Windows, under 100 is no peak (1000).
+                    hdrPeakStored = peak == 0 ? 0 : peak < 100 ? 1000 : (int)Math.Min(10000, Math.Round(peak));
+                }
+            }
+            if (hdrPeakStored > 0 && hdrPeakStored < 300) hdrPeakStored = 300;
+            var hdrPeak = new NumericUpDown { Minimum = 0, Maximum = 10000, DecimalPlaces = 0, Increment = 50, Width = 90,
+                                              TextAlign = HorizontalAlignment.Right, Value = hdrPeakStored,
+                                              Enabled = hdrOutput.Checked };
+            hdr.Controls.Add(new SettingRow("Display peak brightness (nits, 0 = from Windows)", hdrPeak));
+            hdr.Controls.Add(Hint("Turn on HDR in Windows first; these settings apply at the next game start. 1000 suits most HDR displays: " +
+                                  "set your display's real peak if bright areas lose their detail or look dull. 0 takes the peak Windows reports for the display."));
+            // The game's interface on an HDR output (GPU.hdr_paper_white_nits, the renderer's
+            // FIX-GT7-143: it replaces the 250 nits GT7 gives its menus and HUD). 250 is the game's
+            // own and writes nothing until the box is changed.
+            var hdrWhite = new NumericUpDown { Minimum = 50, Maximum = 1000, DecimalPlaces = 0, Increment = 10, Width = 90,
+                                               TextAlign = HorizontalAlignment.Right,
+                                               Value = Math.Max(50, Math.Min(1000, ReadIntSetting("GPU", "hdr_paper_white_nits", 250))),
+                                               Enabled = hdrOutput.Checked };
+            hdr.Controls.Add(new SettingRow("Interface brightness (nits)", hdrWhite));
+            hdr.Controls.Add(Hint("The white of the game's menus and race HUD on an HDR display. 250 is the game's own; lower it if they glare beside the scenery. Applies at the next game start."));
+            hdrWhite.ValueChanged += delegate
+            {
+                try { WriteSetting("GPU", "hdr_paper_white_nits", (int)hdrWhite.Value); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            hdrOutput.CheckedChanged += delegate { hdrPeak.Enabled = hdrWhite.Enabled = hdrOutput.Checked; };
+            int hdrPeakShown = hdrPeakStored;
+            hdrPeak.ValueChanged += delegate
+            {
+                int value = (int)hdrPeak.Value;
+                if (value > 0 && value < 300)
+                {
+                    // One step down from 300 is 0 (Windows' data); anything else under 300, typed
+                    // or stepped up from 0, is 300.
+                    hdrPeak.Value = hdrPeakShown == 300 && value == 300 - (int)hdrPeak.Increment ? 0 : 300;
+                    return;
+                }
+                if (value == hdrPeakShown) return;
+                try
+                {
+                    WriteSetting("GPU", "hdr_display_peak_nits", value);
+                    hdrPeakShown = value;
+                }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+
             bool loading = true;
             Func<string, bool> has = name => File.Exists(Path.Combine(dlssDir, name));
             Func<bool> dlssReady = () => has("nvngx_dlss.dll") && ((has("sl.interposer.dll") && has("sl.common.dll") && has("sl.dlss.dll")) || has("ryGT_dlss.dll"));
