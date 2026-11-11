@@ -1586,7 +1586,8 @@ namespace RyGT
             {
                 Dock = DockStyle.Fill, Logo = logoImage, Title = "GRAN TURISMO", Accent = "7",
                 Caption = Dark.Spaced("CUSA24769   " + (char)183 + "   PS4   " + (char)183 + "   RYGT7 FOR WINDOWS"),
-                Version = "ryGT7 " + (Updater.InstalledVersion(root) ?? "") + "  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769"
+                Version = "ryGT7 " + (Updater.InstalledVersion(root) ?? "") + "  " + (char)183 + "  launcher " + LauncherVersion.Value +
+                    "  " + (char)183 + "  GT7 " + (char)183 + " CUSA24769"
             };
             // The updater: a newer release shows a notice and an Update button at the top right.
             Updater.CleanUp(root);
@@ -2909,7 +2910,8 @@ namespace RyGT
             var row = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 2), WrapContents = false };
             var label = new Label
             {
-                Text = "Launcher " + (Updater.InstalledVersion(root) ?? "(not from a release)"), AutoSize = false, Width = 196, Height = 20,
+                Text = "Launcher " + LauncherVersion.Value + (Updater.InstalledVersion(root) == null ? "" : " (" + Updater.InstalledVersion(root) + ")"),
+                AutoSize = false, Width = 196, Height = 20,
                 BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0)
             };
             var check = new Button { Text = "Check now", AutoSize = true, Margin = new Padding(0, 0, 6, 0) };
@@ -3090,7 +3092,11 @@ namespace RyGT
             {
                 try
                 {
-                    if (setupLogPath == null) setupLogPath = LogFiles.Prepare(root, "setup.log");
+                    if (setupLogPath == null)
+                    {
+                        setupLogPath = LogFiles.Prepare(root, "setup.log");
+                        File.AppendAllText(setupLogPath, LauncherVersion.Banner + Environment.NewLine);
+                    }
                     File.AppendAllText(setupLogPath, line + Environment.NewLine);
                 }
                 catch { }

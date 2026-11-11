@@ -23,6 +23,15 @@ REQUIRED_RUNTIME = ('libc.prx', 'libkernel.prx', 'libSceFiber.prx', 'libScePad.p
                     'libSceHttp.prx', 'libSceNet.prx', 'libSceNetCtl.prx', 'libSceNpManager.prx',
                     'libSceNpSessionSignaling.prx', 'libSceRtc.prx', 'libSceSsl.prx')
 
+
+def launcher_version(source_root):
+    """LauncherVersion.Value from loader/Version.cs, or None when the source has no such file."""
+    path = Path(source_root) / 'loader/Version.cs'
+    if not path.is_file():
+        return None
+    match = re.search(r'public const string Value = "([^"]+)";', path.read_text(encoding='utf-8-sig'))
+    return match.group(1) if match else None
+
 def sha(path):
     with Path(path).open('rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()
@@ -86,7 +95,8 @@ def assemble(args):
         metadata['sha256'] = sha(args.runtime / name)
     info = {'schema': 1, 'rygt7_commit': args.source_sha, 'renderer_commit': args.renderer_sha,
             'renderer_configured_url': args.renderer_configured_url, 'renderer_fetch_url': args.renderer_fetch_url,
-            'base_url': BASE_URL, 'base_sha256': BASE_SHA256, 'runtime_files': origins}
+            'base_url': BASE_URL, 'base_sha256': BASE_SHA256, 'runtime_files': origins,
+            'launcher_version': launcher_version(args.source)}
     control = {'repository': os.environ.get('GITHUB_REPOSITORY'), 'commit': os.environ.get('GITHUB_SHA'),
                'attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
                'run_url': (f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
