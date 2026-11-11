@@ -9,6 +9,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
+#include "prx/libSceSystemService/HdrLuminance.hpp"
 
 extern "C" {
 
@@ -65,10 +66,12 @@ int APS5_VABI sceSystemServiceGetHdrToneMapLuminance(SystemServiceHdrToneMapLumi
  if (luminance == nullptr) {
   return SYSTEM_SERVICE_ERROR_PARAMETER;
  }
- constexpr float SdrReferenceWhiteNits = 100.0f;
- luminance->max_full_frame_tone_map_luminance = SdrReferenceWhiteNits;
- luminance->max_tone_map_luminance = SdrReferenceWhiteNits;
- luminance->min_tone_map_luminance = 0.0f;
+ // FIX-GT7-141: the display's luminance when HDR output is allowed and Windows runs a display
+ // in HDR (HdrLuminance.hpp); 100 / 100 / 0 as before otherwise.
+ const HdrLuminance::Luminance& display = HdrLuminance::ForGame();
+ luminance->max_full_frame_tone_map_luminance = display.full_frame;
+ luminance->max_tone_map_luminance = display.peak;
+ luminance->min_tone_map_luminance = display.min;
  return SYSTEM_SERVICE_OK;
 }
 
