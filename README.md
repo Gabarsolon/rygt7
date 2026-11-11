@@ -208,6 +208,15 @@ game's 4K images and the map icons at the window's density. It needs a window bi
 1920×1080 and uses more video memory (the renderer keeps it within 1 GiB), and it does nothing
 with an ultrawide screen.
 
+### Temporal DLSS and its sharpening (NVIDIA RTX)
+
+With **NVIDIA DLSS** chosen in the Upscaling section, the **Temporal DLSS (sharper image)** option
+(`"temporal_dlss"`, off by default) makes DLSS reconstruct the game's own jittered scene from its
+motion vectors and depth, instead of scaling the finished 1920×1080 picture. It needs **HD UI** (the
+interface is drawn over the reconstructed scene at the window's size), a window bigger than
+1920×1080, and no frame generation. **DLSS sharpening** (`"dlss_sharpening"`, 0 to 100, 0 = off) is
+applied to the scene DLSS scaled, before the interface is drawn, and can be changed while playing.
+
 ### DLSS frame generation (NVIDIA RTX 40 / 50)
 
 The renderer can upscale with NVIDIA DLSS (any RTX card) and show generated frames between the
