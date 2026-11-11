@@ -15,9 +15,8 @@ It uses Windows' .NET Framework 4.x and does not require Python for setup or pla
 5. Select your PS4 firmware's system modules and the fonts folder containing `font` and `font2`.
 6. Press **Set up**. Once it finishes, press **Play**.
 
-Use the same drive as your game dump for hard links, or Windows Developer Mode for symbolic links
-across drives. Keep the source game/update folders in place after setup: their files are linked,
-not copied. Source game files are never patched. Conversion fixes apply only to the temporary ELF.
+ryGT7 can be on any drive. Keep the source game/update folders in place after setup: the game reads
+its files from them (nothing is copied or linked). Source game files are never patched. Conversion fixes apply only to the temporary ELF.
 
 Setup rejects other title IDs, malformed metadata, incomplete folders, and updates older than
 the selected base/merged game. It converts into a staging folder first, preserving an existing

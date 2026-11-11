@@ -20,8 +20,8 @@ You provide:
 
 Select those folders, press **Set up**, wait for conversion, then press **Play**. Leave Update empty
 when your game folder is already merged. Separate updates override matching files individually,
-preserving base files the update does not replace. Keep the source folders after setup because
-game data is linked rather than copied. Use the same drive, or Windows Developer Mode for cross-drive links.
+preserving base files the update does not replace. Keep the source folders after setup: the game reads
+its data straight from them, so nothing is copied, and ryGT7 can be on any drive.
 
 The archive contains no game dump, converted game executable, firmware, fonts, saves, or shader cache.
 Python is not required for player setup. Windows x64, a Vulkan-capable GPU, and current graphics

@@ -161,6 +161,7 @@ int APS5_VABI chmod_nid_postfix(const char* path, int mode) {
         APS5_INVALID_ARG_EX;
     }
     auto native = ResolvePath_nid_no_patch(path);
+    if (IsGameFolderPath_nid_no_patch(native) && IsReadOnlyGamePath(native, "chmod", path)) { errno = 30; return -1; }
     if (NativeChmod(native, mode) != 0) {
         throw std::runtime_error(std::string(__func__) + ": chmod failed for " + native.string() + ", errno=" + std::to_string(errno));
     }
@@ -492,6 +493,7 @@ int APS5_VABI sceKernelTruncate_nid_postfix(const char* path, std::int64_t lengt
     if (path == nullptr) throw std::invalid_argument("sceKernelTruncate: path is null");
     if (length < 0) return SceErrorFromErrno(GUEST_EINVAL);
     const auto native = ResolvePath_nid_no_patch(path);
+    if (IsGameFolderPath_nid_no_patch(native) && IsReadOnlyGamePath(native, "truncate", path)) return SceErrorFromErrno(GUEST_EROFS);
     std::error_code error;
     if (!std::filesystem::exists(native, error)) return SceErrorFromErrno(GUEST_ENOENT);
     std::filesystem::resize_file(native, static_cast<std::uintmax_t>(length), error);
@@ -502,6 +504,7 @@ int APS5_VABI sceKernelTruncate_nid_postfix(const char* path, std::int64_t lengt
 int APS5_VABI sceKernelUtimes_nid_postfix(const char* path, const KernelTimeval* times) {
     if (path == nullptr) throw std::invalid_argument("sceKernelUtimes: path is null");
     const auto native = ResolvePath_nid_no_patch(path);
+    if (IsGameFolderPath_nid_no_patch(native) && IsReadOnlyGamePath(native, "utimes", path)) return SceErrorFromErrno(GUEST_EROFS);
     if (NativeUtimes(native, times) != 0) return SceErrorFromErrno(errno);
     return 0;
 }

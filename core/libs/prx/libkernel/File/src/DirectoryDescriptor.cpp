@@ -39,6 +39,21 @@ int OpenDirectoryDescriptor(const std::filesystem::path& path) {
     return fd;
 }
 
+int OpenDirectoryDescriptor(const std::filesystem::path& path,
+                            std::vector<std::pair<std::filesystem::path, bool>> entries) {
+    const int fd = ::_open("NUL", _O_RDONLY | _O_BINARY);
+    if (fd < 0) return -1;
+    DirectoryState state{path};
+    state.loaded = true;
+    state.entries.emplace_back(".", GuestDirectoryType);
+    state.entries.emplace_back("..", GuestDirectoryType);
+    for (const auto& [host, isDirectory] : entries)
+        state.entries.emplace_back(host.filename().string(), isDirectory ? GuestDirectoryType : GuestRegularType);
+    std::lock_guard lock(g_mutex);
+    g_directories[fd] = std::move(state);
+    return fd;
+}
+
 std::optional<std::filesystem::path> DirectoryDescriptorPath(int fd) {
     std::lock_guard lock(g_mutex);
     const auto found = g_directories.find(fd);

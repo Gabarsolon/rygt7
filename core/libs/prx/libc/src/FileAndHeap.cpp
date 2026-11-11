@@ -25,7 +25,13 @@ FileStream* APS5_VABI freopen_nid_postfix(const char* filename, const char* mode
     for (const auto* candidate : supported) if (std::strcmp(mode, candidate) == 0) valid = true;
     if (!valid) { errno = 22; return nullptr; }
     try {
-        const auto path = *filename ? ResolvePath_nid_no_patch(filename).string() : std::string{};
+        const auto resolved = *filename ? ResolvePath_nid_no_patch(filename) : std::filesystem::path{};
+        if (std::strpbrk(mode, "wa+") && IsGameFolderPath_nid_no_patch(resolved) &&
+            IsReadOnlyGamePath(resolved, "write open", filename)) {
+            if (stream->IsDynamic()) delete stream;
+            errno = 30; return nullptr;
+        }
+        const auto path = resolved.string();
         if (stream->Reopen(path.c_str(), mode)) return stream;
         const int error = errno;
         if (stream->IsDynamic()) delete stream;
@@ -38,6 +44,9 @@ FileStream* APS5_VABI freopen_nid_postfix(const char* filename, const char* mode
 FileStream* APS5_VABI fopen_nid_postfix(const char* filename, const char* mode) {
     if (!filename || !mode) throw std::runtime_error(std::string(__func__) + ": " + FOPEN_MSG_NULL_ARG);
     const std::filesystem::path fpath = ResolvePath_nid_no_patch(filename);
+    if (std::strpbrk(mode, "wa+") && IsGameFolderPath_nid_no_patch(fpath) && IsReadOnlyGamePath(fpath, "write open", filename)) {
+        errno = 30; return nullptr;
+    }
     const auto abs_path = fpath.string();
     std::unique_ptr<std::FILE, decltype(&std::fclose)> handle(std::fopen(abs_path.c_str(), mode), std::fclose);
     if (!handle) {

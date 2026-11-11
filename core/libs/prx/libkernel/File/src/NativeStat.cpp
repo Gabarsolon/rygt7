@@ -18,8 +18,9 @@ using NativeStat = struct __stat64;
 static int DoStat(const std::filesystem::path& p, NativeStat* st) {
     const auto wide = p.wstring();
     const int result = _wstat64(wide.c_str(), st);
-    // RyGT: Set up links the game's files into app0 with symbolic links when the game is on another
-    // drive. _wstat64 describes such a link itself (size 0); the opened file describes its target.
+    // RyGT: Set up used to link the game's files into app0 with symbolic links when the game was on
+    // another drive, and such links may still be there (FEAT-GTS-251 reads the game folders directly).
+    // _wstat64 describes a link itself (size 0); the opened file describes its target.
     if (result == 0 && (st->st_mode & _S_IFMT) == _S_IFREG) {
         const DWORD attributes = GetFileAttributesW(wide.c_str());
         if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {

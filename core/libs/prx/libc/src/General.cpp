@@ -12,6 +12,7 @@
 #include <set>
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestHeap.hpp"
+#include "prx/libc/include/AppOverlay.hpp"
 
 namespace {
 // Guest prefixes (without leading slashes) mapped to host directories, e.g. save-data mount points:
@@ -56,21 +57,58 @@ std::optional<std::filesystem::path> ResolveAlias(const std::string& guestPath) 
 struct WorkingDirectory {
     std::mutex mutex;
     const std::filesystem::path root = std::filesystem::canonical(std::filesystem::current_path());
+    // The guest's current directory as a path under root. Under /app0 it may name a folder that only
+    // exists in the update or base game folder (FEAT-GTS-251), so it is not always a real folder.
     std::filesystem::path current = root;
 };
 WorkingDirectory& Directories() { static WorkingDirectory state; return state; }
-std::filesystem::path Resolve(WorkingDirectory& state, const char* path) {
+
+// FEAT-GTS-251: /app0 searched through ryGT7\app0, the update and the base game (AppOverlay.hpp).
+Libc::AppOverlay& App0() {
+    static Libc::AppOverlay overlay = [] {
+        const auto& root = Directories().root;
+        return Libc::AppOverlay(root / "app0", Libc::ConfiguredApp0Layers(root));
+    }();
+    return overlay;
+}
+
+// The part of a guest path (relative, '/'-separated) under /app0, if it is under /app0.
+std::optional<std::string> UnderApp0(const std::string& relative) {
+    if (relative.size() < 4 || relative.compare(0, 4, "app0") != 0) return std::nullopt;
+    if (relative.size() == 4) return std::string();
+    if (relative[4] != '/') return std::nullopt;
+    return relative.substr(5);
+}
+
+// The guest path `path` names, made absolute against the current directory and normalized; nothing
+// for an explicit host drive path (Windows), which is used as it is.
+std::optional<std::filesystem::path> GuestPath(WorkingDirectory& state, const char* path) {
     std::string text(path);
     for (auto& character : text) if (character == '\\') character = '/';
     std::filesystem::path input(text);
 #ifdef _WIN32
     // Preserve the existing ability to pass explicit native drive paths.
-    if (input.has_root_name()) return input;
+    if (input.has_root_name()) return std::nullopt;
 #endif
     auto guest = (std::filesystem::path("/") / state.current.lexically_relative(state.root));
-    guest = (input.is_absolute() ? input : guest / input).lexically_normal();
-    if (auto aliased = ResolveAlias(guest.relative_path().generic_string())) return *aliased;
+    return (input.is_absolute() ? input : guest / input).lexically_normal();
+}
+
+std::filesystem::path ResolveGuest(WorkingDirectory& state, const std::filesystem::path& guest) {
+    const auto relative = guest.relative_path().generic_string();
+    if (auto aliased = ResolveAlias(relative)) return *aliased;
+    if (auto app0 = UnderApp0(relative)) return App0().Resolve(*app0);
     return (state.root / guest.relative_path()).make_preferred();
+}
+
+std::filesystem::path Resolve(WorkingDirectory& state, const char* path) {
+    const auto guest = GuestPath(state, path);
+    if (!guest) {
+        std::string text(path);
+        for (auto& character : text) if (character == '\\') character = '/';
+        return std::filesystem::path(text);
+    }
+    return ResolveGuest(state, *guest);
 }
 int DirectoryFailure(const std::error_code& error) {
     if (error == std::errc::permission_denied) return 13;
@@ -115,6 +153,27 @@ extern "C" std::filesystem::path ResolvePath_nid_no_patch(const char* path) {
     return Resolve(state, path);
 }
 
+extern "C" bool IsGameFolderPath_nid_no_patch(const std::filesystem::path& host) {
+    return App0().InGameFolder(host);
+}
+
+extern "C" bool ListLayeredDirectory_nid_no_patch(const char* path, std::vector<std::pair<std::filesystem::path, bool>>* entries) {
+    if (!path || !entries) { APS5_INVALID_ARG_EX; }
+    auto& state = Directories();
+    std::lock_guard lock(state.mutex);
+    const auto guest = GuestPath(state, path);
+    if (!guest) return false;
+    const auto relative = guest->relative_path().generic_string();
+    if (ResolveAlias(relative)) return false;
+    const auto app0 = UnderApp0(relative);
+    if (!app0) return false;
+    auto listed = App0().List(*app0);
+    if (!listed) return false;
+    entries->clear();
+    for (auto& entry : *listed) entries->emplace_back(std::move(entry.host), entry.directory);
+    return true;
+}
+
 extern "C" int APS5_VABI chdir_nid_postfix(const char* path) {
     if (!path) { errno = 14; return -1; }
     if (!*path) { errno = 2; return -1; }
@@ -122,6 +181,18 @@ extern "C" int APS5_VABI chdir_nid_postfix(const char* path) {
         auto& state = Directories();
         std::lock_guard lock(state.mutex);
         std::error_code error;
+        // A folder under /app0 can be in the update or base game folder, outside root: the current
+        // directory is kept as the guest path under root and resolved again on each use.
+        if (const auto guest = GuestPath(state, path)) {
+            const auto relative = guest->relative_path().generic_string();
+            if (!ResolveAlias(relative) && UnderApp0(relative) && App0().Layered()) {
+                if (!std::filesystem::is_directory(ResolveGuest(state, *guest), error)) {
+                    errno = error ? DirectoryFailure(error) : 20; return -1;
+                }
+                state.current = (state.root / guest->relative_path()).lexically_normal();
+                return 0;
+            }
+        }
         const auto resolved = std::filesystem::canonical(Resolve(state, path), error);
         if (error) { errno = DirectoryFailure(error); return -1; }
         if (!std::filesystem::is_directory(resolved, error)) {
@@ -141,10 +212,11 @@ extern "C" char* APS5_VABI getcwd_nid_postfix(char* buffer, std::size_t size) {
         auto& state = Directories();
         std::lock_guard lock(state.mutex);
         std::error_code error;
-        if (!std::filesystem::is_directory(state.current, error)) {
+        const auto relative = state.current.lexically_relative(state.root);
+        const auto guest = std::filesystem::path("/") / (relative == "." ? std::filesystem::path() : relative);
+        if (!std::filesystem::is_directory(ResolveGuest(state, guest), error)) {
             errno = error ? DirectoryFailure(error) : 2; return nullptr;
         }
-        const auto relative = state.current.lexically_relative(state.root);
         const auto path = relative == "." ? std::string("/") : "/" + relative.generic_string();
         const auto required = path.size() + 1;
         if ((buffer || size) && size < required) { errno = 34; return nullptr; }

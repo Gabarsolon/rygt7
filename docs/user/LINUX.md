@@ -5,7 +5,7 @@ itself. It needs **Proton 10 or newer** (or Wine 10 or newer): older versions la
 functions that RyGT's libraries use, and the game does not start.
 
 > **Status:** RyGT is checked against Proton 10 and 11: every program and library in a release
-> loads there, and under Wine the launcher links the game's files with Linux symbolic links. The
+> loads there, and the game reads its files straight from your game folders. The
 > first test under Proton got through Set up, the menus and into a race. Please report what works
 > and what doesn't.
 
@@ -20,8 +20,8 @@ functions that RyGT's libraries use, and the game does not start.
 
 1. Unzip the release into a folder in your home folder, for example `~/Games/RyGT`. Keep the
    game dump in your home folder or on a Steam library drive too, since Proton may not see other
-   places. If both are on the same drive, Set up hard-links the game's files; otherwise it makes
-   symbolic links. Both work.
+   places. The game reads its files from the game and update folders you pick; nothing is copied or
+   linked into the ryGT7 folder.
 2. In Steam, choose **Games > Add a Non-Steam Game to My Library > Browse**, pick `RyGT.exe`,
    then **Add Selected Programs**.
 3. Right-click the new entry, open **Properties > Compatibility**, tick **Force the use of a
@@ -70,8 +70,6 @@ desktop PC: GT Sport is heavy on the CPU.
 
 ## What RyGT does differently under Wine
 
-- The launcher links `app0` with Linux symbolic links (`ln -s`),
-  because Wine before 11 cannot make Windows links.
 - `GTSport.exe` keeps Wine's default program icon; the icon only matters to Windows' Explorer.
 - libkernel converts local time with the time zone's rules for the year when Windows' `...Ex` time
   zone functions are missing, which gives the same results.
