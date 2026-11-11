@@ -16,6 +16,7 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyCompany("RyGT-Team")]
+[assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 RyGT-Team")]
 
 namespace RyGT
 {
