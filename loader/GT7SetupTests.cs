@@ -201,6 +201,16 @@ namespace RyGT
                 Check(File.ReadAllText(Path.Combine(update, "contents", "gt.idx")) == "updated index", "Update modified");
                 Check(File.ReadAllText(Path.Combine(baseDir, "contents", "gt.idx")) == "base:contents\\gt.idx", "Source modified");
                 Directory.Delete(withCopy, true);
+                // A runtime that can't read the game folders still gets them linked into app0.
+                using (var form = new LoaderForm())
+                {
+                    typeof(LoaderForm).GetMethod("LinkGameFiles", BindingFlags.NonPublic | BindingFlags.Instance)
+                        .Invoke(form, new object[] { separate, converted });
+                }
+                Check(File.ReadAllText(Path.Combine(app0, "contents", "gt.idx")) == "updated index", "Linked update");
+                Check(File.ReadAllText(Path.Combine(app0, "nested", "base.txt")) == "base:nested\\base.txt", "Linked base fallback");
+                Check(File.ReadAllText(Path.Combine(app0, "sce_module", "libc.prx")) == "converted-library", "Converted module retained after linking");
+                foreach (string old in Directory.GetDirectories(runtime, "app0.previous-*")) Directory.Delete(old, true);
                 File.Delete(Path.Combine(baseDir, "contents", "gt01.vol"));
                 Reject(() => new GameLayout(baseDir, null, runtime), "Missing base volumes accepted");
                 Check(!GameLayout.PatchKnownExecutable(new byte[64]), "Unknown executable patched");

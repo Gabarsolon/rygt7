@@ -22,6 +22,14 @@ namespace RyGT
 {
     static class Native
     {
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool CreateHardLink(string newFile, string existingFile, IntPtr security);
+
+        // Returns a one-byte BOOLEAN, not a BOOL.
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        public static extern bool CreateSymbolicLink(string link, string target, int flags);
+
         [StructLayout(LayoutKind.Sequential)]
         struct ByHandleFileInformation
         {
@@ -65,7 +73,10 @@ namespace RyGT
             out IntPtr device, out int featureLevel, out IntPtr immediateContext);
     }
 
-    /// Wine (Linux, Steam Proton): its kernel32 has wine_get_unix_file_name.
+    /// Wine (Linux, Steam Proton): its kernel32 has wine_get_unix_file_name. Wine before 11 cannot
+    /// make Windows links (CreateSymbolicLink does nothing there and mklink /J fails), so under Wine
+    /// the game's files and folders are linked with Unix symbolic links, which Wine follows like the
+    /// files themselves (and reports as reparse points when they are folders).
     static class Wine
     {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
@@ -73,6 +84,44 @@ namespace RyGT
 
         [DllImport("kernel32.dll", CharSet = CharSet.Ansi, BestFitMapping = false)]
         static extern IntPtr GetProcAddress(IntPtr module, string name);
+
+        [DllImport("kernel32.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode, ExactSpelling = true)]
+        static extern IntPtr wine_get_unix_file_name(string dosPath);
+
+        [DllImport("kernel32.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi, ExactSpelling = true,
+                   BestFitMapping = false)]
+        static extern IntPtr wine_get_dos_file_name(string unixPath);
+
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GetProcessHeap();
+
+        [DllImport("kernel32.dll")]
+        static extern bool HeapFree(IntPtr heap, uint flags, IntPtr memory);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct StartupInfo
+        {
+            public int cb;
+            public string reserved, desktop, title;
+            public int x, y, width, height, columns, rows, fill, flags;
+            public short show, reserved2;
+            public IntPtr reserved3, input, output, error;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct ProcessInformation
+        {
+            public IntPtr process, thread;
+            public int processId, threadId;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool CreateProcess(string application, StringBuilder commandLine, IntPtr processAttributes,
+            IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string directory,
+            ref StartupInfo startup, out ProcessInformation information);
+
+        [DllImport("kernel32.dll")]
+        static extern bool CloseHandle(IntPtr handle);
 
         static readonly bool detected = DetectWine();
 
@@ -86,6 +135,79 @@ namespace RyGT
                 return kernel != IntPtr.Zero && GetProcAddress(kernel, "wine_get_unix_file_name") != IntPtr.Zero;
             }
             catch { return false; }
+        }
+
+        /// The Unix path of a Windows path (whose last part need not exist yet).
+        public static string UnixPath(string path)
+        {
+            IntPtr unix = wine_get_unix_file_name(Path.GetFullPath(path));
+            if (unix == IntPtr.Zero) throw new Exception("Wine has no Unix path for " + path + ".");
+            try
+            {
+                int length = 0;
+                while (Marshal.ReadByte(unix, length) != 0) length++;
+                var bytes = new byte[length];
+                Marshal.Copy(unix, bytes, 0, length);
+                return Encoding.UTF8.GetString(bytes);
+            }
+            finally { HeapFree(GetProcessHeap(), 0, unix); }
+        }
+
+        static string DosPath(string unixPath)
+        {
+            IntPtr dos = wine_get_dos_file_name(unixPath);
+            if (dos == IntPtr.Zero) throw new Exception("Wine has no Windows path for " + unixPath + ".");
+            try { return Marshal.PtrToStringUni(dos); }
+            finally { HeapFree(GetProcessHeap(), 0, dos); }
+        }
+
+        static string Quote(string unixPath)
+        {
+            return "'" + unixPath.Replace("'", "'\\''") + "'";
+        }
+
+        /// Makes each link (key) a Unix symbolic link to its target (value), replacing an earlier
+        /// symbolic link but never a real file or folder, with one /bin/sh script. Wine starts Unix
+        /// programs detached, so the script's last line writes a file to wait for.
+        public static void Link(IEnumerable<KeyValuePair<string, string>> links)
+        {
+            string name = "rygt-link-" + Guid.NewGuid().ToString("N");
+            string script = Path.Combine(Path.GetTempPath(), name + ".sh");
+            string done = Path.Combine(Path.GetTempPath(), name + ".done");
+            var text = new StringBuilder();
+            text.Append("#!/bin/sh\n# Written by RyGT7.exe: links the game's files under Wine.\n");
+            text.Append("PATH=/usr/local/bin:/usr/bin:/bin\n");
+            text.Append("link() { if [ -L \"$2\" ] || [ ! -e \"$2\" ]; then ln -sfn \"$1\" \"$2\"; fi; }\n");
+            foreach (var pair in links)
+            {
+                // The link's folder exists; its last part may not (Wine still gives the Unix path).
+                string folder = UnixPath(Path.GetDirectoryName(Path.GetFullPath(pair.Key)));
+                text.Append("link " + Quote(UnixPath(pair.Value)) + " " +
+                            Quote(folder.TrimEnd('/') + "/" + Path.GetFileName(pair.Key)) + "\n");
+            }
+            text.Append("echo done > " + Quote(UnixPath(done)) + "\n");
+            File.WriteAllText(script, text.ToString(), new UTF8Encoding(false));
+            try
+            {
+                var startup = new StartupInfo { cb = Marshal.SizeOf(typeof(StartupInfo)) };
+                ProcessInformation information;
+                var command = new StringBuilder("\"" + DosPath("/bin/sh") + "\" \"" + UnixPath(script) + "\"");
+                const uint CreateNoWindow = 0x08000000;
+                if (!CreateProcess(null, command, IntPtr.Zero, IntPtr.Zero, false, CreateNoWindow, IntPtr.Zero, null,
+                                   ref startup, out information))
+                    throw new Exception("Could not start /bin/sh to link the game's files (error " +
+                                        Marshal.GetLastWin32Error() + ").");
+                if (information.thread != IntPtr.Zero) CloseHandle(information.thread);
+                if (information.process != IntPtr.Zero) CloseHandle(information.process);
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+                while (!File.Exists(done) && DateTime.UtcNow < deadline) Thread.Sleep(50);
+                if (!File.Exists(done)) throw new Exception("Linking the game's files with /bin/sh did not finish.");
+            }
+            finally
+            {
+                try { File.Delete(script); } catch { }
+                try { File.Delete(done); } catch { }
+            }
         }
     }
 
@@ -2983,7 +3105,8 @@ namespace RyGT
 
         void RefreshState()
         {
-            bool ready = File.Exists(Exe) && GameFile("contents\\gt.idx") != null;
+            bool ready = File.Exists(Exe) && (RuntimeReadsGameFolders() ? GameFile("contents\\gt.idx") != null
+                                                         : File.Exists(Path.Combine(root, "app0", "contents", "gt.idx")));
             bool running = IsGameRunning();
             play.Enabled = ready && !busy && !running;
             setup.Enabled = !busy && !running;
@@ -3173,7 +3296,12 @@ namespace RyGT
             // 3. app0: only the converted modules. The game reads its own files from the update, then the
             //    base game folder (FEAT-GTS-251; see core/libs/prx/libc/include/AppOverlay.hpp).
             SetStatus("Linking the game files...");
-            UseGameFoldersDirectly(layout, convertedModules);
+            if (RuntimeReadsGameFolders()) UseGameFoldersDirectly(layout, convertedModules);
+            else
+            {
+                Log("These runtime libraries need the game's files linked into app0.");
+                LinkGameFiles(layout, convertedModules);
+            }
             File.Copy(convertedExe, Exe, true);
             string registry = Path.ChangeExtension(convertedExe, ".registry.json");
             if (File.Exists(registry)) File.Copy(registry, Path.ChangeExtension(Exe, ".registry.json"), true);
@@ -3303,6 +3431,66 @@ namespace RyGT
                 Log("Converter finished with exit code " + process.ExitCode + " (full output in convert\\convert.log).");
                 return process.ExitCode;
             }
+        }
+
+        // With a runtime that can't read the game folders (see RuntimeReadsGameFolders), app0 is linked
+        // as before.
+        void LinkGameFiles(GameLayout layout, string convertedModules)
+        {
+            string app0 = Path.Combine(root, "app0");
+            string stage = Path.Combine(root, "app0.setup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            var unixLinks = new Dictionary<string, string>();
+            int linked = 0;
+            foreach (var pair in layout.Files)
+            {
+                if (pair.Key.Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.StartsWith("sce_module\\", StringComparison.OrdinalIgnoreCase)) continue;
+                string target = Path.Combine(stage, pair.Key);
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                if (Wine.Detected) unixLinks[target] = pair.Value;
+                else if (!Native.CreateHardLink(target, pair.Value, IntPtr.Zero) &&
+                         !Native.CreateSymbolicLink(target, pair.Value, 2))
+                    throw new Exception("Could not link " + pair.Value + ". Keep ryGT7 on the game's drive or enable Windows Developer Mode.");
+                linked++;
+            }
+            if (Wine.Detected) Wine.Link(unixLinks);
+            foreach (var pair in layout.Files)
+            {
+                if (pair.Key.Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.StartsWith("sce_module\\", StringComparison.OrdinalIgnoreCase)) continue;
+                string problem = ReadProblem(Path.Combine(stage, pair.Key), new FileInfo(pair.Value).Length);
+                if (problem != null) throw new Exception("Linked " + pair.Key + " " + problem + ".");
+            }
+            // The converter writes its modules under app0. Copy those small converted files,
+            // never the source PRX files, into the new data tree before swapping directories.
+            CopyDirectory(convertedModules, Path.Combine(stage, "sce_module"));
+            string previous = app0 + ".previous-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff");
+            if (Directory.Exists(app0)) Directory.Move(app0, previous);
+            try { Directory.Move(stage, app0); }
+            catch { if (Directory.Exists(previous)) Directory.Move(previous, app0); throw; }
+            Log("Linked " + linked + " game files. Update files override matching base files; other base files are preserved.");
+        }
+
+        /// Whether the installed runtime reads /app0 from the game folders itself (FEAT-GTS-251): its
+        /// libc exports ListLayeredDirectory. Release packages can pair a new launcher with older
+        /// runtime libraries, which only find the game's files when they are linked into app0.
+        bool RuntimeReadsGameFolders()
+        {
+            try
+            {
+                byte[] data = File.ReadAllBytes(Path.Combine(root, "libs", "libc.prx"));
+                byte[] name = Encoding.ASCII.GetBytes("ListLayeredDirectory_nid_no_patch");
+                for (int i = 0; i + name.Length <= data.Length; i++)
+                {
+                    if (data[i] != name[0]) continue;
+                    int j = 1;
+                    while (j < name.Length && data[i + j] == name[j]) j++;
+                    if (j == name.Length) return true;
+                }
+            }
+            catch { }
+            return false;
         }
 
         // FEAT-GTS-251: the game reads /app0 straight from the update and base game folders (RyGT.ini
@@ -3550,7 +3738,8 @@ namespace RyGT
             if (IsGameRunning()) { RefreshState(); return; }
             if (!File.Exists(Exe)) { MessageBox.Show(this, "Press Set up first."); return; }
             // Without its data index GT7 closes right after the splash screen.
-            string dataIndex = GameFile("contents\\gt.idx");
+            string dataIndex = RuntimeReadsGameFolders() ? GameFile("contents\\gt.idx") : null;
+            if (dataIndex == null && File.Exists(Path.Combine(root, "app0", "contents", "gt.idx"))) dataIndex = Path.Combine(root, "app0", "contents", "gt.idx");
             string dataProblem = dataIndex == null ? "is missing" : ReadProblem(dataIndex, -1);
             if (dataProblem != null)
             {
