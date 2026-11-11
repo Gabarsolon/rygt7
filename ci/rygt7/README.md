@@ -55,6 +55,17 @@ control/run identity. The historical release's gameplay and build-provenance
 claims are replaced with accurate CI notes. Game executables/data, firmware,
 fonts, saves, personal settings, logs and shader caches are excluded.
 
+## Code signing
+
+CI Authenticode-signs the launcher with a self-signed certificate
+(`CN=RyGT-Team, O=RyGT-Team`) before checksums and packaging, via
+`ci/rygt7/sign-windows.ps1`. Set repository secrets `CODESIGN_PFX_BASE64` (base64 PFX) and
+`CODESIGN_PFX_PASSWORD` to use one stable certificate for every build; without
+them each run signs with a throwaway certificate. The signature is not trusted
+by Windows unless the certificate is installed as trusted, so SmartScreen and
+"Unknown publisher" warnings can still appear. Local builds sign only when
+`RYGT_CODESIGN=1`.
+
 ## Artifact delivery
 
 The controller validates archive identity, every file hash, safe ZIP paths and

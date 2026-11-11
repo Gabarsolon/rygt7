@@ -76,6 +76,8 @@ try {
     Invoke-Checked $runtimeCmake @('--build',$runtimeBuild,'--target','ryty','libs','ryty-wheel-probe','--parallel','4')
     $launcher = Join-Path $workspace 'launcher'; New-Item -ItemType Directory -Path $launcher | Out-Null
     Invoke-CmdFile (Join-Path $source 'loader\build.cmd') $launcher
+    if (!(Test-Path -LiteralPath (Join-Path $launcher 'RyGT7.exe'))) { throw 'Launcher output missing' }
+    if ($env:RYGT_CODESIGN -eq '1') { & (Join-Path $PSScriptRoot 'sign-windows.ps1') -Path (Join-Path $launcher 'RyGT7.exe') }
     $stubDir = Join-Path $workspace 'gt7-stubs'
     $env:PATH = "$llvm\bin;$ucrt\bin;$msysBin;$oldPath"
     $env:LIB = "$($builtins.DirectoryName);$oldLib"
