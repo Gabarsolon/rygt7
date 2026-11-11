@@ -19,8 +19,13 @@ $pfx = Join-Path ([IO.Path]::GetTempPath()) ("rygt-codesign-" + [guid]::NewGuid(
 try {
     if ($env:CODESIGN_PFX_BASE64) {
         if (!$env:CODESIGN_PFX_PASSWORD) { throw 'CODESIGN_PFX_PASSWORD is required with CODESIGN_PFX_BASE64' }
-        [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
-        $password = $env:CODESIGN_PFX_PASSWORD
+        $pfxBytes = [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64.Trim())
+        [IO.File]::WriteAllBytes($pfx, $pfxBytes)
+        # Secrets set by piping (or the interactive prompt) can pick up a trailing newline.
+        $password = $env:CODESIGN_PFX_PASSWORD.Trim()
+        $pfxHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($pfxBytes)).Replace('-', '').Substring(0, 12)
+        Write-Output ("PFX secret: {0} bytes, sha256 {1}; password: {2} chars ({3} before trimming)" -f
+            $pfxBytes.Length, $pfxHash, $password.Length, $env:CODESIGN_PFX_PASSWORD.Length)
         $origin = 'configured self-signed certificate'
     } else {
         $password = [guid]::NewGuid().ToString('N')
