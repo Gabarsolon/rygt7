@@ -119,5 +119,12 @@
     "url": "https://github.com/KytyPS5/ext-ffmpeg-core/releases/download/9ac4cfd195f1/ffmpeg-mingw-x64.zip",
     "sha256": "e4be9938b321da5f53e248d8ae947c984390e09d0f59fb6855644a972126e26b",
     "note": "3rdparty/ffmpeg-core at this commit downloads the same file; pinned here so it cannot change unnoticed."
+  },
+  "fidelityfx": {
+    "version": "FidelityFX SDK v1.1.4",
+    "dll_url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/PrebuiltSignedDLL/amd_fidelityfx_vk.dll",
+    "dll_sha256": "a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78",
+    "license_url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/LICENSE.txt",
+    "license_sha256": "82cf74fc23885107c7f69249ac3f1dac55898ff68320eb2c753984cae6b2d78a"
   }
 }

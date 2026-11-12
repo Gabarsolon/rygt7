@@ -110,8 +110,9 @@ try {
     # Exercise the actual protobuf resource rule before the large renderer build.
     Invoke-Checked $nativeNinja @('-C',$rendererBuild,'externals/protobuf/CMakeFiles/libprotobuf.dir/version.rc.res')
     Invoke-Checked $nativeCmake @('--build',$rendererBuild,'--target','ryty_gpu','ryty_audio3d','ryty_ajm','ryty_ngs2','ryty_zlib','ryty_discmap','ryty_screenshot','ryty_np','--parallel','4')
-    $base = Join-Path $workspace 'runtime-base.zip'
-    Invoke-WebRequest -Uri 'https://gitlab.com/api/v4/projects/88084032/packages/generic/rygt7/2026-10-31/RyGT7-2026-10-31-prerelease.zip' -OutFile $base
+    # FEAT-GTS-253: no runtime archive; AMD's FidelityFX runtime is the only file not built here.
+    $fidelityfx = & $nativePython $toolchainScript fidelityfx $ToolsRoot | Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0 -or !$fidelityfx) { throw 'Pinned AMD FidelityFX runtime unavailable' }
     $runtimeSubmodules = @(& git -C $source submodule status --recursive)
     if ($LASTEXITCODE -ne 0 -or @($runtimeSubmodules | Where-Object { $_ -match '^[-+U]' }).Count -ne 0) { throw 'Runtime submodule checkout mismatch' }
     $rendererSubmodules = @(& git -C $renderer submodule status --recursive)
@@ -122,6 +123,6 @@ try {
         ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $toolchainInfo
     $packageOut = Join-Path $workspace 'dist'; New-Item -ItemType Directory -Path $packageOut | Out-Null
     $name = "RyGT7-ci-$($SourceSha.Substring(0,8))"
-    Invoke-Checked $nativePython @((Join-Path $PSScriptRoot 'assemble.py'), '--source',$source,'--base',$base,'--runtime',(Join-Path $workspace 'assembled-runtime'), '--built-libs',(Join-Path $runtimeBuild 'core\libs\libs'), '--renderer-build',$rendererBuild,'--stubs',$stubDir,'--ucrt',$ucrt,'--info',(Join-Path $workspace 'BUILD_INFO.json'),'--launcher',(Join-Path $launcher 'RyGT7.exe'),'--converter',(Join-Path $runtimeBuild 'core\relinker\ryty.exe'),'--renderer-source',$renderer,'--wheel-probe',(Join-Path $runtimeBuild 'core\libs\prx\libScePad\ryty-wheel-probe.exe'),'--out',$packageOut,'--source-sha',$SourceSha,'--renderer-sha',$RendererSha,'--renderer-configured-url',$pin.repository,'--renderer-fetch-url',$mirror,'--toolchain-info',$toolchainInfo,'--name',$name)
+    Invoke-Checked $nativePython @((Join-Path $PSScriptRoot 'assemble.py'), '--source',$source,'--fidelityfx',$fidelityfx,'--runtime',(Join-Path $workspace 'assembled-runtime'), '--built-libs',(Join-Path $runtimeBuild 'core\libs\libs'), '--renderer-build',$rendererBuild,'--stubs',$stubDir,'--ucrt',$ucrt,'--info',(Join-Path $workspace 'BUILD_INFO.json'),'--launcher',(Join-Path $launcher 'RyGT7.exe'),'--converter',(Join-Path $runtimeBuild 'core\relinker\ryty.exe'),'--renderer-source',$renderer,'--wheel-probe',(Join-Path $runtimeBuild 'core\libs\prx\libScePad\ryty-wheel-probe.exe'),'--out',$packageOut,'--source-sha',$SourceSha,'--renderer-sha',$RendererSha,'--renderer-configured-url',$pin.repository,'--renderer-fetch-url',$mirror,'--toolchain-info',$toolchainInfo,'--name',$name)
     Write-Output "GT7 package: $packageOut\$name.zip"
 } finally { $env:PATH=$oldPath; $env:LIB=$oldLib }

@@ -2,7 +2,6 @@ import importlib.util
 import json
 import tempfile
 import unittest
-import zipfile
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,50 +14,52 @@ class AssemblyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        for x in ('source/build-support', 'built', 'renderer', 'stubs', 'ucrt/bin', 'out'):
+        for x in ('source/build-support', 'built', 'renderer', 'stubs', 'ucrt/bin', 'out', 'fidelityfx'):
             (self.root / x).mkdir(parents=True)
         self.names = list(module.RENDERER_LIBS) + list(module.STUB_LIBS) + list(module.GCC_DLLS) + list(module.REQUIRED_RUNTIME) + ['old.prx']
         (self.root/'source/build-support/runtime-files.txt').write_text('\n'.join(self.names))
-        self.base = self.root/'base.zip'
-        with zipfile.ZipFile(self.base, 'w') as z:
-            z.writestr('base/manifest.json', '{}')
-            for n in self.names: z.writestr('base/libs/'+n, b'base')
-            for n in ('amd_fidelityfx_vk.dll','amd_fidelityfx_vk-LICENSE.txt'): z.writestr('base/'+n, b'fsr')
-            z.writestr('base/user/save.bin', b'private')
-        self.old_hash = module.BASE_SHA256; module.BASE_SHA256 = module.sha(self.base)
-        self.addCleanup(setattr, module, 'BASE_SHA256', self.old_hash)
+        # FEAT-GTS-253: no runtime archive; AMD's FidelityFX runtime is checked against its pin.
+        for n in ('amd_fidelityfx_vk.dll','amd_fidelityfx_vk-LICENSE.txt'): (self.root/'fidelityfx'/n).write_bytes(n.encode())
+        pins = dict(module.FIDELITYFX, dll_sha256=module.sha(self.root/'fidelityfx/amd_fidelityfx_vk.dll'),
+                    license_sha256=module.sha(self.root/'fidelityfx/amd_fidelityfx_vk-LICENSE.txt'))
+        pinned = patch.object(module, 'FIDELITYFX', pins); pinned.start(); self.addCleanup(pinned.stop)
         for n in module.RENDERER_LIBS: (self.root/'renderer'/n).write_bytes(b'renderer')
         for n in module.STUB_LIBS: (self.root/'stubs'/n).write_bytes(b'stub')
         for n in module.GCC_DLLS: (self.root/'ucrt/bin'/n).write_bytes(b'ucrt')
         for n in module.REQUIRED_RUNTIME: (self.root/'built'/n).write_bytes(b'fresh runtime')
         (self.root/'built/old.prx').write_bytes(b'fresh')
         for n in ('launcher.exe','converter.exe','probe.exe'): (self.root/n).write_bytes(n.encode())
-        self.args = SimpleNamespace(source=self.root/'source',base=self.base,runtime=self.root/'assembled',
+        self.args = SimpleNamespace(source=self.root/'source',fidelityfx=self.root/'fidelityfx',runtime=self.root/'assembled',
           built_libs=self.root/'built',renderer_build=self.root/'renderer',stubs=self.root/'stubs',ucrt=self.root/'ucrt',
           info=self.root/'BUILD_INFO.json',source_sha='a'*40,renderer_sha='b'*40,renderer_configured_url='configured',
           renderer_fetch_url='mirror', launcher=self.root/'launcher.exe',converter=self.root/'converter.exe',
           wheel_probe=self.root/'probe.exe',renderer_source=self.root/'renderer',out=self.root/'out',name='RyGT7-ci-aaaaaaaa')
 
-    def test_allowlist_overlay_and_private_exclusion(self):
+    def test_every_file_from_a_build_or_pin(self):
         module.assemble(self.args)
         info=json.loads(self.args.info.read_text())
         self.assertEqual(info['runtime_files']['libs/old.prx']['origin'],'rygt7-source-build')
         self.assertEqual(info['runtime_files']['libs/libSceVideoOut.prx']['origin'],'shadgt7-source-build')
         self.assertEqual(info['runtime_files']['libs/libSceMbus.prx']['origin'],'rygt7-gt7-stub-build')
         self.assertEqual(info['runtime_files']['libs/libstdc++-6.dll']['origin'],'ucrt64-toolchain')
-        self.assertFalse((self.args.runtime/'user').exists())
+        self.assertEqual(info['runtime_files']['amd_fidelityfx_vk.dll']['origin'],'amd-fidelityfx-sdk')
+        self.assertNotIn('base_url', info)
+        self.assertEqual({record['origin'] for record in info['runtime_files'].values()},
+                         {'rygt7-source-build','shadgt7-source-build','rygt7-gt7-stub-build','ucrt64-toolchain','amd-fidelityfx-sdk'})
         self.assertEqual((self.args.runtime/'libs/old.prx').read_bytes(),b'fresh')
 
     def test_hash_mismatch_and_missing_renderer_fail(self):
-        module.BASE_SHA256='0'*64
-        with self.assertRaisesRegex(ValueError,'SHA256'): module.assemble(self.args)
-        module.BASE_SHA256=module.sha(self.base)
+        (self.root/'fidelityfx/amd_fidelityfx_vk.dll').write_bytes(b'tampered')
+        with self.assertRaisesRegex(ValueError,'does not match the pinned'): module.assemble(self.args)
+        (self.root/'fidelityfx/amd_fidelityfx_vk.dll').write_bytes(b'amd_fidelityfx_vk.dll')
+        import shutil; shutil.rmtree(self.args.runtime)
         (self.root/'renderer'/module.RENDERER_LIBS[0]).unlink()
         with self.assertRaisesRegex(ValueError,'expected one'): module.assemble(self.args)
 
-    def test_required_fresh_runtime_cannot_fall_back_to_base(self):
-        (self.root/'built'/module.REQUIRED_RUNTIME[0]).unlink()
-        with self.assertRaisesRegex(ValueError,'required fresh runtime output missing'):
+    def test_unbuilt_allowlisted_file_fails(self):
+        # FEAT-GTS-253: nothing falls back to an archive any more.
+        (self.root/'built/old.prx').unlink()
+        with self.assertRaisesRegex(ValueError,'was not built: old.prx'):
             module.assemble(self.args)
 
     def test_invalid_allowlist_rejected(self):

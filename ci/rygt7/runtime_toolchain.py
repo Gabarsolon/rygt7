@@ -8,6 +8,8 @@ in ci/rygt7/runtime-toolchain.json (file names and SHA-256s), the same pins as R
                                                       prints the folder holding gcc.exe
   python ci/rygt7/runtime_toolchain.py ffmpeg <folder>    download, verify and unpack the pinned FFmpeg
                                                       package; prints the folder for FFMPEG_PREBUILT_DIR
+  python ci/rygt7/runtime_toolchain.py fidelityfx <folder>  download and verify AMD's FidelityFX runtime
+                                                      (amd_fidelityfx_vk.dll and its license); prints the folder
   python ci/rygt7/runtime_toolchain.py pin <cutoff date>  (maintainers) rewrite the pins: each package at the
                                                       newest version MSYS2 published on or before the date
 """
@@ -135,6 +137,23 @@ def ffmpeg(folder):
     return root
 
 
+def fidelityfx(folder):
+    """FEAT-GTS-253: downloads AMD's signed FidelityFX runtime from its SDK release, checked by SHA-256."""
+    pinned = json.loads(PINS.read_text(encoding='utf-8-sig'))['fidelityfx']
+    folder = Path(folder) / 'fidelityfx'
+    folder.mkdir(parents=True, exist_ok=True)
+    for url, digest, name in ((pinned['dll_url'], pinned['dll_sha256'], 'amd_fidelityfx_vk.dll'),
+                              (pinned['license_url'], pinned['license_sha256'], 'amd_fidelityfx_vk-LICENSE.txt')):
+        target = folder / name
+        if not target.exists() or sha256(target) != digest:
+            with urllib.request.urlopen(url) as response, open(target, 'wb') as output:
+                output.write(response.read())
+        if sha256(target) != digest:
+            target.unlink()
+            raise RuntimeError('SHA-256 mismatch for ' + name)
+    return folder
+
+
 def pin(cutoff):
     """Rewrites runtime-toolchain.json from MSYS2's file list (maintainers only)."""
     limit = datetime.strptime(cutoff, '%Y-%m-%d')
@@ -163,8 +182,8 @@ def pin(cutoff):
                          'sha256': sha256(download(name, cache / name))})
     previous = json.loads(PINS.read_text(encoding='utf-8-sig')) if PINS.exists() else {}
     document = {'repository': REPOSITORY, 'cutoff': cutoff, 'packages': packages}
-    if 'ffmpeg' in previous:
-        document['ffmpeg'] = previous['ffmpeg']
+    for key, value in previous.items():  # ffmpeg, fidelityfx: pinned by hand
+        document.setdefault(key, value)
     PINS.write_text(json.dumps(document, indent=2) + '\n', encoding='utf-8')
     for package in packages:
         print(package['file'], package['published'])
@@ -175,6 +194,8 @@ if __name__ == '__main__':
         print(install(sys.argv[2]))
     elif len(sys.argv) == 3 and sys.argv[1] == 'ffmpeg':
         print(ffmpeg(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == 'fidelityfx':
+        print(fidelityfx(sys.argv[2]))
     elif len(sys.argv) == 3 and sys.argv[1] == 'pin':
         pin(sys.argv[2])
     else:

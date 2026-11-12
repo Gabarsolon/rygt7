@@ -10,6 +10,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 HERE=Path(__file__).resolve().parent
 
@@ -33,7 +34,7 @@ class PackageIntegration(unittest.TestCase):
         validator.RENDERER=subprocess.check_output(['git','-C',str(renderer_source),'rev-parse','HEAD'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='gt7-ci-package-test-') as tmp:
             root=Path(tmp)
-            for n in ('built','renderer/externals/fixture','stubs','ucrt/bin','deps/fixture','out'):
+            for n in ('built','renderer/externals/fixture','stubs','ucrt/bin','deps/fixture','out','fidelityfx'):
                 (root/n).mkdir(parents=True)
             (root/'renderer/LICENSE').write_text('renderer license')
             (root/'renderer/externals/fixture/LICENSE').write_text('dependency license')
@@ -45,19 +46,17 @@ class PackageIntegration(unittest.TestCase):
             for n in ('libgcc','libstdc++','libwinpthread'):
                 p=root/'ucrt/share/licenses'/n;p.mkdir(parents=True);(p/'LICENSE').write_text('runtime license')
             names=[x.strip() for x in (source/'build-support/runtime-files.txt').read_text().splitlines() if x.strip() and not x.startswith('#')]
-            base=root/'base.zip'
-            with zipfile.ZipFile(base,'w') as z:
-                z.writestr('base/manifest.json','{}')
-                for n in names:z.writestr('base/libs/'+n,b'base fixture')
-                for n in ('amd_fidelityfx_vk.dll','amd_fidelityfx_vk-LICENSE.txt'):z.writestr('base/'+n,b'fsr fixture')
-                z.writestr('base/user/save.bin',b'private fixture')
-            assembler.BASE_SHA256=validator.BASE=assembler.sha(base)
-            for n in assembler.REQUIRED_RUNTIME:(root/'built'/n).write_bytes(b'runtime fixture')
+            # FEAT-GTS-253: every allowlisted library is a build output; no runtime archive.
+            for n in names:(root/'built'/n).write_bytes(b'runtime fixture')
+            for n in ('amd_fidelityfx_vk.dll','amd_fidelityfx_vk-LICENSE.txt'):(root/'fidelityfx'/n).write_bytes(b'fsr fixture')
+            fixture_sha=assembler.sha(root/'fidelityfx/amd_fidelityfx_vk.dll')
+            pinned=mock.patch.object(assembler,'FIDELITYFX',dict(assembler.FIDELITYFX,dll_sha256=fixture_sha,license_sha256=fixture_sha))
+            pinned.start();self.addCleanup(pinned.stop)
             for n in assembler.RENDERER_LIBS:(root/'renderer'/n).write_bytes(b'renderer fixture')
             for n in assembler.STUB_LIBS:(root/'stubs'/n).write_bytes(b'stub fixture')
             for n in assembler.GCC_DLLS:(root/'ucrt/bin'/n).write_bytes(b'ucrt fixture')
             for n in ('launcher.exe','converter.exe','probe.exe'):(root/n).write_bytes(b'fixture')
-            args=SimpleNamespace(source=source,base=base,runtime=root/'assembled',built_libs=root/'built',
+            args=SimpleNamespace(source=source,fidelityfx=root/'fidelityfx',runtime=root/'assembled',built_libs=root/'built',
               renderer_build=root/'renderer',stubs=root/'stubs',ucrt=root/'ucrt',info=root/'BUILD_INFO.json',
               source_sha=commit,renderer_sha=validator.RENDERER,renderer_configured_url=validator.CONFIGURED,
               renderer_fetch_url=validator.FETCHED,launcher=root/'launcher.exe',converter=root/'converter.exe',
