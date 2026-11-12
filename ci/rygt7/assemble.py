@@ -8,7 +8,7 @@ import re
 import shutil
 import sys
 import zipfile
-from import_audit import audit
+from import_audit import audit, pe
 from renderer_provenance import verify as verify_renderer
 from pathlib import Path, PurePosixPath
 
@@ -35,6 +35,15 @@ def launcher_version(source_root):
 def sha(path):
     with Path(path).open('rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()
+
+def is_stub(path):
+    """A placeholder module: it exports nothing but DummyFunction_nid_no_patch."""
+    try:
+        names, _, _ = pe(path)
+    except ValueError:
+        return False  # not a PE image at all: the import audit reports that
+    return set(names) <= {'DummyFunction_nid_no_patch'}
+
 
 def one_file(folder, name):
     found = [p for p in Path(folder).rglob('*') if p.is_file() and p.name.lower() == name.lower()]
@@ -73,7 +82,13 @@ def assemble(args):
     # A clean build directory is required; only exact allowlisted names are considered.
     for item in args.built_libs.iterdir():
         if item.is_file() and item.name.lower() in allow:
-            name = allow[item.name.lower()]; shutil.copyfile(item, libs / name)
+            name = allow[item.name.lower()]
+            # FEAT-GTS-252 (as RyGTS's FEAT-GTS-260): a stub this source builds for a module it does
+            # not implement never replaces a real module from the base; the game imports from it.
+            if is_stub(item) and not is_stub(libs / name):
+                origins['libs/' + name] = {'origin': 'pinned-base', 'note': 'kept over a source-built stub'}
+                continue
+            shutil.copyfile(item, libs / name)
             origins['libs/' + name] = {'origin': 'rygt7-source-build'}
     for name in REQUIRED_RUNTIME:
         if name.lower() not in allow or origins['libs/' + allow[name.lower()]]['origin'] != 'rygt7-source-build':
