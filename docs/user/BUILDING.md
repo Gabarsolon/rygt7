@@ -76,7 +76,9 @@ hashlib). On Windows two additional ELF-patcher tests run.
 
 ## Windows toolchain note
 
-The runtime libraries on Windows require MinGW-w64 GCC 15.2.0
-(`winlibs-gcc15`, `x86_64-ucrt-posix-seh`); compiled PRX libraries additionally
-need `libgcc_s_seh-1.dll`, `libstdc++-6.dll` and `libwinpthread-1.dll` next to
-them. The relinker CLI itself builds with any C++20 toolchain.
+The runtime libraries on Windows are built with MSYS2's UCRT64 GCC 16.2.0, the
+exact packages pinned in `ci/rygt7/runtime-toolchain.json`. `python
+ci/rygt7/runtime_toolchain.py install <folder>` downloads, checks and unpacks them (it
+needs `pip install zstandard`). Configure with `-DBUILD_TESTING=OFF
+-DRTY_ENABLE_LTO=OFF`. Compiled PRX libraries need that toolchain's
+`libgcc_s_seh-1.dll`, `libstdc++-6.dll` and `libwinpthread-1.dll` next to them. The relinker CLI itself builds with any C++20 toolchain.

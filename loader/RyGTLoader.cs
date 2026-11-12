@@ -16,6 +16,9 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyCompany("RyGT-Team")]
+[assembly: System.Reflection.AssemblyProduct("ryGT7")]
+[assembly: System.Reflection.AssemblyTitle("ryGT7 Launcher")]
+[assembly: System.Reflection.AssemblyDescription("ryGT7 Launcher")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 RyGT-Team")]
 
 namespace RyGT
@@ -3952,6 +3955,12 @@ namespace RyGT
                 Environment.SetEnvironmentVariable("TEMP", temp);
             }
             catch { }
+            if (args.Length == 2 && args[0] == "--allow-firewall")
+            {
+                // Started elevated by the Online page's firewall button.
+                try { return OnlinePlay.AddFirewallRules(args[1]); }
+                catch { return 1; }
+            }
             if (args.Contains("--setup")) return new LoaderForm().SetupWithoutWindow();
             if (args.Length == 2 && args[0] == "--prepare")
             {
