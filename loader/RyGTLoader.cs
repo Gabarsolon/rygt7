@@ -1874,6 +1874,92 @@ namespace RyGT
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
 
+            // NEO-GT7: GT7's own PS4 Pro mode and six of its settings. GPU.ps4_pro_mode: off (PS4), 4k (a Pro on
+            // a 4K TV), 1080p (a Pro on a 1080p TV), full (all six) or custom; the boxes are GPU.ps4_pro_checkerboard,
+            // ps4_pro_blur, ps4_pro_replays60, ps4_pro_replay_blur, ps4_pro_garage60 and ps4_pro_lod. A mode other
+            // than custom ticks the boxes as that console has them, and the boxes pick the mode back: as a console
+            // has them, that mode; any other choice, custom. Only the checkerboard box turns the Pro mode on in
+            // custom. StartGame turns them into RYGT_NEO, RYGT_NEO_TV and RYGT_NEO_EXTRAS (NEO-GT7-014 in the renderer).
+            var pro = Section(graphicsPage, "PS4 Pro mode");
+            var proKeys = new[] { "off", "4k", "1080p", "full", "custom" };
+            var proMode = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320, FlatStyle = FlatStyle.Flat };
+            proMode.Items.AddRange(new object[] { "PS4 (no Pro mode)", "PS4 Pro, 4K TV", "PS4 Pro, 1080p TV", "Full (everything on)", "Custom" });
+            proMode.SelectedIndex = Math.Max(0, Array.IndexOf(proKeys, ReadStringSetting("GPU", "ps4_pro_mode", "off")));
+            var proNote = noteLabel();
+            pro.Controls.Add(comboRow("Mode", proMode, proNote));
+            pro.Controls.Add(proNote);
+            var proBoxKeys = new[] { "ps4_pro_checkerboard", "ps4_pro_blur", "ps4_pro_replays60", "ps4_pro_replay_blur",
+                                     "ps4_pro_garage60", "ps4_pro_lod" };
+            var proBoxTexts = new[]
+            {
+                "3200 x 1800 with the game's own checkerboard and its 4K interface",
+                "Motion blur in races",
+                "Replays and photo mode at 60 fps instead of 30",
+                "Extra blur in replays and photo mode",
+                "High-quality garage scenes at 60 fps instead of 30",
+                "Level of detail kept 1.3 times farther (buildings, car geometry and decals)",
+            };
+            var proBoxes = new CheckBox[proBoxKeys.Length];
+            for (int i = 0; i < proBoxKeys.Length; i++) proBoxes[i] = AddOption(pro, proBoxTexts[i], "GPU", proBoxKeys[i], false);
+            pro.Controls.Add(Hint("The game's own PS4 Pro settings. A mode ticks the boxes as that console has them; change a box to make " +
+                                  "your own (Custom). Every box costs GPU time, the checkerboard most. Applies at the next game start."));
+            pro.Controls.Add(Hint("Checked on an NVIDIA RTX 4070 only, where the game alone used about 5 GB of video memory in a race with everything on. " +
+                                  "With the checkerboard a race can drop below 30 fps. Without the checkerboard, the boxes run in the PS4 " +
+                                  "mode, except all five together: that is the PS4 Pro 1080p TV mode."));
+            bool proApplying = false;
+            Action proRefresh = delegate
+            {
+                int p = proMode.SelectedIndex;
+                proNote.Text = p == 0 ? "As a PS4: native 1920 x 1080, no box ticked."
+                             : p == 1 ? "As a PS4 Pro on a 4K TV: the checkerboard picture, the other settings off."
+                             : p == 2 ? "As a PS4 Pro on a 1080p TV (PS4 Pro mode on): native 1920 x 1080, the five other settings on."
+                             : p == 3 ? "Everything on: the 4K TV picture with the 1080p TV's settings. The heaviest."
+                             : proBoxes[0].Checked ? "Your own choice of the boxes below, in the game's PS4 Pro mode (checkerboard)."
+                                                   : "Your own choice of the boxes below, in the PS4 mode (no checkerboard).";
+            };
+            // The boxes a mode ticks: 4K TV the checkerboard alone, 1080p TV the five others, Full all six.
+            Action proApply = delegate
+            {
+                int p = proMode.SelectedIndex;
+                if (p == 4) return;
+                proApplying = true;
+                for (int i = 0; i < proBoxes.Length; i++)
+                    proBoxes[i].Checked = p == 3 || (p == 1 && i == 0) || (p == 2 && i != 0);
+                proApplying = false;
+            };
+            // The mode the boxes make: none PS4, the checkerboard alone 4K TV, the five others 1080p TV, all six
+            // Full, anything else Custom (keeping the boxes as they are).
+            Func<int> proModeOfBoxes = delegate
+            {
+                int others = 0;
+                for (int i = 1; i < proBoxes.Length; i++) if (proBoxes[i].Checked) others++;
+                bool checkerboard = proBoxes[0].Checked;
+                if (!checkerboard && others == 0) return 0;
+                if (checkerboard && others == 0) return 1;
+                if (!checkerboard && others == proBoxes.Length - 1) return 2;
+                if (checkerboard && others == proBoxes.Length - 1) return 3;
+                return 4;
+            };
+            foreach (var box in proBoxes)
+            {
+                box.CheckedChanged += delegate
+                {
+                    if (proApplying) return;
+                    int boxesMode = proModeOfBoxes();
+                    if (boxesMode != proMode.SelectedIndex) proMode.SelectedIndex = boxesMode;
+                    else proRefresh();
+                };
+            }
+            proMode.SelectedIndexChanged += delegate
+            {
+                try { WriteSetting("GPU", "ps4_pro_mode", proKeys[Math.Max(0, proMode.SelectedIndex)]); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+                proApply();
+                proRefresh();
+            };
+            proApply();
+            proRefresh();
+
             bool loading = true;
             Func<string, bool> has = name => File.Exists(Path.Combine(dlssDir, name));
             Func<bool> dlssReady = () => has("nvngx_dlss.dll") && ((has("sl.interposer.dll") && has("sl.common.dll") && has("sl.dlss.dll")) || has("ryGT_dlss.dll"));
@@ -3859,6 +3945,35 @@ namespace RyGT
                         start.EnvironmentVariables["RYGT_UPSCALE_QUALITY"] = GpuSetting(root, "upscale_quality") as string ?? "auto";
                         // Texture sharpness from the Graphics page (detail levels added to every sampler's bias).
                         start.EnvironmentVariables["RYGT_TEXTURE_LOD_BIAS"] = GpuSetting(root, "texture_lod_bias") as string ?? "0";
+                        // PS4 Pro mode from the Graphics page (NEO-GT7). PS4 (off) sets nothing, so a launcher
+                        // script's own values stay. The other modes set or remove all three variables themselves:
+                        // RYGT_NEO=1 with the checkerboard (4K TV, Full, Custom with its box), plus RYGT_NEO_TV=1080
+                        // for the 1080p TV; RYGT_NEO_EXTRAS lists the five other settings when they differ from what
+                        // the game picks by itself (none in the PS4 and 4K TV presets, all five in the 1080p TV one).
+                        // The modes other than custom are read as the console has them, not from the boxes.
+                        string proSetting = GpuSetting(root, "ps4_pro_mode") as string ?? "off";
+                        if (proSetting == "4k" || proSetting == "1080p" || proSetting == "full" || proSetting == "custom")
+                        {
+                            Func<string, bool> proBox = key => { object on = GpuSetting(root, key); return on is bool && (bool)on; };
+                            bool custom = proSetting == "custom";
+                            bool tv1080 = proSetting == "1080p";
+                            bool neo = tv1080 || (custom ? proBox("ps4_pro_checkerboard") : true);
+                            if (neo) start.EnvironmentVariables["RYGT_NEO"] = "1";
+                            else start.EnvironmentVariables.Remove("RYGT_NEO");
+                            if (tv1080) start.EnvironmentVariables["RYGT_NEO_TV"] = "1080";
+                            else start.EnvironmentVariables.Remove("RYGT_NEO_TV");
+                            var proOptionsOn = new List<string>();
+                            var proOptionNames = new[] { "ps4_pro_blur", "blur", "ps4_pro_replays60", "replays60",
+                                                         "ps4_pro_replay_blur", "replayblur", "ps4_pro_garage60", "garage60",
+                                                         "ps4_pro_lod", "lod" };
+                            for (int i = 0; i < proOptionNames.Length; i += 2)
+                            {
+                                bool on = custom ? proBox(proOptionNames[i]) : proSetting == "full";
+                                if (on) proOptionsOn.Add(proOptionNames[i + 1]);
+                            }
+                            if (proOptionsOn.Count != 0) start.EnvironmentVariables["RYGT_NEO_EXTRAS"] = string.Join(",", proOptionsOn);
+                            else start.EnvironmentVariables.Remove("RYGT_NEO_EXTRAS");
+                        }
                         started = Process.Start(start);
                     }
                     catch (Exception e)
