@@ -5,6 +5,8 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace {
 int DirectoryError(int error) {
@@ -23,6 +25,10 @@ int DirectoryError(int error) {
 struct Directory {
     DIR* native = nullptr;
     std::filesystem::path path;
+    // FEAT-GTS-251: a folder under /app0 made of several host folders is listed from here instead.
+    bool layered = false;
+    std::vector<std::filesystem::path> layeredEntries;
+    std::size_t cursor = 0;
     GuestDirectoryEntry entry{};
     std::mutex mutex;
     ~Directory() { if (native) ::closedir(native); }
@@ -49,6 +55,13 @@ void* APS5_VABI opendir_nid_postfix(const char* path) {
     try {
         auto directory = std::make_unique<Directory>();
         directory->path = ResolvePath_nid_no_patch(path);
+        std::vector<std::pair<std::filesystem::path, bool>> layered;
+        if (ListLayeredDirectory_nid_no_patch(path, &layered)) {
+            directory->layered = true;
+            directory->layeredEntries = {directory->path / ".", directory->path / ".."};
+            for (auto& [host, isDirectory] : layered) directory->layeredEntries.push_back(std::move(host));
+            return directory.release();
+        }
         directory->native = ::opendir(directory->path.string().c_str());
         if (!directory->native) { errno = DirectoryError(errno); return nullptr; }
         return directory.release();
@@ -60,6 +73,18 @@ GuestDirectoryEntry* APS5_VABI readdir_nid_postfix(void* handle) {
     if (!handle) { errno = 9; return nullptr; }
     auto& directory = *static_cast<Directory*>(handle);
     std::lock_guard lock(directory.mutex);
+    if (directory.layered) {
+        if (directory.cursor >= directory.layeredEntries.size()) return nullptr; // end: errno unchanged
+        const auto& host = directory.layeredEntries[directory.cursor++];
+        const auto name = host.filename().string();
+        if (name.size() > 255) { errno = 63; return nullptr; }
+        directory.entry = {};
+        directory.entry.recordLength = static_cast<std::uint16_t>(8 + ((name.size() + 1 + 3) & ~std::size_t{3}));
+        directory.entry.nameLength = static_cast<std::uint8_t>(name.size());
+        directory.entry.type = name == "." || name == ".." ? 4 : DirectoryType(host);
+        std::memcpy(directory.entry.name, name.c_str(), name.size() + 1);
+        return &directory.entry;
+    }
     const int savedError = errno;
     errno = 0;
     auto* entry = ::readdir(directory.native);
@@ -87,6 +112,7 @@ GuestDirectoryEntry* APS5_VABI readdir_nid_postfix(void* handle) {
 int APS5_VABI closedir_nid_postfix(void* handle) {
     if (!handle) { errno = 9; return -1; }
     std::unique_ptr<Directory> directory(static_cast<Directory*>(handle));
+    if (directory->layered) return 0;
     const int result = ::closedir(directory->native);
     directory->native = nullptr;
     if (result) errno = DirectoryError(errno);
@@ -97,6 +123,7 @@ void APS5_VABI rewinddir_nid_postfix(void* handle) {
     if (!handle) { errno = 9; return; }
     auto& directory = *static_cast<Directory*>(handle);
     std::lock_guard lock(directory.mutex);
+    if (directory.layered) { directory.cursor = 0; return; }
     ::rewinddir(directory.native);
 }
 }

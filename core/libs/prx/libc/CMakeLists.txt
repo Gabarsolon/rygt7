@@ -1,6 +1,7 @@
 target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/General.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AppOverlay.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/gcc/StackGuard.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/windows/CrashReport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/linux/DlIteratePhdr.cpp
@@ -42,6 +43,13 @@ target_include_directories(libc PRIVATE
 )
 
 if(BUILD_TESTING)
+    add_test_executable(app0_overlay_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/AppOverlayTests.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/AppOverlay.cpp)
+    target_include_directories(app0_overlay_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_compile_features(app0_overlay_tests PRIVATE cxx_std_20)
+    add_test(NAME app0_overlay COMMAND app0_overlay_tests)
+
     add_executable(log_files_tests LogFilesTests.cpp)
     target_include_directories(log_files_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../../../renderer)
     target_compile_features(log_files_tests PRIVATE cxx_std_20)

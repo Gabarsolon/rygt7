@@ -33,6 +33,37 @@ namespace RyGT
         [return: MarshalAs(UnmanagedType.I1)]
         public static extern bool CreateSymbolicLink(string link, string target, int flags);
 
+        [StructLayout(LayoutKind.Sequential)]
+        struct ByHandleFileInformation
+        {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+            public uint VolumeSerialNumber, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out ByHandleFileInformation information);
+
+        public struct FileIdentity { public uint Volume; public ulong Index; }
+
+        /// The volume and file number of a file (following a link), which hard links of it share.
+        public static bool Identify(string path, out FileIdentity identity)
+        {
+            identity = new FileIdentity();
+            try
+            {
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    ByHandleFileInformation information;
+                    if (!GetFileInformationByHandle(stream.SafeFileHandle, out information)) return false;
+                    identity.Volume = information.VolumeSerialNumber;
+                    identity.Index = ((ulong)information.IndexHigh << 32) | information.IndexLow;
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+
         [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
@@ -1513,13 +1544,22 @@ namespace RyGT
         public void Save()
         {
             File.WriteAllLines(path, new[] { "game=" + Game, "update=" + Update, "modules=" + Modules, "fonts=" + Fonts, "stdout_level=" + StdoutLevel });
-            // Existing runtime libraries read their log threshold from this compatibility file.
+            // The runtime libraries read their log threshold, and (FEAT-GTS-251) the game and update
+            // folders that /app0 is read from, from this compatibility file.
             string runtimeIni = Path.Combine(Path.GetDirectoryName(path), "RyGT.ini");
             if (!string.Equals(runtimeIni, path, StringComparison.OrdinalIgnoreCase))
             {
                 var lines = File.Exists(runtimeIni) ? File.ReadAllLines(runtimeIni).ToList() : new List<string>();
-                lines.RemoveAll(line => line.TrimStart().StartsWith("stdout_level=", StringComparison.OrdinalIgnoreCase));
+                lines.RemoveAll(line =>
+                {
+                    string key = line.TrimStart();
+                    return key.StartsWith("stdout_level=", StringComparison.OrdinalIgnoreCase) ||
+                           key.StartsWith("game=", StringComparison.OrdinalIgnoreCase) ||
+                           key.StartsWith("update=", StringComparison.OrdinalIgnoreCase);
+                });
                 lines.Add("stdout_level=" + StdoutLevel);
+                lines.Add("game=" + Game);
+                lines.Add("update=" + Update);
                 File.WriteAllLines(runtimeIni, lines);
             }
         }
@@ -1561,8 +1601,8 @@ namespace RyGT
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             try
             {
-                string iconPath = Path.Combine(root, "app0", "sce_sys", "icon0.png");
-                if (File.Exists(iconPath))
+                string iconPath = GameFile("sce_sys\\icon0.png");
+                if (iconPath != null)
                     using (var bitmap = new Bitmap(iconPath)) Icon = Icon.FromHandle(bitmap.GetHicon());
             }
             catch { }
@@ -2421,7 +2461,7 @@ namespace RyGT
             catch { }
             if (found.Count == 0)
             {
-                foreach (var path in new[] { Path.Combine(root, "app0", "sce_sys", "pic1.png"), Path.Combine(settings.Game, "sce_sys", "pic1.png") })
+                foreach (var path in new[] { GameFile("sce_sys\\pic1.png") ?? "" })
                 {
                     try { if (File.Exists(path)) { found.Add(Image.FromStream(new MemoryStream(File.ReadAllBytes(path)))); break; } }
                     catch { }
@@ -3068,7 +3108,8 @@ namespace RyGT
 
         void RefreshState()
         {
-            bool ready = File.Exists(Exe) && File.Exists(Path.Combine(root, "app0", "contents", "gt.idx"));
+            bool ready = File.Exists(Exe) && (RuntimeReadsGameFolders() ? GameFile("contents\\gt.idx") != null
+                                                         : File.Exists(Path.Combine(root, "app0", "contents", "gt.idx")));
             bool running = IsGameRunning();
             play.Enabled = ready && !busy && !running;
             setup.Enabled = !busy && !running;
@@ -3255,9 +3296,15 @@ namespace RyGT
             GameExe.Prepare(convertedExe, layout.Get("sce_sys\\icon0.png"));
             Log("Prepared GT7.exe with the game's icon.");
 
-            // 3. app0: the game's files, the update's over the base game's, linked rather than copied.
+            // 3. app0: only the converted modules. The game reads its own files from the update, then the
+            //    base game folder (FEAT-GTS-251; see core/libs/prx/libc/include/AppOverlay.hpp).
             SetStatus("Linking the game files...");
-            LinkGameFiles(layout, convertedModules);
+            if (RuntimeReadsGameFolders()) UseGameFoldersDirectly(layout, convertedModules);
+            else
+            {
+                Log("These runtime libraries need the game's files linked into app0.");
+                LinkGameFiles(layout, convertedModules);
+            }
             File.Copy(convertedExe, Exe, true);
             string registry = Path.ChangeExtension(convertedExe, ".registry.json");
             if (File.Exists(registry)) File.Copy(registry, Path.ChangeExtension(Exe, ".registry.json"), true);
@@ -3389,6 +3436,8 @@ namespace RyGT
             }
         }
 
+        // With a runtime that can't read the game folders (see RuntimeReadsGameFolders), app0 is linked
+        // as before.
         void LinkGameFiles(GameLayout layout, string convertedModules)
         {
             string app0 = Path.Combine(root, "app0");
@@ -3424,6 +3473,112 @@ namespace RyGT
             try { Directory.Move(stage, app0); }
             catch { if (Directory.Exists(previous)) Directory.Move(previous, app0); throw; }
             Log("Linked " + linked + " game files. Update files override matching base files; other base files are preserved.");
+        }
+
+        /// Whether the installed runtime reads /app0 from the game folders itself (FEAT-GTS-251): its
+        /// libc exports ListLayeredDirectory. Release packages can pair a new launcher with older
+        /// runtime libraries, which only find the game's files when they are linked into app0.
+        bool RuntimeReadsGameFolders()
+        {
+            try
+            {
+                byte[] data = File.ReadAllBytes(Path.Combine(root, "libs", "libc.prx"));
+                byte[] name = Encoding.ASCII.GetBytes("ListLayeredDirectory_nid_no_patch");
+                for (int i = 0; i + name.Length <= data.Length; i++)
+                {
+                    if (data[i] != name[0]) continue;
+                    int j = 1;
+                    while (j < name.Length && data[i + j] == name[j]) j++;
+                    if (j == name.Length) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // FEAT-GTS-251: the game reads /app0 straight from the update and base game folders (RyGT.ini
+        // game= and update=), so nothing is linked into app0 any more: before, every game file was
+        // hard-linked there, which Explorer counted as another copy of the game, once more for each
+        // app0.previous-* folder an earlier Set up left. Those links are removed too.
+        void UseGameFoldersDirectly(GameLayout layout, string convertedModules)
+        {
+            string app0 = Path.Combine(root, "app0");
+            string stage = Path.Combine(root, "app0.setup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            // The converter writes its modules under app0. Copy those small converted files,
+            // never the source PRX files, into the new app0 before swapping directories.
+            CopyDirectory(convertedModules, Path.Combine(stage, "sce_module"));
+            string previous = app0 + ".previous-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff");
+            if (Directory.Exists(app0)) Directory.Move(app0, previous);
+            try { Directory.Move(stage, app0); }
+            catch { if (Directory.Exists(previous)) Directory.Move(previous, app0); throw; }
+            foreach (string old in Directory.GetDirectories(root, "app0.previous-*"))
+                RemoveGameLinks(old, layout, Log);
+            Log("The game reads its files from " + (settings.Update.Length > 0 ? settings.Update + " and " : "") + settings.Game +
+                "; update files override matching base files.");
+        }
+
+        /// Removes from `folder` (an app0 an earlier Set up made) the links to the game's files: a file
+        /// only when it is a link or the very same file on disk as the game's, a folder only when it is
+        /// a junction or link. Folders left empty go, and so does `folder` itself when only that Set
+        /// up's own converted modules are left. Copies and anything else are kept.
+        internal static void RemoveGameLinks(string folder, GameLayout layout, Action<string> Log)
+        {
+            int removed = 0, kept = 0;
+            foreach (var pair in layout.Files)
+            {
+                string old = Path.Combine(folder, pair.Key);
+                if (!File.Exists(old)) continue;
+                try
+                {
+                    if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0 || SameFile(old, pair.Value)) { File.Delete(old); removed++; }
+                    else kept++;
+                }
+                catch (Exception e) { kept++; Log("Note: could not remove the old link " + old + " (" + e.Message.TrimEnd('.') + ")."); }
+            }
+            foreach (string dir in Directory.GetDirectories(folder, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
+            {
+                try
+                {
+                    if (!Directory.Exists(dir)) continue;
+                    // Deleting a junction or folder link removes the link, never what it points to.
+                    if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0) { Directory.Delete(dir, false); removed++; }
+                    else if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir, false);
+                }
+                catch { }
+            }
+            bool onlyModules = Directory.EnumerateFileSystemEntries(folder)
+                .All(entry => Path.GetFileName(entry).Equals("sce_module", StringComparison.OrdinalIgnoreCase));
+            if (onlyModules)
+            {
+                try { Directory.Delete(folder, true); }
+                catch (Exception e) { Log("Note: could not remove " + folder + " (" + e.Message.TrimEnd('.') + ")."); }
+            }
+            if (removed > 0) Log("Removed " + removed + " links to the game's files from " + Path.GetFileName(folder) + ".");
+            if (kept > 0) Log("Note: " + Path.GetFileName(folder) + " still has " + kept + " of the game's files that are not links to them; they were left alone.");
+        }
+
+        /// Whether two paths are the same file on disk (one a hard link of the other, or a link to it).
+        static bool SameFile(string a, string b)
+        {
+            Native.FileIdentity first, second;
+            return Native.Identify(a, out first) && Native.Identify(b, out second) &&
+                   first.Volume == second.Volume && first.Index == second.Index;
+        }
+
+        /// A game file by its path under /app0 (contents\gt.idx): the first of ryGT7's app0 (what Set
+        /// up made), the update and the base game that has it, in the order the game looks (FEAT-GTS-251).
+        string GameFile(string relative)
+        {
+            var folders = new List<string> { Path.Combine(root, "app0") };
+            if (settings.Update.Length > 0) folders.Add(settings.Update);
+            if (settings.Game.Length > 0) folders.Add(settings.Game);
+            foreach (var folder in folders)
+            {
+                string path = Path.Combine(folder, relative);
+                if (File.Exists(path)) return path;
+            }
+            return null;
         }
 
         void ConfigureGT7()
@@ -3586,12 +3741,13 @@ namespace RyGT
             if (IsGameRunning()) { RefreshState(); return; }
             if (!File.Exists(Exe)) { MessageBox.Show(this, "Press Set up first."); return; }
             // Without its data index GT7 closes right after the splash screen.
-            string dataProblem = ReadProblem(Path.Combine(root, "app0", "contents", "gt.idx"), -1);
+            string dataIndex = RuntimeReadsGameFolders() ? GameFile("contents\\gt.idx") : null;
+            if (dataIndex == null && File.Exists(Path.Combine(root, "app0", "contents", "gt.idx"))) dataIndex = Path.Combine(root, "app0", "contents", "gt.idx");
+            string dataProblem = dataIndex == null ? "is missing" : ReadProblem(dataIndex, -1);
             if (dataProblem != null)
             {
-                MessageBox.Show(this, "GT7's data index app0\\contents\\gt.idx " + dataProblem + ", so the game can't start.\n\n" +
-                                "Press Set up again. If the RyGT folder is on a different drive than the game, move it " +
-                                "to the game's drive first.");
+                MessageBox.Show(this, "GT7's data index contents\\gt.idx " + dataProblem + ", so the game can't start.\n\n" +
+                                "Check that the game and update folders in the settings still exist, then press Set up again.");
                 return;
             }
             // The one-time steps below can take minutes (copying shaders, preparing them), so they run

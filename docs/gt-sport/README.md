@@ -18,7 +18,7 @@ program, together with shadGT's Vulkan renderer.
 
 ## Setup with the loader
 
-Unzip a release on the same drive as your game dump, run `RyGT.exe`, pick the game folder, the
+Unzip a release anywhere (it does not have to be on the game's drive), run `RyGT.exe`, pick the game folder, the
 1.69 update folder, a folder with your firmware's system modules and one with its fonts, then
 press **Set up** and **Play**. Set up also gives `GTSport.exe` the ryGT icon and makes it a Windows
 (GUI) program, so after that you can also open `GTSport.exe` directly: the runtime and renderer

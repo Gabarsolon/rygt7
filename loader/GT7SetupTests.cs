@@ -10,6 +10,9 @@ namespace RyGT
 {
     static class GT7SetupTests
     {
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern bool CreateHardLink(string link, string existing, IntPtr security);
+
         static int checks;
         static void Check(bool value, string message)
         { checks++; if (!value) throw new Exception(message); }
@@ -160,15 +163,54 @@ namespace RyGT
                 Sfo(update, GameLayout.TitleId, "01.01");
                 string converted = Path.Combine(root, "converted");
                 Put(converted, "libc.prx", "converted-library");
+                // FEAT-GTS-251: what earlier Set ups left: app0 and an app0.previous-* folder full of hard
+                // links to the game's files, plus that Set up's converted modules; one real copy.
+                string app0 = Path.Combine(runtime, "app0"), older = Path.Combine(runtime, "app0.previous-test-older");
+                string withCopy = Path.Combine(runtime, "app0.previous-test-copy");
+                foreach (string old in new[] { app0, older, withCopy })
+                {
+                    if (Directory.Exists(old)) Directory.Delete(old, true);
+                    foreach (var pair in separate.Files)
+                    {
+                        if (pair.Key.Equals("eboot.bin", StringComparison.OrdinalIgnoreCase) ||
+                            pair.Key.StartsWith("sce_module\\", StringComparison.OrdinalIgnoreCase)) continue;
+                        string link = Path.Combine(old, pair.Key);
+                        Directory.CreateDirectory(Path.GetDirectoryName(link));
+                        Check(CreateHardLink(link, pair.Value, IntPtr.Zero), "Hard link for the test");
+                    }
+                    Put(old, "sce_module\\libc.prx", "old-converted-library");
+                }
+                File.Delete(Path.Combine(withCopy, "contents", "gt.idx"));
+                File.Copy(Path.Combine(update, "contents", "gt.idx"), Path.Combine(withCopy, "contents", "gt.idx"));
+                using (var form = new LoaderForm())
+                {
+                    typeof(LoaderForm).GetMethod("UseGameFoldersDirectly", BindingFlags.NonPublic | BindingFlags.Instance)
+                        .Invoke(form, new object[] { separate, converted });
+                }
+                Check(File.ReadAllText(Path.Combine(app0, "sce_module", "libc.prx")) == "converted-library", "Converted module retained");
+                Check(Directory.EnumerateFileSystemEntries(app0).Select(Path.GetFileName).SequenceEqual(new[] { "sce_module" }),
+                      "app0 holds only the converted modules");
+                Check(!Directory.Exists(older), "A previous app0 of links and modules removed");
+                Check(Directory.GetDirectories(runtime, "app0.previous-*").Length == 1 && Directory.Exists(withCopy),
+                      "Only the previous app0 holding a real copy kept");
+                Check(File.ReadAllText(Path.Combine(withCopy, "contents", "gt.idx")) == "updated index", "Real copy kept");
+                Check(!File.Exists(Path.Combine(withCopy, "contents", "base-only.dat")) && !Directory.Exists(Path.Combine(withCopy, "nested")),
+                      "Links removed beside the copy");
+                foreach (var pair in separate.Files)
+                    Check(File.Exists(pair.Value), "Game file " + pair.Key + " survives");
+                Check(File.ReadAllText(Path.Combine(update, "contents", "gt.idx")) == "updated index", "Update modified");
+                Check(File.ReadAllText(Path.Combine(baseDir, "contents", "gt.idx")) == "base:contents\\gt.idx", "Source modified");
+                Directory.Delete(withCopy, true);
+                // A runtime that can't read the game folders still gets them linked into app0.
                 using (var form = new LoaderForm())
                 {
                     typeof(LoaderForm).GetMethod("LinkGameFiles", BindingFlags.NonPublic | BindingFlags.Instance)
                         .Invoke(form, new object[] { separate, converted });
                 }
-                Check(File.ReadAllText(Path.Combine(runtime, "app0", "contents", "gt.idx")) == "updated index", "Linked update");
-                Check(File.ReadAllText(Path.Combine(runtime, "app0", "nested", "base.txt")) == "base:nested\\base.txt", "Linked base fallback");
-                Check(File.ReadAllText(Path.Combine(runtime, "app0", "sce_module", "libc.prx")) == "converted-library", "Converted module retained");
-                Check(File.ReadAllText(Path.Combine(baseDir, "contents", "gt.idx")) == "base:contents\\gt.idx", "Source modified");
+                Check(File.ReadAllText(Path.Combine(app0, "contents", "gt.idx")) == "updated index", "Linked update");
+                Check(File.ReadAllText(Path.Combine(app0, "nested", "base.txt")) == "base:nested\\base.txt", "Linked base fallback");
+                Check(File.ReadAllText(Path.Combine(app0, "sce_module", "libc.prx")) == "converted-library", "Converted module retained after linking");
+                foreach (string old in Directory.GetDirectories(runtime, "app0.previous-*")) Directory.Delete(old, true);
                 File.Delete(Path.Combine(baseDir, "contents", "gt01.vol"));
                 Reject(() => new GameLayout(baseDir, null, runtime), "Missing base volumes accepted");
                 Check(!GameLayout.PatchKnownExecutable(new byte[64]), "Unknown executable patched");

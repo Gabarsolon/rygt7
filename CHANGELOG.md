@@ -5,6 +5,7 @@ log and the existing documentation.
 
 ## Unreleased
 
+* FEAT-GTS-251: The game reads `/app0` straight from the game and update folders (`game=` and `update=` in `RyGT.ini`) instead of from links in `app0`, which Explorer counted as another copy of the game. `app0` now only holds the converted `sce_module`; the update's files win over the base game's, file by file. The game can no longer change, delete or rename the player's game files (EROFS, as on the console). ryGT7 no longer has to be on the game's drive, and Developer Mode is never needed.
 * FEAT-GTS-252: CI builds the runtime libraries, converter and wheel probe with a pinned MSYS2 UCRT64 GCC 16.2.0 (`ci/rygt7/runtime-toolchain.json`, the same pins as RyGTS) instead of whatever MSYS2 ships on the day of the build. Pull-request compile checks use the same compiler.
 * FEAT-GTS-253: CI packages no longer start from the October 31 runtime archive. Every packaged library is built from source; the 29 libraries only that archive supplied are now generated placeholders (`core/libs/placeholders`, the same lists as RyGTS) and `libSceSsl2` is a copy of the built `libSceSsl`. AMD's FidelityFX runtime is downloaded from its SDK release, pinned by SHA-256.
 
