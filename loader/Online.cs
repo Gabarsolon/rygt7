@@ -29,6 +29,30 @@ namespace RyGT
         public const int ServerPort = 7890;
         public const int ShadNetPort = 31313, ShadNetWebApiPort = 31315, P2PPort = 3658;
 
+        /// Runs in the elevated launcher started with --allow-firewall: replaces the "ryGT7 online"
+        /// inbound rules for the game and the host's server ports. Returns 0 when every rule was added.
+        public static int AddFirewallRules(string gameExe)
+        {
+            const string rule = "advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow ";
+            Netsh("advfirewall firewall delete rule name=\"ryGT7 online\""); // absent the first time
+            int failures = 0;
+            if (Netsh(rule + "program=\"" + gameExe + "\" profile=any") != 0) failures++;
+            if (Netsh(rule + "protocol=TCP localport=" + ServerPort + "," + ShadNetPort + "," + ShadNetWebApiPort + " profile=any") != 0) failures++;
+            if (Netsh(rule + "protocol=UDP localport=" + ServerPort + " profile=any") != 0) failures++;
+            return failures == 0 ? 0 : 1;
+        }
+
+        static int Netsh(string arguments)
+        {
+            string netsh = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "netsh.exe");
+            var info = new ProcessStartInfo(netsh, arguments) { UseShellExecute = false, CreateNoWindow = true };
+            using (var process = Process.Start(info))
+            {
+                process.WaitForExit();
+                return process.ExitCode;
+            }
+        }
+
         static string IniPath(string root) { return Path.Combine(root, "RyGT.ini"); }
 
         public static Dictionary<string, string> ReadIni(string root)
@@ -1177,16 +1201,16 @@ namespace RyGT
         /// and the host's server ports, on every network type (a VPN often counts as public).
         void AllowThroughFirewall()
         {
-            string rules =
-                "netsh advfirewall firewall delete rule name=\"ryGT7 online\" >nul 2>&1 & " +
-                "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow program=\"" + Exe + "\" profile=any & " +
-                "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow protocol=TCP localport=" + OnlinePlay.ServerPort + "," +
-                OnlinePlay.ShadNetPort + "," + OnlinePlay.ShadNetWebApiPort + " profile=any & " +
-                "netsh advfirewall firewall add rule name=\"ryGT7 online\" dir=in action=allow protocol=UDP localport=" + OnlinePlay.ServerPort + " profile=any";
+            // The launcher asks Windows (one UAC prompt) to run itself with --allow-firewall, which
+            // adds the rules with netsh directly; see OnlinePlay.AddFirewallRules.
             try
             {
-                using (var process = Process.Start(new ProcessStartInfo("cmd.exe", "/c " + rules) { Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden }))
-                    process.WaitForExit(15000);
+                var info = new ProcessStartInfo(Application.ExecutablePath, "--allow-firewall \"" + Exe + "\"") { Verb = "runas", UseShellExecute = true };
+                using (var process = Process.Start(info))
+                {
+                    if (!process.WaitForExit(30000)) { SetStatus("Firewall not changed: netsh did not finish."); return; }
+                    if (process.ExitCode != 0) { SetStatus("Firewall not changed: netsh reported an error."); return; }
+                }
                 SetStatus("Windows Firewall now lets ryGT7 online play in (rules named \"ryGT7 online\").");
             }
             catch (Exception e) { SetStatus("Firewall not changed: " + e.Message); }

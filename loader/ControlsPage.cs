@@ -145,14 +145,14 @@ namespace RyGT
             return Key(key);
         }
 
-        [DllImport("user32.dll")]
-        static extern short GetKeyState(int key);
-
-        static bool Down(int key) { return (GetKeyState(key) & 0x8000) != 0; }
-
         /// The bindings file's name for a key pressed in the window, or null for one it cannot bind.
-        public static string FromKeys(Keys keys)
+        /// lParam is the key message's lParam: its scan code (bits 16-23) and extended-key flag (bit 24)
+        /// tell left from right Shift/Ctrl/Alt without querying global key state.
+        public static string FromKeys(Keys keys, IntPtr lParam)
         {
+            long lp = lParam.ToInt64();
+            bool extended = (lp & (1L << 24)) != 0;
+            bool rightShift = ((lp >> 16) & 0xFF) == 0x36;
             var code = keys & System.Windows.Forms.Keys.KeyCode;
             if (code >= System.Windows.Forms.Keys.A && code <= System.Windows.Forms.Keys.Z) return ((char)('a' + (code - System.Windows.Forms.Keys.A))).ToString();
             if (code >= System.Windows.Forms.Keys.D0 && code <= System.Windows.Forms.Keys.D9) return ((char)('0' + (code - System.Windows.Forms.Keys.D0))).ToString();
@@ -167,9 +167,9 @@ namespace RyGT
                 case System.Windows.Forms.Keys.Back: return "backspace";
                 case System.Windows.Forms.Keys.Tab: return "tab";
                 case System.Windows.Forms.Keys.CapsLock: return "capslock";
-                case System.Windows.Forms.Keys.ShiftKey: return Down(0xA1) ? "rshift" : "lshift";
-                case System.Windows.Forms.Keys.ControlKey: return Down(0xA3) ? "rctrl" : "lctrl";
-                case System.Windows.Forms.Keys.Menu: return Down(0xA5) ? "ralt" : "lalt";
+                case System.Windows.Forms.Keys.ShiftKey: return rightShift ? "rshift" : "lshift";
+                case System.Windows.Forms.Keys.ControlKey: return extended ? "rctrl" : "lctrl";
+                case System.Windows.Forms.Keys.Menu: return extended ? "ralt" : "lalt";
                 case System.Windows.Forms.Keys.Up: return "up";
                 case System.Windows.Forms.Keys.Down: return "down";
                 case System.Windows.Forms.Keys.Left: return "left";
@@ -1535,7 +1535,7 @@ namespace RyGT
             if (listening == Listen.None && (Tab != 2 || wheel.Detecting == null)) return base.ProcessCmdKey(ref msg, keyData);
             if ((keyData & Keys.KeyCode) == Keys.Escape) { StopListening(); ShowHint(); return true; }
             if (listening != Listen.Keys) return base.ProcessCmdKey(ref msg, keyData);
-            var key = InputNames.FromKeys(keyData);
+            var key = InputNames.FromKeys(keyData, msg.LParam);
             if (key == null) return true;
             var output = keyQueue[0];
             keyQueue.RemoveAt(0);
