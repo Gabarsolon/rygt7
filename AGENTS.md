@@ -1,5 +1,20 @@
 # Notes for agents working on ryGT7
 
+## Renderer switches on the launcher's Advanced page
+
+The launcher does not keep a list of the renderer's `RYGT_*` and `SHADGT_*` switches.
+`SwitchWalker` in `loader/AdvancedPage.cs` reads `libs\libSceVideoOut.prx` as a file (it never loads it)
+and lists every `"RYGT_..."` and `"SHADGT_..."` string the renderer passes to `getenv`. Descriptions
+come from the same DLL: `"RYGTSW1|NAME|kind|group|default|values|description"` strings in shadgt7's
+`src/video_core/rygt_switches.cpp`. See `loader/ADVANCED-PAGE.md`.
+
+- **Adding a renderer switch:** add its description line in shadgt7's `src/video_core/rygt_switches.cpp`
+  (format in shadgt7's `AGENTS.md`). Do not add switch names, tooltips or defaults to the launcher.
+- **A variable the launcher always sets itself** (in `StartGame`): add it to
+  `SwitchWalker.LauncherManaged` so the page does not offer it.
+- The launcher compiles with the .NET Framework 4 `csc`: **C# 5** only (no local functions, `out var`,
+  tuples or string interpolation). New `.cs` files go in `loader/build.cmd`.
+
 ## Launcher version
 
 The launcher is versioned on its own: `LauncherVersion.Value` in `loader/Version.cs`, with a

@@ -354,10 +354,11 @@ namespace RyGT
             foreach (Control child in control.Controls)
             {
                 bool own = child is Card || child is TextBoxBase || child is ListControl || child is ButtonBase ||
-                           child is TrackBar || child is UpDownBase || child is DarkBar || child is Slider || child is ToggleRow;
+                           child is TrackBar || child is UpDownBase || child is DarkBar || child is Slider || child is ToggleRow ||
+                           child is DataGridView; // FEAT-GTS-254: a table cannot be see-through
                 if (!own && !TypeDescriptor.GetProperties(child)["BackColor"].ShouldSerializeValue(child))
                     child.BackColor = Color.Transparent;
-                if (!(child is TextBoxBase) && !(child is ListControl) && !(child is UpDownBase)) SeeThrough(child);
+                if (!(child is TextBoxBase) && !(child is ListControl) && !(child is UpDownBase) && !(child is DataGridView)) SeeThrough(child);
             }
         }
 
@@ -1522,6 +1523,8 @@ namespace RyGT
     {
         public string Game = "", Update = "", Modules = "", Fonts = "";
         public string StdoutLevel = "Warning";
+        public bool ShowAdvanced = true;             // FEAT-GTS-254: the Advanced page in the sidebar
+        public List<EnvVar> Env = new List<EnvVar>(); // FEAT-GTS-254: env= lines, set for GT7.exe
         readonly string path;
 
         public Settings(string path)
@@ -1532,18 +1535,28 @@ namespace RyGT
             {
                 int eq = line.IndexOf('=');
                 if (eq < 0) continue;
+                if (line.Substring(0, eq).Trim() == "env")
+                {
+                    var entry = CustomEnvironment.Parse(line.Substring(eq + 1)); // the value as written, not trimmed
+                    if (entry != null) Env.Add(entry);
+                    continue;
+                }
                 string key = line.Substring(0, eq).Trim(), value = line.Substring(eq + 1).Trim();
                 if (key == "game") Game = value;
                 else if (key == "update") Update = value;
                 else if (key == "modules") Modules = value;
                 else if (key == "fonts") Fonts = value;
                 else if (key == "stdout_level") StdoutLevel = LogFiles.Levels[LogFiles.LevelIndex(value)];
+                else if (key == "show_advanced") ShowAdvanced = !(value == "0" || value.Equals("false", StringComparison.OrdinalIgnoreCase));
             }
         }
 
         public void Save()
         {
-            File.WriteAllLines(path, new[] { "game=" + Game, "update=" + Update, "modules=" + Modules, "fonts=" + Fonts, "stdout_level=" + StdoutLevel });
+            var own = new List<string> { "game=" + Game, "update=" + Update, "modules=" + Modules, "fonts=" + Fonts, "stdout_level=" + StdoutLevel,
+                                         "show_advanced=" + (ShowAdvanced ? "1" : "0") };
+            foreach (var entry in Env) own.Add("env=" + CustomEnvironment.Format(entry));
+            File.WriteAllLines(path, own);
             // The runtime libraries read their log threshold, and (FEAT-GTS-251) the game and update
             // folders that /app0 is read from, from this compatibility file.
             string runtimeIni = Path.Combine(Path.GetDirectoryName(path), "RyGT.ini");
@@ -1680,7 +1693,7 @@ namespace RyGT
             var sideVersion = new Label { Text = "ryGT7 for Windows", AutoSize = true, ForeColor = Color.FromArgb(96, 102, 114), Tag = "heading" };
             sidebar.Controls.Add(sideVersion);
             sidebar.Layout += delegate { sideVersion.Location = new Point(28, sidebar.ClientSize.Height - sideVersion.Height - 24); };
-            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Account", "Online", "About" };
+            var pageNames = new[] { "Game", "Display", "Graphics", "Shaders", "Controls", "Account", "Online", "About", "Advanced" };
             for (int i = 0; i < pageNames.Length; ++i)
             {
                 string page = pageNames[i];
@@ -2320,6 +2333,45 @@ namespace RyGT
             };
             logging.Controls.Add(new SettingRow("stdout.log minimum level", logLevel));
             logging.Controls.Add(Hint("The selected level and below, from the next launch. Previous logs are kept with a timestamp."));
+
+            // FEAT-GTS-254 (from RyGTS FEAT-GTS-433..467): Advanced, the renderer's experimental RYGT_* and
+            // SHADGT_* switches, read from libs\libSceVideoOut.prx with the renderer's own descriptions,
+            // and any other variable for GT7.exe. Shown unless turned off here.
+            var advancedShown = new ToggleRow { Text = "Show the Advanced page (experimental renderer switches)", Checked = settings.ShowAdvanced };
+            logging.Controls.Add(advancedShown);
+            logging.Controls.Add(Hint("Hiding it keeps the switches already set there; they still apply when the game starts."));
+            var advancedPanel = new Panel { Dock = DockStyle.Fill, BackColor = Dark.Panel, Visible = false, Padding = new Padding(46, 34, 46, 30) };
+            var advancedContent = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = new Padding(0) };
+            advancedPanel.Controls.Add(advancedContent);
+            pagesHost.Controls.Add(advancedPanel);
+            pages["Advanced"] = advancedPanel;
+            var advancedTitle = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0, 0, 0, 10) };
+            advancedTitle.Controls.Add(new Label { Text = "Advanced", AutoSize = true, Font = new Font("Segoe UI Light", 22f), Margin = new Padding(0, 0, 0, 2) });
+            advancedTitle.Controls.Add(new Label
+            {
+                Text = "Experimental renderer switches for testing and diagnosis. They can break rendering, slow the game or write " +
+                       "large logs; hover a switch for what it does. Saved as you change them; used the next time the game starts.",
+                AutoSize = true, MaximumSize = new Size(900, 0), ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(2, 0, 0, 0)
+            });
+            AdvancedPage.Build(advancedContent, advancedTitle, Dark.Card, root, settings.Env, list =>
+            {
+                settings.Env = list;
+                try { settings.Save(); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the switches: " + e.Message); }
+            });
+            Action<bool> showAdvanced = delegate (bool on)
+            {
+                pageItems["Advanced"].Visible = on;
+                if (!on && advancedPanel.Visible) ShowSettings("About", false);
+            };
+            advancedShown.CheckedChanged += delegate
+            {
+                settings.ShowAdvanced = advancedShown.Checked;
+                showAdvanced(advancedShown.Checked);
+                try { settings.Save(); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            showAdvanced(settings.ShowAdvanced);
 
             // The setting helpers build label + drop-down rows; they become full-width rows here.
             Rowify(pagesHost);
@@ -3974,6 +4026,9 @@ namespace RyGT
                             if (proOptionsOn.Count != 0) start.EnvironmentVariables["RYGT_NEO_EXTRAS"] = string.Join(",", proOptionsOn);
                             else start.EnvironmentVariables.Remove("RYGT_NEO_EXTRAS");
                         }
+                        // FEAT-GTS-254: the Advanced page's switches and other variables last, so they win.
+                        int customCount = CustomEnvironment.Apply(start, new Settings(Path.Combine(root, "RyGT7.ini")).Env);
+                        if (customCount > 0) AppendSetupLog(root, customCount + " custom environment variable(s) applied.");
                         started = Process.Start(start);
                     }
                     catch (Exception e)
