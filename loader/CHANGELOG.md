@@ -13,7 +13,8 @@ CI fails when the two disagree.
   `libs\libSceVideoOut.prx` itself, with the renderer's own descriptions as hover tooltips; on/off
   switches are toggles, others text boxes. Search, sort by column, Reset all, Refresh after a renderer
   rebuild, and a table for any other environment variable. Saved as `env=` lines in `RyGT7.ini` and set
-  for `GT7.exe` after the launcher's own variables. About > Logging shows or hides the page.
+  for `GT7.exe` after the launcher's own variables. The page is hidden until About > Logging >
+  "Show the Advanced page" is turned on; switches set there keep applying when it is hidden again.
 
 ## 0.1.1 - 2026-11-11
 

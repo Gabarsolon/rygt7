@@ -1,7 +1,7 @@
 ﻿# Advanced page: renderer switches and environment variables (FEAT-GTS-254)
 
 Ported from the RyGTS launcher (FEAT-GTS-433..467). In ryGT7 the page is last in the settings sidebar,
-and About > Logging shows or hides it.
+and it is hidden until About > Logging > "Show the Advanced page" is turned on.
 
 The Advanced page lists the experimental `RYGT_*` and `SHADGT_*` switches of the installed renderer and sets them
 for `GT7.exe` when the launcher starts it.

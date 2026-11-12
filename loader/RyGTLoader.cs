@@ -1523,7 +1523,7 @@ namespace RyGT
     {
         public string Game = "", Update = "", Modules = "", Fonts = "";
         public string StdoutLevel = "Warning";
-        public bool ShowAdvanced = true;             // FEAT-GTS-254: the Advanced page in the sidebar
+        public bool ShowAdvanced = false;            // FEAT-GTS-254: the Advanced page in the sidebar (hidden by default)
         public List<EnvVar> Env = new List<EnvVar>(); // FEAT-GTS-254: env= lines, set for GT7.exe
         readonly string path;
 
@@ -1547,7 +1547,7 @@ namespace RyGT
                 else if (key == "modules") Modules = value;
                 else if (key == "fonts") Fonts = value;
                 else if (key == "stdout_level") StdoutLevel = LogFiles.Levels[LogFiles.LevelIndex(value)];
-                else if (key == "show_advanced") ShowAdvanced = !(value == "0" || value.Equals("false", StringComparison.OrdinalIgnoreCase));
+                else if (key == "show_advanced") ShowAdvanced = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
             }
         }
 
