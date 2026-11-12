@@ -21,7 +21,7 @@ if ($LASTEXITCODE) { throw 'LLVM XZ extraction failed' }
 if ($LASTEXITCODE) { throw 'LLVM TAR extraction failed' }
 $env:LLVM_ROOT = Join-Path $tools 'clang+llvm-23.1.3-x86_64-pc-windows-msvc'
 if (!(Test-Path -LiteralPath (Join-Path $env:LLVM_ROOT 'bin/clang-cl.exe'))) { throw 'LLVM compiler missing' }
-python -m pip install --disable-pip-version-check cmake==3.31.6 ninja==1.11.1.4
+python -m pip install --disable-pip-version-check cmake==3.31.6 ninja==1.11.1.4 zstandard==0.25.0
 if ($LASTEXITCODE) { throw 'CMake/Ninja installation failed' }
 $scripts = & python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 if ($LASTEXITCODE) { throw 'Python scripts path lookup failed' }

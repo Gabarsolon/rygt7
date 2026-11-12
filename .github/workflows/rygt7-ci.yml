@@ -126,12 +126,10 @@ jobs:
           location: C:/msys64
           update: true
           cache: false
+          # FEAT-GTS-252: only MSYS2's Unix tools; the runtime compiler is the pinned GCC from
+          # ci/rygt7/runtime-toolchain.json, not whatever MSYS2 ships on the day.
           install: >-
             base-devel git
-            mingw-w64-ucrt-x86_64-toolchain
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-pkgconf
       - name: Fetch exact public RyGT7 source
         shell: pwsh
         run: |
@@ -150,14 +148,14 @@ jobs:
       - name: Build and package RyGT7 client
         shell: pwsh
         env:
-          UCRT_ROOT: ${{ steps.msys2.outputs.msys2-location }}/ucrt64
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
           RYGT_CODESIGN: '1'
           CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
           CODESIGN_PFX_PASSWORD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
           . ./ci/rygt7/setup-tools.ps1
-          & ./ci/rygt7/build-windows.ps1 -SourceRoot C:/rygt7-ci/source -SourceSha $env:SOURCE_SHA -RendererSha $env:RENDERER_SHA -OutputRoot C:/rygt7-ci/build -UcrtRoot $env:UCRT_ROOT
+          & ./ci/rygt7/build-windows.ps1 -SourceRoot C:/rygt7-ci/source -SourceSha $env:SOURCE_SHA -RendererSha $env:RENDERER_SHA -OutputRoot C:/rygt7-ci/build -MsysRoot $env:MSYS2_ROOT
           $env:GT7_SOURCE_ROOT = 'C:/rygt7-ci/source'
           $env:GT7_RENDERER_ROOT = 'C:/rygt7-ci/build/renderer-source'
           python -m unittest discover -s ci/rygt7 -p 'test_*.py'

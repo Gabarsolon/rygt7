@@ -142,7 +142,25 @@ add_custom_command(
 add_custom_target(libcohtml_prospero DEPENDS ${LIBCOHTML_PROSPERO_PATCHED})
 list(APPEND PATCHED_OUTPUTS ${LIBCOHTML_PROSPERO_PATCHED})
 
+# FEAT-GTS-253: libSceSsl2 is the PS4's second module name for the libSceSsl API; GT7 loads both.
+set(LIBSCESSL_PATCHED ${PATCHED_DIR}/libSceSsl.prx)
+set(LIBSCESSL2_PATCHED ${PATCHED_DIR}/libSceSsl2.prx)
+add_custom_command(
+        OUTPUT ${LIBSCESSL2_PATCHED}
+        COMMAND ${CMAKE_COMMAND} -E copy "${LIBSCESSL_PATCHED}" "${LIBSCESSL2_PATCHED}"
+        DEPENDS ${LIBSCESSL_PATCHED}
+        VERBATIM
+)
+list(APPEND PATCHED_OUTPUTS ${LIBSCESSL2_PATCHED})
+
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
+
+# FEAT-GTS-253: placeholders for PS4 libraries GT7 loads but ryGT7 does not implement.
+set(RYTY_PLACEHOLDER_OUTPUT ${PATCHED_DIR})
+add_subdirectory(placeholders ${CMAKE_CURRENT_BINARY_DIR}/placeholders)
+if(RYTY_PLACEHOLDER_TARGETS)
+    add_dependencies(libs ${RYTY_PLACEHOLDER_TARGETS})
+endif()
 
 if(BUILD_TESTING)
     add_library(host_thread_local_test_library SHARED tests/HostThreadLocalLibrary.cpp)

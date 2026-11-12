@@ -16,8 +16,6 @@ import zipfile
 API = 'https://api.github.com/repos/RyGT-Team/rygt7'
 RENDERER_API = 'https://api.github.com/repos/RyGT-Team/shadgt7'
 RENDERER = os.environ.get('RENDERER_SHA', '')
-BASE = 'd8efb3c45b9eb164a66330d60e68638ff3d2a2a74fd51680482e989791697d2e'
-BASE_URL = 'https://gitlab.com/api/v4/projects/88084032/packages/generic/rygt7/2026-10-31/RyGT7-2026-10-31-prerelease.zip'
 CONFIGURED = 'https://github.com/RyGT-Team/shadgt7.git'
 FETCHED = 'https://github.com/RyGT-Team/shadgt7.git'
 SHA = re.compile(r'^[0-9a-f]{40}$')
@@ -57,7 +55,7 @@ def validate(folder, commit):
     if (marker.get('schema') != 1 or marker.get('project') != 'rygt-team/rygt7' or
         marker.get('branch') != 'main' or marker.get('commit') != commit or
         marker.get('renderer') != {'configured_repository': CONFIGURED, 'fetched_repository': FETCHED, 'commit': RENDERER} or
-        marker.get('runtime_base') != {'url': BASE_URL, 'sha256': BASE} or
+        'runtime_base' in marker or
         marker.get('build_info') != 'BUILD_INFO.json'): fail()
     archive = folder / name
     with archive.open('rb') as f: checksum = hashlib.file_digest(f, 'sha256').hexdigest()
@@ -103,7 +101,7 @@ def validate(folder, commit):
         build = json.loads(z.read(entries['BUILD_INFO.json']))
         if (build.get('schema') != 1 or build.get('rygt7_commit') != commit or build.get('renderer_commit') != RENDERER or
             build.get('renderer_configured_url') != CONFIGURED or build.get('renderer_fetch_url') != FETCHED or
-            build.get('base_url') != BASE_URL or build.get('base_sha256') != BASE): fail()
+            'base_url' in build or 'base_sha256' in build): fail()  # FEAT-GTS-253: no runtime archive
         control = marker.get('ci_control')
         if control != build.get('ci_control') or not isinstance(control, dict): fail()
         if os.environ.get('GITHUB_ACTIONS') == 'true':
@@ -114,12 +112,14 @@ def validate(folder, commit):
         if not isinstance(runtime, dict) or not runtime: fail()
         runtime_paths = {p for p in entries if p.startswith('libs/') or p in {'amd_fidelityfx_vk.dll', 'amd_fidelityfx_vk-LICENSE.txt', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'}}
         if set(runtime) != runtime_paths: fail()
-        origins = {'pinned-base', 'rygt7-source-build', 'shadgt7-source-build', 'rygt7-gt7-stub-build', 'ucrt64-toolchain'}
+        origins = {'rygt7-source-build', 'shadgt7-source-build', 'rygt7-gt7-stub-build', 'ucrt64-toolchain', 'amd-fidelityfx-sdk'}
         for path, record in runtime.items():
             if path not in entries or not isinstance(record, dict) or record.get('origin') not in origins or record.get('sha256') != digest(z.read(entries[path])): fail()
         for path in ('libs/libc.prx', 'libs/libkernel.prx', 'libs/libSceFiber.prx', 'libs/libScePad.prx'):
             if runtime.get(path, {}).get('origin') != 'rygt7-source-build': fail()
         if runtime.get('libs/libSceVideoOut.prx', {}).get('origin') != 'shadgt7-source-build': fail()
+        for path in ('amd_fidelityfx_vk.dll', 'amd_fidelityfx_vk-LICENSE.txt'):
+            if runtime.get(path, {}).get('origin') != 'amd-fidelityfx-sdk': fail()
     print('GT7 artifact validated')
 
 if __name__ == '__main__':
