@@ -17,6 +17,13 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 COMMIT = 'a' * 40
 RENDERER = 'b' * 40
 
+AMD = ('amd_fidelityfx_vk.dll', 'amd_fidelityfx_vk-LICENSE.txt')
+
+
+def origin(path):
+    if path in AMD: return 'amd-fidelityfx-sdk'
+    return 'shadgt7-source-build' if path.endswith('libSceVideoOut.prx') else 'rygt7-source-build'
+
 class Validation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.folder = Path(self.tmp.name)
@@ -36,10 +43,11 @@ class Validation(unittest.TestCase):
         self.env.start(); self.addCleanup(self.env.stop)
         self.files = {name: b'fixture' for name in m.REQUIRED if name != 'BUILD_INFO.json'}
         for n in ('libc.prx','libkernel.prx','libScePad.prx'): self.files['libs/'+n]=b'fixture'
+        for n in AMD: self.files[n]=b'fixture'
         self.info = {'schema': 1, 'rygt7_commit': COMMIT, 'renderer_commit': m.RENDERER,
                      'renderer_configured_url': m.CONFIGURED, 'renderer_fetch_url': m.FETCHED,
-                     'base_url': m.BASE_URL, 'base_sha256': m.BASE, 'renderer_vma_patch': {'path':'externals/vma-patches/0001-trim-empty-default-blocks.patch','sha256':'989c12d4729935f11c05a13eeab0fc96fc99e53055c97bd0b81bce04448d6180','target':'include/vk_mem_alloc.h','verified':True}, 'ci_control': {'repository':None,'commit':None,'run_url':None,'attempt':None},
-                     'runtime_files': {p: {'origin': ('shadgt7-source-build' if p.endswith('libSceVideoOut.prx') else 'rygt7-source-build'), 'sha256': m.digest(b'fixture')} for p in self.files if p.startswith('libs/')}}
+                     'renderer_vma_patch': {'path':'externals/vma-patches/0001-trim-empty-default-blocks.patch','sha256':'989c12d4729935f11c05a13eeab0fc96fc99e53055c97bd0b81bce04448d6180','target':'include/vk_mem_alloc.h','verified':True}, 'ci_control': {'repository':None,'commit':None,'run_url':None,'attempt':None},
+                     'runtime_files': {p: {'origin': origin(p), 'sha256': m.digest(b'fixture')} for p in self.files if p.startswith('libs/') or p in AMD}}
     def write(self, extra=(), info=None, bad_hash=False):
         files = dict(self.files); files['BUILD_INFO.json'] = json.dumps(info or self.info).encode()
         records = [{'path': p, 'bytes': len(b), 'sha256': m.digest(b)} for p,b in files.items()]
@@ -54,7 +62,7 @@ class Validation(unittest.TestCase):
         (self.folder/(name+'.sha256')).write_text(checksum+'  '+name+'\n')
         marker = {'schema':1, 'project':'rygt-team/rygt7', 'branch':'main', 'commit':COMMIT,
                   'renderer': {'configured_repository':m.CONFIGURED, 'fetched_repository':m.FETCHED, 'commit':m.RENDERER},
-                  'runtime_base': {'url':m.BASE_URL, 'sha256':m.BASE}, 'ci_control': {'repository':None,'commit':None,'run_url':None,'attempt':None}, 'archive':{'name':name,'sha256':checksum}, 'build_info':'BUILD_INFO.json'}
+                  'ci_control': {'repository':None,'commit':None,'run_url':None,'attempt':None}, 'archive':{'name':name,'sha256':checksum}, 'build_info':'BUILD_INFO.json'}
         (self.folder/'CI-BUILD.json').write_text(json.dumps(marker))
     def test_valid(self):
         self.write(); m.validate(self.folder, COMMIT)
@@ -68,9 +76,12 @@ class Validation(unittest.TestCase):
             self.write(extra=[path])
             with self.assertRaises(ValueError): m.validate(self.folder, COMMIT)
     def test_provenance_and_hash(self):
-        for field in ('rygt7_commit','renderer_commit','base_sha256'):
+        for field in ('rygt7_commit','renderer_commit'):
             info=dict(self.info); info[field]='0'*40; self.write(info=info)
             with self.assertRaises(ValueError): m.validate(self.folder, COMMIT)
+        # FEAT-GTS-253: a package built over a runtime archive is rejected.
+        info=dict(self.info, base_url='https://example.invalid/base.zip', base_sha256='0'*64); self.write(info=info)
+        with self.assertRaises(ValueError): m.validate(self.folder, COMMIT)
         self.write(bad_hash=True)
         with self.assertRaises(ValueError): m.validate(self.folder, COMMIT)
     def test_hosted_metadata_enforced(self):
@@ -94,10 +105,11 @@ class Validation(unittest.TestCase):
         with self.assertRaises(ValueError): m.validate(self.folder,COMMIT)
 
     def test_runtime_coverage_and_origin(self):
-        for mode in ('missing', 'wrong_origin', 'extra'):
+        for mode in ('missing', 'wrong_origin', 'amd_origin', 'extra'):
             info=dict(self.info); info['runtime_files']={k:dict(v) for k,v in self.info['runtime_files'].items()}
             if mode == 'missing': info['runtime_files'].pop('libs/libSceFiber.prx')
             elif mode == 'wrong_origin': info['runtime_files']['libs/libSceFiber.prx']['origin']='pinned-base'
+            elif mode == 'amd_origin': info['runtime_files']['amd_fidelityfx_vk.dll']['origin']='pinned-base'
             else: info['runtime_files']['not-present']={'origin':'pinned-base','sha256':'0'*64}
             self.write(info=info)
             with self.assertRaises(ValueError): m.validate(self.folder,COMMIT)

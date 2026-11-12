@@ -38,12 +38,16 @@ change triggers a new build without overwriting a different source/renderer pair
 The archive filename stays `RyGT7-ci-<short source commit>.zip` within the artifact. The exact VMA patch and clean-source provenance checks remain enforced;
 an upstream patch change intentionally fails until the adapter is re-audited.
 
-The source release packager expects a complete runtime. A SHA-256 pinned official
-RyGT7 2026-10-31 package supplies libraries not rebuilt by the current build and
-the FSR redistribution files. Only explicitly allowlisted files are read from
-that archive. Fresh runtime/renderer/stub outputs overwrite their matching base
-files. The converter and wheel probe are source-built; GCC redistribution files
-come from the same UCRT64 toolchain. That toolchain is pinned: MSYS2 UCRT64 GCC
+The source release packager expects a complete runtime. Every file on the
+`build-support/runtime-files.txt` allowlist is built from the recorded revisions:
+runtime libraries (including the placeholders in `core/libs/placeholders` and the
+`libSceSsl2` copy of `libSceSsl`), renderer libraries and GT7 stubs; assembly fails
+if one is missing. There is no runtime archive. The converter and wheel probe are
+source-built; GCC redistribution files come from the same UCRT64 toolchain. AMD's
+signed FidelityFX runtime (`amd_fidelityfx_vk.dll` and its license) is the one file
+not built here: `python ci/rygt7/runtime_toolchain.py fidelityfx <folder>` downloads it
+from the FidelityFX SDK release pinned in `ci/rygt7/runtime-toolchain.json` and checks
+both SHA-256s. That toolchain is pinned: MSYS2 UCRT64 GCC
 16.2.0-6 and the packages it needs, plus the FFmpeg prebuilt, each by file name and
 SHA-256 in `ci/rygt7/runtime-toolchain.json` (the same pins as RyGTS).
 `ci/rygt7/runtime_toolchain.py` downloads, checks and unpacks them; MSYS2 itself only
@@ -51,11 +55,7 @@ provides its Unix tools. `python ci/rygt7/runtime_toolchain.py pin <date>` moves
 pins to newer packages. The package includes required notices and
 the source's bundled offline patch and credits.
 
-This pinned binary base remains hosted in the GitLab package registry. GitLab is
-not used to fetch source code or publish CI output.
-
-`BUILD_INFO.json` records exact source and renderer commits, runtime-base URL and
-hash, toolchain and submodule information, per-file origins and hashes, and CI
+`BUILD_INFO.json` records exact source and renderer commits, toolchain and submodule information, per-file origins and hashes, and CI
 control/run identity. The historical release's gameplay and build-provenance
 claims are replaced with accurate CI notes. Game executables/data, firmware,
 fonts, saves, personal settings, logs and shader caches are excluded.
