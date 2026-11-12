@@ -3,7 +3,10 @@ param(
     [Parameter(Mandatory=$true)][string]$SourceSha,
     [Parameter(Mandatory=$true)][string]$RendererSha,
     [Parameter(Mandatory=$true)][string]$OutputRoot,
-    [string]$UcrtRoot = 'C:\msys64\ucrt64'
+    # FEAT-GTS-252: the runtime is built with the MSYS2 UCRT64 GCC pinned in ci/rygt7/runtime-toolchain.json,
+    # unpacked under ToolsRoot. MSYS2 itself (MsysRoot) only provides its Unix tools (usr\bin).
+    [string]$ToolsRoot = 'C:\rygt7-ci\tools\runtime',
+    [string]$MsysRoot = 'C:\msys64'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -34,10 +37,17 @@ $clangVersion = (& "$llvm\bin\clang-cl.exe" --version | Out-String)
 if ($LASTEXITCODE -ne 0 -or $clangVersion -notmatch '23\.1\.3') { throw 'LLVM 23.1.3 required' }
 $builtins = Get-ChildItem "$llvm\lib" -Recurse -Filter clang_rt.builtins-x86_64.lib | Select-Object -First 1
 if (!$builtins) { throw 'LLVM compiler-rt builtins are required' }
-$ucrt = (Resolve-Path -LiteralPath $UcrtRoot).Path
-$gcc = Join-Path $ucrt 'bin\gcc.exe'; $runtimeCmake = Join-Path $ucrt 'bin\cmake.exe'
-$msysBin = Join-Path (Split-Path $ucrt -Parent) 'usr\bin'
-if (!(Test-Path $gcc) -or !(Test-Path $runtimeCmake)) { throw 'MSYS2 UCRT64 GCC and CMake are required' }
+$toolchainScript = Join-Path $PSScriptRoot 'runtime_toolchain.py'
+$ucrtBin = & python $toolchainScript install $ToolsRoot | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0 -or !$ucrtBin) { throw 'Pinned runtime toolchain unavailable' }
+$ucrt = Split-Path $ucrtBin -Parent
+$ffmpeg = & python $toolchainScript ffmpeg $ToolsRoot | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0 -or !$ffmpeg) { throw 'Pinned FFmpeg package unavailable' }
+$gcc = Join-Path $ucrt 'bin\gcc.exe'
+$msysBin = Join-Path $MsysRoot 'usr\bin'
+if (!(Test-Path $gcc)) { throw 'Pinned MSYS2 UCRT64 GCC is missing' }
+$gccVersion = (& $gcc --version | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or "$gccVersion" -notmatch '\b16\.2\.0\b') { throw "Unexpected runtime compiler: $gccVersion" }
 # Capture the native setup-python interpreter before MSYS2 changes PATH. The
 # GT7 packager uses Windows pathlib semantics for its license directory tree.
 $nativePython = (Get-Command python.exe -CommandType Application -ErrorAction Stop).Source
@@ -72,8 +82,9 @@ try {
     Invoke-CmdFile (Join-Path $source 'loader\test-gt7.cmd') (Join-Path $workspace 'launcher-tests')
     Invoke-Checked $nativePython @((Join-Path $source 'build-support\test_package_release.py'))
     $runtimeBuild = Join-Path $workspace 'runtime-build'
-    Invoke-Checked $runtimeCmake @('-S',$source,'-B',$runtimeBuild,'-G','Ninja','-DCMAKE_BUILD_TYPE=Release','-DRTY_BUILD_GUI=OFF','-DBUILD_TESTING=OFF','-DRTY_ENABLE_LTO=OFF',"-DCMAKE_C_COMPILER=$gcc", "-DCMAKE_CXX_COMPILER=$ucrt/bin/g++.exe", "-DPython3_EXECUTABLE=$nativePythonCmake")
-    Invoke-Checked $runtimeCmake @('--build',$runtimeBuild,'--target','ryty','libs','ryty-wheel-probe','--parallel','4')
+    # The pinned native CMake and Ninja drive the pinned compiler (MSYS2's own CMake would float).
+    Invoke-Checked $nativeCmake @('-S',$source,'-B',$runtimeBuild,'-G','Ninja','-DCMAKE_BUILD_TYPE=Release','-DRTY_BUILD_GUI=OFF','-DBUILD_TESTING=OFF','-DRTY_ENABLE_LTO=OFF',"-DCMAKE_MAKE_PROGRAM=$nativeNinjaCmake","-DCMAKE_C_COMPILER=$($gcc.Replace('\','/'))", "-DCMAKE_CXX_COMPILER=$($ucrt.Replace('\','/'))/bin/g++.exe", "-DPython3_EXECUTABLE=$nativePythonCmake", "-DFFMPEG_PREBUILT_DIR=$($ffmpeg.Replace('\','/'))")
+    Invoke-Checked $nativeCmake @('--build',$runtimeBuild,'--target','ryty','libs','ryty-wheel-probe','--parallel','4')
     $launcher = Join-Path $workspace 'launcher'; New-Item -ItemType Directory -Path $launcher | Out-Null
     Invoke-CmdFile (Join-Path $source 'loader\build.cmd') $launcher
     if (!(Test-Path -LiteralPath (Join-Path $launcher 'RyGT7.exe'))) { throw 'Launcher output missing' }

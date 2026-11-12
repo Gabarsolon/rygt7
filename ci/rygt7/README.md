@@ -43,7 +43,12 @@ RyGT7 2026-10-31 package supplies libraries not rebuilt by the current build and
 the FSR redistribution files. Only explicitly allowlisted files are read from
 that archive. Fresh runtime/renderer/stub outputs overwrite their matching base
 files. The converter and wheel probe are source-built; GCC redistribution files
-come from the same UCRT64 toolchain. The package includes required notices and
+come from the same UCRT64 toolchain. That toolchain is pinned: MSYS2 UCRT64 GCC
+16.2.0-6 and the packages it needs, plus the FFmpeg prebuilt, each by file name and
+SHA-256 in `ci/rygt7/runtime-toolchain.json` (the same pins as RyGTS).
+`ci/rygt7/runtime_toolchain.py` downloads, checks and unpacks them; MSYS2 itself only
+provides its Unix tools. `python ci/rygt7/runtime_toolchain.py pin <date>` moves the
+pins to newer packages. The package includes required notices and
 the source's bundled offline patch and credits.
 
 This pinned binary base remains hosted in the GitLab package registry. GitLab is

@@ -3,6 +3,10 @@
 Releases before 1.0.7 predate this file; their history lives in the commit
 log and the existing documentation.
 
+## Unreleased
+
+* FEAT-GTS-252: CI builds the runtime libraries, converter and wheel probe with a pinned MSYS2 UCRT64 GCC 16.2.0 (`ci/rygt7/runtime-toolchain.json`, the same pins as RyGTS) instead of whatever MSYS2 ships on the day of the build. Pull-request compile checks use the same compiler.
+
 ## 1.1.0
 
 ### Versioning and Infrastructure Cleanup
