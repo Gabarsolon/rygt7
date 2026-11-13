@@ -41,7 +41,7 @@ namespace RyGT
         // Folders and files that hold the player's data or the converted game: an update never
         // writes, moves or deletes anything under them, whatever a package lists.
         static readonly string[] ProtectedFolders = { "user", "shaders", "app0", "sys", "_sd", "convert", "data", "logs", "temp",
-                                                       "temp0", "download0", "decals", "update", "dlss" };
+                                                       "temp0", "download0", "decals", "update", "dlss", "Photos" };
         static readonly string[] ProtectedFiles = { "RyGT7.ini", "RyGT.ini", "GT7.exe", "GT7.exe.converted", "GT7.registry.json", "setup-out.txt" };
 
         public static string UpdateFolder(string root) { return Path.Combine(root, "update"); }
