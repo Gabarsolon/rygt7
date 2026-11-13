@@ -6,6 +6,11 @@ The version lives in `loader/Version.cs`. To release a change, bump
 `LauncherVersion.Value` there and add a section here with the same number;
 CI fails when the two disagree.
 
+## 0.1.4 - 2026-11-13
+
+* Add HD UI, temporal DLSS and exact-value DLSS sharpening controls.
+* Save GPU settings through an atomic replacement.
+
 ## 0.1.3 - 2026-11-13
 
 * FEAT-GT7-161: Photos the game's gallery exports (Export on a Scapes or race photo) are written as
