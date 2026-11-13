@@ -13,7 +13,8 @@ come from the same DLL: `"RYGTSW1|NAME|kind|group|default|values|description"` s
 - **A variable the launcher always sets itself** (in `StartGame`): add it to
   `SwitchWalker.LauncherManaged` so the page does not offer it.
 - The launcher compiles with the .NET Framework 4 `csc`: **C# 5** only (no local functions, `out var`,
-  tuples or string interpolation). New `.cs` files go in `loader/build.cmd`.
+  tuples or string interpolation). New `.cs` files go in `loader/build.cmd` and in the test build's
+  file list in `loader/test-gt7.cmd` (CI runs it; a file missing there fails the build).
 
 ## Launcher version
 
