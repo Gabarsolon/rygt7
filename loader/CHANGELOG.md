@@ -6,6 +6,16 @@ The version lives in `loader/Version.cs`. To release a change, bump
 `LauncherVersion.Value` there and add a section here with the same number;
 CI fails when the two disagree.
 
+## 0.1.2 - 2026-11-12
+
+* FEAT-GTS-254: An Advanced page (last in the settings sidebar) for the renderer's experimental `RYGT_*`
+  and `SHADGT_*` switches, ported from the RyGTS launcher. The launcher reads them from
+  `libs\libSceVideoOut.prx` itself, with the renderer's own descriptions as hover tooltips; on/off
+  switches are toggles, others text boxes. Search, sort by column, Reset all, Refresh after a renderer
+  rebuild, and a table for any other environment variable. Saved as `env=` lines in `RyGT7.ini` and set
+  for `GT7.exe` after the launcher's own variables. The page is hidden until About > Logging >
+  "Show the Advanced page" is turned on; switches set there keep applying when it is hidden again.
+
 ## 0.1.1 - 2026-11-11
 
 * FEAT-GTS-251: Set up no longer links the game's files into `app0` (Explorer counted the links,
