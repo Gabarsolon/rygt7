@@ -1407,6 +1407,19 @@ struct ContentExportInitParam2 {
     std::int64_t reserved1;
 };
 
+// FEAT-GT7-161: layout read from GT7 (CUSA24769 1.00), which clears 0x243 bytes, copies at most 256
+// characters of the title to +0 and the MIME type ("image/jpeg" or "image/png") to +0x202. What the
+// bytes between are for is not known; GT7 leaves them empty.
+struct ContentExportParam {
+    char title[0x101];
+    char unknown[0x101];
+    char content_type[0x41];
+};
+
+// Gives sceContentExportFromData the caller's data: sets *data and *size to the next piece.
+// GT7 hands over its whole image in one call and returns 1.
+using ContentExportReadFunc = int (APS5_VABI*)(void** data, std::size_t* size, void* user_data);
+
 struct ContentSearchInitParam { std::size_t memory_size; };
 
 struct ContentDeleteInitParam {

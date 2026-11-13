@@ -24,7 +24,6 @@ static void Note(const char* text, unsigned long length) {
 STUB(sceSharePlayGetCurrentConnectionInfoA, 0x0) // libSceSharePlay|libSceSharePlay +MCXJlWdi+s
 STUB(sceRemoteplayProhibitStreaming, 0x0) // libSceRemoteplay|libSceRemoteplay 7QLrixwVHcU
 STUB(sceNpSessionSignalingActivateUser, 0x0) // libSceNpSessionSignaling|libSceNpSessionSignaling 9r7dM3puxMk
-STUB(sceContentExportFromData, 0x0) // libSceContentExport|libSceContentExport AOWqIYsgVHs
 STUB(scePlayerInvitationDialogGetResult, 0x0) // libScePlayerInvitationDialog|libScePlayerInvitationDialog AhqlQ8cngrk
 STUB(sceNpSessionSignalingGetConnectionFromPeerAddress2, 0x0) // libSceNpSessionSignaling|libSceNpSessionSignaling DicBhsm2iR4
 STUB(sceTextToSpeechCancelImpl, 0x0) // libSceTextToSpeech|libSceTextToSpeech Fz+01Q4GjpM

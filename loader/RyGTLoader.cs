@@ -2320,6 +2320,7 @@ namespace RyGT
             folders.Controls.Add(OpenRow("The ryGT7 folder", OpenFolder, "Open folder"));
             folders.Controls.Add(OpenRow("Logs (stdout.log, stderr.log, setup.log)", delegate { OpenSubfolder("logs"); }, "Open log folder"));
             folders.Controls.Add(OpenRow("Shaders", delegate { OpenSubfolder("shaders"); }, "Open folder"));
+            folders.Controls.Add(OpenRow("Photos (exported from the game's gallery)", delegate { OpenSubfolder("Photos"); }, "Open folder"));
             var logging = Section(aboutPage, "Logging");
             var logLevel = new DarkComboBox { Width = 200, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat };
             logLevel.Items.AddRange(LogFiles.Levels);
@@ -3724,7 +3725,9 @@ namespace RyGT
             WriteSetting("GPU", "native_renderer", true);
             WriteSetting("GPU", "readbacks_mode", 2);
             if (!LoadConfig().ContainsKey("General")) WriteSetting("General", "show_splash", true);
-            foreach (string folder in new[] { "_sd/local-data", "_sd/sce_sdmemory", "download0/APP_DATA", "temp", "temp0", "logs", "patches", "shaders" })
+            // Photos: where the game's gallery Export writes pictures (FEAT-GT7-161), made now so
+            // players find it next to RyGT7.exe.
+            foreach (string folder in new[] { "_sd/local-data", "_sd/sce_sdmemory", "download0/APP_DATA", "temp", "temp0", "logs", "patches", "shaders", "Photos" })
                 Directory.CreateDirectory(Path.Combine(root, folder));
             for (int i = 1000; i < 1004; i++)
                 foreach (string folder in new[] { "savedata", "trophy", "inputs" })

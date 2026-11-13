@@ -27,6 +27,11 @@ Quick start
      setup.log.
   4. Press Play. Logs are written under logs\.
 
+Photos: the game keeps Scapes and race photos in its own format (download0\APP_DATA\photo).
+To get a picture you can open, pick the photo in the game's gallery and choose Export: it is
+written as a JPEG to the Photos folder next to RyGT7.exe (About > Folders in the launcher opens
+it), named after its date and place. Taking a photo does not export it.
+
 Verified: the CUSA24769 dump whose metadata reports APP_VER 01.00, converted in a clean
 folder, to the main menu, Music Rally and races at Deep Forest. Other updates can be
 selected but have not been verified to convert or play. Keep the game and update folders in

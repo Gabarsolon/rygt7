@@ -6,6 +6,12 @@ The version lives in `loader/Version.cs`. To release a change, bump
 `LauncherVersion.Value` there and add a section here with the same number;
 CI fails when the two disagree.
 
+## 0.1.3 - 2026-11-13
+
+* FEAT-GT7-161: Photos the game's gallery exports (Export on a Scapes or race photo) are written as
+  JPEGs to a `Photos` folder next to RyGT7.exe. Set up creates the folder, updates never touch it, and
+  About > Folders has a row that opens it.
+
 ## 0.1.2 - 2026-11-12
 
 * FEAT-GTS-254: An Advanced page (last in the settings sidebar) for the renderer's experimental `RYGT_*`

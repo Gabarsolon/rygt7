@@ -3,7 +3,6 @@ EXPORTS
     "+MCXJlWdi+s"=stub_sceSharePlayGetCurrentConnectionInfoA
     "7QLrixwVHcU"=stub_sceRemoteplayProhibitStreaming
     "9r7dM3puxMk"=stub_sceNpSessionSignalingActivateUser
-    "AOWqIYsgVHs"=stub_sceContentExportFromData
     "AhqlQ8cngrk"=stub_scePlayerInvitationDialogGetResult
     "DicBhsm2iR4"=stub_sceNpSessionSignalingGetConnectionFromPeerAddress2
     "Fz+01Q4GjpM"=stub_sceTextToSpeechCancelImpl
