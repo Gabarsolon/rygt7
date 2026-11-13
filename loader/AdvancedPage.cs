@@ -29,7 +29,7 @@ namespace RyGT
     /// - every string that is exactly RYGT_ or SHADGT_ and capitals, digits and _ (the names the renderer passes
     ///   to getenv), and
     /// - every "RYGTSW1|NAME|kind|group|default|values|description" string: the renderer's own
-    ///   description of a switch (src/common/rygt_switches.cpp in shadGT).
+    ///   description of a switch (src/video_core/rygt_switches.cpp in shadgt7).
     /// A switch without a description is still listed; a description without the name is not.
     static class SwitchWalker
     {
@@ -359,6 +359,7 @@ namespace RyGT
 
             int sortColumn = -1; // -1: grouped (the order the renderer's groups give)
             bool sortDescending = false;
+            int lastShown = 0;
             Action filter = delegate
             {
                 string text = search.Text.Trim();
@@ -381,6 +382,7 @@ namespace RyGT
                 count.Text = walkError != null ? "Could not read " + SwitchWalker.RendererFile + ": " + walkError
                            : catalog.Count == 0 ? "No RYGT_ or SHADGT_ switches found in " + SwitchWalker.RendererFile
                            : shown + " of " + catalog.Count + " switches, " + values.Count + " changed" + rendererDate;
+                lastShown = shown;
             };
 
             Action<DataGridViewRow> apply = row =>
@@ -395,8 +397,8 @@ namespace RyGT
                 else values[s.Name] = value;
                 Mark(row, values.ContainsKey(s.Name));
                 store();
-                int comma = count.Text.LastIndexOf(',');
-                if (comma > 0) count.Text = count.Text.Substring(0, comma + 1) + " " + values.Count + " changed";
+                if (walkError == null && catalog.Count > 0)
+                    count.Text = lastShown + " of " + catalog.Count + " switches, " + values.Count + " changed" + rendererDate;
             };
             grid.CellValueChanged += (sender, e) => { if (e.RowIndex >= 0 && e.ColumnIndex == 1) apply(grid.Rows[e.RowIndex]); };
             grid.DataError += (sender, e) => { e.ThrowException = false; };
@@ -502,8 +504,15 @@ namespace RyGT
                 var cell = grid.Rows[rowIndex].Cells[1];
                 bool defaultKnown;
                 bool defaultOn = DefaultOn(s, out defaultKnown);
-                bool on = !IsOn(Convert.ToString(cell.Value) ?? "", defaultOn);
-                cell.Value = defaultKnown && on == defaultOn ? "" : on ? "1" : "0";
+                string now = Convert.ToString(cell.Value) ?? "";
+                if (!defaultKnown)
+                {
+                    // Default (unset) -> On -> Off -> Default: the default depends on the GPU or a setting.
+                    cell.Value = now.Length == 0 ? "1" : now == "0" ? "" : "0";
+                    return;
+                }
+                bool on = !IsOn(now, defaultOn);
+                cell.Value = on == defaultOn ? "" : on ? "1" : "0";
             };
             grid.CellMouseClick += (sender, e) => { if (e.Button == MouseButtons.Left && e.ColumnIndex == 1) toggle(e.RowIndex); };
             grid.CellMouseDoubleClick += (sender, e) => { if (e.Button == MouseButtons.Left && e.ColumnIndex == 1) toggle(e.RowIndex); };
@@ -652,14 +661,26 @@ namespace RyGT
 
         /// Whether a switch is on when not set, from its description's default; `known` is false when
         /// the default says neither (then it is drawn off).
+        /// Words that make a default depend on something (the GPU, another setting, the build): such a
+        /// switch gets Default / On / Off instead of a plain toggle (FEAT-GTS-254 review).
+        static readonly string[] ConditionalWords =
+        {
+            "with", "when", "if", "unless", "only", "except", "elsewhere", "otherwise", "depend", "nvidia", "amd",
+            "intel", "radeon", "gcn", "rdna", "driver", "vk_", "extension", "native", "fsr", "dlss", "frame gen",
+            "launcher", "setting", "mode", "build", "older", "newer"
+        };
+
         static bool DefaultOn(RendererSwitch s, out bool known)
         {
             string d = s.Default.Trim().ToLowerInvariant();
-            known = true;
-            foreach (var word in OnWords) if (StartsWithWord(d, word)) return true;
-            foreach (var word in OffWords) if (StartsWithWord(d, word)) return false;
             known = false;
-            return false;
+            bool on = false, matched = false;
+            foreach (var word in OnWords) if (!matched && StartsWithWord(d, word)) { on = true; matched = true; d = d.Substring(word.Length); }
+            foreach (var word in OffWords) if (!matched && StartsWithWord(d, word)) { on = false; matched = true; d = d.Substring(word.Length); }
+            if (!matched) return false;
+            foreach (var word in ConditionalWords) if (d.Contains(word)) return on; // known stays false
+            known = true;
+            return on;
         }
 
         static bool IsOn(string value, bool defaultOn)
@@ -674,20 +695,21 @@ namespace RyGT
             bool known;
             bool defaultOn = DefaultOn(s, out known);
             bool changed = value.Length > 0, on = IsOn(value, defaultOn);
+            bool middle = !changed && !known; // Default, which depends on the GPU or a setting
             var track = new RectangleF(cell.X + 8, cell.Y + (cell.Height - 16) / 2f, 32, 16);
             var smoothing = g.SmoothingMode;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            Color fill = on ? (changed ? Dark.Accent : Color.FromArgb(104, 56, 60)) : BoxFill;
+            Color fill = middle ? BoxFill : on ? (changed ? Dark.Accent : Color.FromArgb(104, 56, 60)) : BoxFill;
             Dark.FillRounded(g, fill, track, 8);
-            if (!on)
+            if (!on || middle)
                 using (var path = Dark.RoundedRect(new RectangleF(track.X + 0.5f, track.Y + 0.5f, track.Width - 1, track.Height - 1), 8))
                 using (var pen = new Pen(changed ? Dark.AccentText : BoxEdge))
                     g.DrawPath(pen, path);
-            float knob = 12, kx = on ? track.Right - knob - 2 : track.X + 2;
-            using (var brush = new SolidBrush(on || changed ? Color.White : Color.FromArgb(170, 170, 170)))
+            float knob = 12, kx = middle ? track.X + (track.Width - knob) / 2 : on ? track.Right - knob - 2 : track.X + 2;
+            using (var brush = new SolidBrush((on && !middle) || changed ? Color.White : Color.FromArgb(170, 170, 170)))
                 g.FillEllipse(brush, kx, track.Y + 2, knob, knob);
             g.SmoothingMode = smoothing;
-            string text = (on ? "On" : "Off") + (changed ? "" : known ? "  (default)" : "  (default, assumed)");
+            string text = middle ? "Default" : (on ? "On" : "Off") + (changed ? "" : "  (default)");
             var area = new Rectangle((int)track.Right + 8, cell.Y, cell.Right - (int)track.Right - 10, cell.Height);
             TextRenderer.DrawText(g, text, font, area, changed ? Dark.AccentText : Dark.DimText,
                                   TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);

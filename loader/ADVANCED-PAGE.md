@@ -14,9 +14,10 @@ Nothing is listed in the launcher. When the launcher starts it reads `libs\libSc
 - every string that is exactly `RYGT_` or `SHADGT_` plus capitals, digits and `_`: the names the renderer passes to
   `getenv`. A switch added to the renderer appears with the next renderer build.
 - every `RYGTSW1|NAME|kind|group|default|values|description` string: the renderer's description of a
-  switch, kept in shadGT's `src/video_core/rygt_switches.cpp` (exported as `RyGT_SwitchDescriptions`
-  so the linker keeps it). The description is the hover tooltip; kind picks the editor (Default / On /
-  Off for flags, a checked value for int, hex and float); group is the heading.
+  switch, kept in shadgt7's `src/video_core/rygt_switches.cpp` (exported as `RyGT_SwitchDescriptions`
+  so the linker keeps it). The description is the hover tooltip; kind picks the editor (a toggle for on/off switches, which flips and returns to its default; Default / On / Off when the
+  default depends on the GPU or another setting, e.g. "on with AMD's older shader compiler"; a checked
+  value for int, hex and float); group is the heading.
 
 A switch the renderer reads but does not describe is listed under "Not described in this renderer
 build". A description without a matching name (for example a switch only a diagnostics build reads)
@@ -39,5 +40,6 @@ Everything is saved as you change it, as `env=<1|0>|NAME=VALUE` lines in `RyGT7.
 the device-loss relaunch) the entries are applied after the launcher's own variables, so they win.
 Only a count is written to the setup log, never values.
 
-To confirm a switch reaches the game, set one the renderer logs at startup (for example
-`RYGT_SO_HASH_MASK`, which logs `DIAG-GTS-432`) and check `logs\stdout.log`.
+To confirm the switches reach the game: `setup.log` gets "N custom environment variable(s) applied." when
+the launcher starts `GT7.exe`; then set one whose effect you can see (for example a rendering switch
+from its tooltip) and compare.

@@ -2336,7 +2336,7 @@ namespace RyGT
 
             // FEAT-GTS-254 (from RyGTS FEAT-GTS-433..467): Advanced, the renderer's experimental RYGT_* and
             // SHADGT_* switches, read from libs\libSceVideoOut.prx with the renderer's own descriptions,
-            // and any other variable for GT7.exe. Shown unless turned off here.
+            // and any other variable for GT7.exe. Hidden until turned on here.
             var advancedShown = new ToggleRow { Text = "Show the Advanced page (experimental renderer switches)", Checked = settings.ShowAdvanced };
             logging.Controls.Add(advancedShown);
             logging.Controls.Add(Hint("Hiding it keeps the switches already set there; they still apply when the game starts."));
